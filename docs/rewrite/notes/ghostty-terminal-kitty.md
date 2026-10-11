@@ -7,7 +7,7 @@
 | graphics_storage.zig | `graphics_storage.rs` (`ImageStorage`, `Placement`, `PlacementKey`, `TerminalInfo`) | 19/19 Zig + 3 extra (placement replace releases pin, eviction order + limit, image_by_number newest) |
 | graphics_unicode.zig | `graphics_unicode.rs` (`placement_iterator`, `Placement`, `render_placement`) | 16/16 Zig + 2 extra |
 | graphics_render.zig | `graphics_render.rs` (`Placement`) | no tests in Zig |
-| graphics_exec.zig | `graphics_exec.rs` (`execute`, `ExecTerminal` trait) | 8/8 Zig + 4 extra (run against a harness, see below) |
+| graphics_exec.zig | `graphics_exec.rs` (`execute`, `ExecTerminal` trait) | 8/8 Zig + 8 extra (real Terminal, including lifecycle integration) |
 | kitty.zig / graphics.zig | `kitty/mod.rs` (re-exports; the command parser stays in `ghostty_vt::kitty::graphics_command`) | - |
 
 `pub mod kitty;` added to `lib.rs`. Test data copied to `kitty/testdata/`.
@@ -32,39 +32,52 @@ Zig tests skipped: none. (`debugDump` not ported: debug-only helper.)
   `evicted > req` (strictly); `set_limit(0)` resets storage to defaults (limit then set to 0); screen reset `.{ .dirty = true }` also resets total_limit to default.
 - `execute(terminal, &cmd)` has no allocator; `Command` stays borrowed (the loading image copies the payload).
 
-## graphics_exec and Terminal (TODO(integration), needs T3)
-`Screen.kitty_images` is still the placeholder `KittyImages { dirty }`, so `Terminal` cannot implement `ExecTerminal` yet.
-`execute` is generic over the `ExecTerminal` trait; the exec tests run against a `Harness { t: Terminal, storage: ImageStorage }`
-(real `Terminal::index`/`set_cursor_pos`/pages; storage held beside it). No tests are ignored.
+## graphics_exec and Terminal integration — complete
 
-### Integration steps
-1. `screen.rs`: replace `KittyImages` with `pub kitty_images: crate::kitty::graphics_storage::ImageStorage` (`Default` = Zig `.{}`).
-   - `Screen::new`: after constructing, `result.kitty_images.set_limit(&mut result.pages, opts.kitty_image_storage_limit).unwrap()`
-     (infallible there; `set_limit` returns `Result`). Opts default is already 320_000_000.
-   - `Screen::reset` (Zig `self.kitty_images.deinit(self); self.kitty_images = .{ .dirty = true }`):
-     `self.kitty_images.deinit(&mut self.pages); self.kitty_images = ImageStorage { dirty: true, ..Default::default() };`
-   - `Drop`/explicit teardown: `kitty_images.deinit(&mut pages)` must run before pages are dropped (tracked pins). `clone_screen` does not clone images.
-   - the existing `self.kitty_images.dirty = true` sites keep working unchanged.
-2. `terminal.rs`:
-   - `erase_display` `.complete` and `.scrollback`... (Zig lines ~2495/2552): `let info = TerminalInfo::from_terminal(self); let s = self.screens.active_mut(); s.kitty_images.delete(&mut s.pages, &info, Delete::All(true));`
-   - `switch_screen_mode`/`set_alternate`: new-screen `kitty_image_storage_limit` = primary `kitty_images.total_limit`; then `new.kitty_images.dirty = true`.
-   - add `Terminal::kitty_graphics_command(&mut self, cmd: &Command) -> Option<Response> { kitty::graphics_exec::execute(self, cmd) }`
-     (Zig `Terminal.kittyGraphics`).
-   - `impl ExecTerminal for Terminal`:
-     ```rust
-     fn kitty_parts(&mut self) -> (&mut ImageStorage, &mut PageList) { let s = self.screens.active_mut(); (&mut s.kitty_images, &mut s.pages) }
-     fn exec_info(&self) -> TerminalInfo { TerminalInfo::from_terminal(self) }
-     fn exec_cursor_pin(&self) -> Pin { self.screens.active().cursor_pin() }
-     fn exec_index(&mut self) -> Result<(), page::Error> { self.index() }
-     fn exec_set_cursor_pos(&mut self, row: usize, col: usize) { self.set_cursor_pos(row, col) }
-     ```
-   - `print`: Zig sets row `kitty_virtual_placeholder` when printing `kitty::graphics_unicode::PLACEHOLDER` (already present in Rust, uses its own constant; can switch to `crate::kitty::unicode::PLACEHOLDER`).
-3. `stream_readonly`/termio: APC `G` -> `ghostty_vt::apc` already yields a parsed `Command`; termio calls `terminal.kitty_graphics_command(&cmd)` and, if `Some(resp)`, writes `resp.encode(..)` to the pty.
-   Termio config: `screen.kitty_images.set_limit(&mut screen.pages, limit)` (Termio.zig 265/469); clear-screen binding: `Delete::All(true)` as in step 2 (Termio.zig 615).
-4. Renderer (`renderer/image.zig` equivalent): iterate `storage.placements` / `storage.images`, `Placement::rect`/`grid_size`/`calculated_size`,
-   `graphics_unicode::placement_iterator(&pages, top, Some(bot))` + `Placement::render_placement(storage, img, cell_w, cell_h)`; reset `storage.dirty = false` after upload.
-   Font shaper uses `kitty::unicode::PLACEHOLDER`.
-5. Once Terminal implements the trait, the exec tests' `Harness` can be replaced by `Terminal` directly.
+`Screen.kitty_images` is the real `ImageStorage`. Initialization applies the
+configured limit, reset deinitializes storage and restores default limits with
+`dirty = true`, and Drop releases placement pins before dropping PageList.
+`clone_screen` does not copy images. The default is still 320,000,000 bytes.
 
-## Quality gate (2026-10-11)
-`cargo build/test/clippy -D warnings -p ghostty-terminal` pass (1243 tests incl. 66 kitty: 54 ported + 12 extra); rustfmt applied to `kitty/*.rs`.
+`Terminal` implements `ExecTerminal` by splitting active-screen storage/pages,
+snapshotting `TerminalInfo`, and forwarding cursor/index operations. Both
+`kitty_graphics(&mut Command)` and the new borrowed
+`kitty_graphics_command(&Command)` execute commands and return real responses.
+All graphics_exec tests now use Terminal directly; the separate harness is gone.
+
+Reference hook audit:
+- `.complete` and `.scroll_complete` display erasure call `Delete::All(true)`.
+  `.scrollback` only erases history, as in Terminal.zig.
+- Lazy alternate-screen creation inherits the primary image limit; screen
+  switching marks the new screen's images dirty.
+- All existing image dirty hooks in Screen and Terminal remain at their Zig
+  locations (scrolling, index, insert/delete lines, screen switching).
+- Full reset drops alternate storage and resets primary storage. Placeholder
+  printing uses the shared `graphics_unicode::PLACEHOLDER` constant.
+
+Four additional integration regressions cover screen clone/reset and pin
+release, erasure hooks, alternate-screen isolation/limit inheritance/full
+reset, and the legacy command entrypoint plus in-progress transfer reset.
+
+## API changes and consumer wiring
+
+Added `Terminal::kitty_graphics_command(&Command)` and `ExecTerminal for
+Terminal`; retained `Terminal::kitty_graphics(&mut Command)` unchanged.
+`Screen.kitty_images` now has the required concrete ImageStorage type;
+existing `.dirty` access remains valid. No downstream callers needed edits.
+
+Termio can pass APC `G` commands through either terminal entrypoint and encode
+returned responses to the pty. Storage limits use
+`screen.kitty_images.set_limit(&mut screen.pages, limit)`; clear-screen bindings
+use `Delete::All(true)`. Renderer consumers can inspect placements/images and
+Unicode placements and clear the storage dirty flag after updating graphics.
+Consumer implementation beyond the public terminal API remains owned by the
+concurrent renderer/termio agents.
+
+## Quality gate (2026-10-11 integration pass)
+
+`cargo test -p ghostty-terminal`: 1252 unit tests (including 70 Kitty tests:
+54 source cases + 16 extra) and 1 documentation test pass; 0 failed, 0 ignored.
+Clippy with `--all-targets -- -D warnings`, rustfmt, and the combined build of
+`ghostty-font`, `ghostty-renderer`, and `ghostty-termio` pass. No commit or version
+change was made. Existing non-integration deviations above are unchanged.

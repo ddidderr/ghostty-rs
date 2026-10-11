@@ -22,12 +22,12 @@ use crate::{
     cursor::Style as CursorStyle,
     formatter::{Content as FormatContent, Options as FormatOptions, ScreenFormatter},
     hyperlink::{self, Hyperlink, HyperlinkId},
+    kitty::graphics_storage::ImageStorage,
     page::{Cell, ContentTag, Page, Row, SemanticContent, SemanticPrompt as RowPrompt, Wide},
     page_list::{
         CellSubset, Chunk, Direction, IncreaseCapacity, NodeId, PageList, Pin,
         Scroll as ListScroll, TrackedPin, Viewport,
     },
-    pin_iter,
     point::{Coordinate, Point, Tag},
     selection::{Bounds, Order, Selection},
     size,
@@ -45,7 +45,7 @@ pub use crate::page::Error;
 
 /// The Unicode codepoint used by the Kitty graphics protocol for virtual
 /// placements (`kitty.graphics.unicode.placeholder`).
-const KITTY_PLACEHOLDER: u32 = 0x10EEEE;
+use crate::kitty::graphics_unicode::PLACEHOLDER as KITTY_PLACEHOLDER;
 
 /// See Terminal.Dirty. This behaves the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -91,11 +91,8 @@ impl SemanticPrompt {
     };
 }
 
-/// Kitty graphics protocol state.
-///
-/// TODO(integration): replace with `kitty::graphics_image::ImageStorage`
-/// once the kitty graphics modules are ported. Only the dirty flag that
-/// `Screen` touches is represented here.
+/// Legacy dirty flag value retained for source compatibility.
+/// Screens now own the full [`ImageStorage`].
 #[derive(Debug, Clone, Default)]
 pub struct KittyImages {
     /// Dirty flag for the renderer.
@@ -477,13 +474,19 @@ pub struct Screen {
     pub kitty_keyboard: FlagStack,
 
     /// Kitty graphics protocol state.
-    pub kitty_images: KittyImages,
+    pub kitty_images: ImageStorage,
 
     /// Semantic prompt (OSC133) state.
     pub semantic_prompt: SemanticPrompt,
 
     /// Dirty flags for the renderer.
     pub dirty: Dirty,
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        self.kitty_images.deinit(&mut self.pages);
+    }
 }
 
 impl Screen {
@@ -507,7 +510,7 @@ impl Screen {
             garbage: false,
         })?;
 
-        Ok(Screen {
+        let mut result = Screen {
             pages,
             no_scrollback: opts.max_scrollback == 0,
             cursor: Cursor::new(page_pin),
@@ -516,10 +519,15 @@ impl Screen {
             charset: CharsetState::default(),
             protected_mode: ProtectedMode::Off,
             kitty_keyboard: FlagStack::default(),
-            kitty_images: KittyImages::default(),
+            kitty_images: ImageStorage::default(),
             semantic_prompt: SemanticPrompt::DISABLED,
             dirty: Dirty::default(),
-        })
+        };
+        result
+            .kitty_images
+            .set_limit(&mut result.pages, opts.kitty_image_storage_limit)
+            .expect("empty image storage accepts any limit");
+        Ok(result)
     }
 
     /// The page for a node (panics if the node is stale).
@@ -649,7 +657,11 @@ impl Screen {
         self.cursor = Cursor::new(self.cursor.page_pin);
 
         // Reset kitty graphics storage
-        self.kitty_images = KittyImages { dirty: true };
+        self.kitty_images.deinit(&mut self.pages);
+        self.kitty_images = ImageStorage {
+            dirty: true,
+            ..Default::default()
+        };
 
         // Reset our basic state
         self.saved_cursor = None;
@@ -836,7 +848,7 @@ impl Screen {
             charset: CharsetState::default(),
             protected_mode: ProtectedMode::Off,
             kitty_keyboard: FlagStack::default(),
-            kitty_images: KittyImages::default(),
+            kitty_images: ImageStorage::default(),
             semantic_prompt: SemanticPrompt::DISABLED,
             dirty: self.dirty,
         };
@@ -1304,7 +1316,20 @@ impl Screen {
             cur_page.rows[..n].rotate_right(1);
 
             // Copy the last row of the previous page to the top of current.
-            self.clone_row_between(prev, prev_rows - 1, current, 0)?;
+            self.pages.clone_row_between(
+                Pin {
+                    node: prev,
+                    y: prev_rows - 1,
+                    x: 0,
+                    garbage: false,
+                },
+                Pin {
+                    node: current,
+                    y: 0,
+                    x: 0,
+                    garbage: false,
+                },
+            )?;
 
             // Mark dirty on the page, since we are dirtying all rows with this.
             self.page_mut(current).dirty = true;
@@ -1325,36 +1350,6 @@ impl Screen {
         // Technically we only need to mark from the cursor row to the
         // end but this is a hot function, so we want to minimize work.
         self.page_mut(current).dirty = true;
-        Ok(())
-    }
-
-    /// Clone a row from one page to another (Zig: `Page.cloneRowFrom`).
-    fn clone_row_between(
-        &mut self,
-        src: NodeId,
-        src_y: u16,
-        dst: NodeId,
-        dst_y: u16,
-    ) -> Result<(), Error> {
-        let (row, cells) = {
-            let sp = self.page(src);
-            let row = *sp
-                .get_row(usize::from(src_y))
-                .ok_or(Error::InvalidCoordinate)?;
-            let cells: Vec<_> = (0..usize::from(sp.size.cols))
-                .map(|x| sp.export_cell(row.cells() + x))
-                .collect();
-            (row, cells)
-        };
-        let dp = self.page_mut(dst);
-        let cols = usize::from(dp.size.cols);
-        dp.clear_cells(usize::from(dst_y), 0, cols, false)?;
-        for (x, c) in cells.iter().enumerate().take(cols) {
-            dp.import_cell(x, usize::from(dst_y), c)?;
-        }
-        let start = dp.rows[usize::from(dst_y)].cells();
-        dp.rows[usize::from(dst_y)] = row;
-        dp.rows[usize::from(dst_y)].set_cells(start);
         Ok(())
     }
 
@@ -1519,7 +1514,10 @@ impl Screen {
 
     /// Mark the cursor position as dirty.
     pub fn cursor_mark_dirty(&mut self) {
-        self.cursor_row_mut().set_dirty(true);
+        let pin = self.cursor_pin();
+        // A split can temporarily restore the old cursor pin beyond the live
+        // row count. Its allocated row still exists, like Zig's cached page_row.
+        self.page_mut(pin.node).rows[usize::from(pin.y)].set_dirty(true);
     }
 
     /// Reset the cursor row's soft-wrap state and the cursor's pending wrap.
@@ -1601,19 +1599,7 @@ impl Screen {
     /// Like Zig's `PageList.eraseRows` this requires that `tl` is valid.
     pub fn erase_rows(&mut self, tl: Point, bl: Option<Point>) {
         // Erase the rows
-        if let Err(err) = self.pages.erase_rows(tl, bl) {
-            log::warn!("erase_rows failed err={err:?}");
-        }
-
-        // Workaround for PageList::fixup_viewport not handling `Viewport::Top`
-        // (Zig: a top viewport returns to active when the first page is in
-        // the active area after erasing).
-        // TODO(integration): remove once page_list.rs handles this.
-        if self.pages.viewport == Viewport::Top
-            && self.pages.total_rows <= usize::from(self.pages.rows)
-        {
-            self.pages.viewport = Viewport::Active;
-        }
+        self.pages.erase_rows(tl, bl).expect("valid erase range");
 
         // Just to be safe, reset our cursor since it is possible depending
         // on the points that our active area shifted so our pointers are
@@ -1988,20 +1974,17 @@ impl Screen {
                 }
 
                 Redraw::True => {
-                    let start = pin_iter::prompt_iterator(
-                        &self.pages,
-                        self.cursor_pin(),
-                        Direction::LeftUp,
-                        None,
-                    )
-                    .next();
+                    let start = self
+                        .cursor_pin()
+                        .prompt_iterator(&self.pages, Direction::LeftUp, None)
+                        .next();
                     if let Some(start) = start {
                         // Clear cells from our start down. We replace it with spaces,
                         // and do not physically erase the rows (erase_rows) because the
                         // shell is going to expect this space to be available.
-                        let rows: Vec<Pin> =
-                            pin_iter::row_iterator(&self.pages, start, Direction::RightDown, None)
-                                .collect();
+                        let rows: Vec<Pin> = start
+                            .row_iterator(&self.pages, Direction::RightDown, None)
+                            .collect();
                         for pin in rows {
                             self.clear_cells(pin.node, pin.y, 0, cols);
                         }
@@ -2029,13 +2012,10 @@ impl Screen {
         // If we have no scrollback and we shrunk our rows, we must explicitly
         // erase our history. This is because PageList always keeps at least
         // a page size of history.
-        if self.no_scrollback
-            && self.pages.get_top_left(Tag::History).is_some()
-            && let Err(err) = self
-                .pages
+        if self.no_scrollback {
+            self.pages
                 .erase_rows(Point::History(Coordinate::default()), None)
-        {
-            log::warn!("failed to erase history on resize err={err:?}");
+                .expect("valid history range");
         }
 
         // If our cursor was updated, we do a full reload so all our cursor
@@ -2301,16 +2281,8 @@ impl Screen {
         // Cursor changed, we need to restore the old pin then use
         // cursor_change_pin to move to the new pin. The old node is guaranteed
         // to still exist, just not the row.
-        //
-        // The page list validates tracked pins, so the stand-in for the old
-        // location is clamped into the old node's remaining rows (only the
-        // node matters to cursor_change_pin).
         let new_cursor = self.cursor_pin();
-        let old_rows = self.page(old_cursor.node).size.rows;
-        self.set_cursor_pin(Pin {
-            y: old_cursor.y.min(old_rows - 1),
-            ..old_cursor
-        });
+        self.set_cursor_pin(old_cursor);
         self.cursor_change_pin(new_cursor);
         Ok(())
     }
@@ -2459,32 +2431,18 @@ impl Screen {
 
                 // hyperlink_map is out of space, realloc the page to be larger
                 Err(Error::HyperlinkMapOutOfMemory) => {
-                    // Note: Zig first probes the string allocator to decide whether
-                    // string bytes must grow too (because its increaseCapacity
-                    // always adds an extra copy of the URI). The Rust page rebuild
-                    // deduplicates hyperlinks, so only the hyperlink capacity needs
-                    // to grow.
-                    let saved_link = self.cursor.hyperlink.clone();
-                    self.increase_capacity(p.node, Some(IncreaseCapacity::HyperlinkBytes))?;
-
-                    // The page rebuild re-adds the cursor hyperlink, but that can
-                    // fail when the string allocator has no room for the extra
-                    // copy of the URI (Zig grows string_bytes up front for this).
-                    // Re-add it here, growing as needed.
-                    if self.cursor.hyperlink_id == 0
-                        && let Some(link) = saved_link
-                    {
-                        loop {
-                            let adjustment = match self.start_hyperlink_once(&link) {
-                                Ok(()) => break,
-                                Err(Error::StringsOutOfMemory) => IncreaseCapacity::StringBytes,
-                                Err(Error::SetOutOfMemory) => IncreaseCapacity::HyperlinkBytes,
-                                Err(e) => return Err(e),
-                            };
-                            let node = self.cursor_pin().node;
-                            self.increase_capacity(node, Some(adjustment))?;
+                    // Probe the URI allocation before rebuilding, just as
+                    // cursorSetHyperlink does in the reference implementation.
+                    while let Some(link) = &self.cursor.hyperlink {
+                        let len = link.uri.len();
+                        let node = self.cursor_pin().node;
+                        if self.page_mut(node).can_allocate_string(len) {
+                            break;
                         }
+                        self.increase_capacity(node, Some(IncreaseCapacity::StringBytes))?;
                     }
+                    let node = self.cursor_pin().node;
+                    self.increase_capacity(node, Some(IncreaseCapacity::HyperlinkBytes))?;
 
                     // Retry
                     //
@@ -2657,7 +2615,7 @@ impl Screen {
 
         // The real start of the row is the first row in the soft-wrap.
         let start_pin: Pin = 'start_pin: {
-            let mut it = pin_iter::row_iterator(list, opts.pin, Direction::LeftUp, None);
+            let mut it = opts.pin.row_iterator(list, Direction::LeftUp, None);
             let mut it_prev: Pin = it.next().expect("self row"); // skip self
 
             // First, check the current row for semantic boundaries before the clicked position.
@@ -2714,7 +2672,7 @@ impl Screen {
 
         // The real end of the row is the final row in the soft-wrap.
         let end_pin: Pin = 'end_pin: {
-            for p in pin_iter::row_iterator(list, opts.pin, Direction::RightDown, None) {
+            for p in opts.pin.row_iterator(list, Direction::RightDown, None) {
                 let row = self.pin_row(p);
                 let cols = self.pin_cols(p);
 
@@ -2765,7 +2723,7 @@ impl Screen {
             let Some(whitespace) = opts.whitespace else {
                 break 'start start_pin;
             };
-            for p in pin_iter::cell_iterator(list, start_pin, Direction::RightDown, Some(end_pin)) {
+            for p in start_pin.cell_iterator(list, Direction::RightDown, Some(end_pin)) {
                 let cell = self.pin_cell(p);
                 if !cell.has_text() {
                     continue;
@@ -2787,7 +2745,7 @@ impl Screen {
             let Some(whitespace) = opts.whitespace else {
                 break 'end end_pin;
             };
-            for p in pin_iter::cell_iterator(list, end_pin, Direction::LeftUp, Some(start_pin)) {
+            for p in end_pin.cell_iterator(list, Direction::LeftUp, Some(start_pin)) {
                 let cell = self.pin_cell(p);
                 if !cell.has_text() {
                     continue;
@@ -2852,7 +2810,7 @@ impl Screen {
         } else {
             Direction::LeftUp
         };
-        for pin in pin_iter::cell_iterator(list, start, dir, Some(end)) {
+        for pin in start.cell_iterator(list, dir, Some(end)) {
             // Boundary conditions
             match dir {
                 Direction::RightDown => {
@@ -2900,7 +2858,7 @@ impl Screen {
 
         // Go forwards to find our end boundary
         let end: Pin = 'end: {
-            let mut it = pin_iter::cell_iterator(list, pin, Direction::RightDown, None);
+            let mut it = pin.cell_iterator(list, Direction::RightDown, None);
             let mut prev = it.next().expect("start cell"); // Consume one, our start
             for p in it {
                 let (row, cell) = {
@@ -2933,7 +2891,7 @@ impl Screen {
 
         // Go backwards to find our start boundary
         let start: Pin = 'start: {
-            let mut it = pin_iter::cell_iterator(list, pin, Direction::LeftUp, None);
+            let mut it = pin.cell_iterator(list, Direction::LeftUp, None);
             let mut prev = it.next().expect("start cell"); // Consume one, our start
             for p in it {
                 let (row, cell) = {
@@ -2987,20 +2945,22 @@ impl Screen {
         let prompt_pin: Pin = 'prompt: {
             // If we have a prompt above this point (including this point),
             // then thats the prompt we want to capture output from.
-            if let Some(p) = pin_iter::prompt_iterator(list, pin, Direction::LeftUp, None).next() {
+            if let Some(p) = pin.prompt_iterator(list, Direction::LeftUp, None).next() {
                 break 'prompt p;
             }
 
             // If we don't have a prompt, then we assume that we're
             // capturing all the output up to the next prompt.
-            let next = pin_iter::prompt_iterator(list, pin, Direction::RightDown, None).next()?;
+            let next = pin
+                .prompt_iterator(list, Direction::RightDown, None)
+                .next()?;
 
             // We'll capture from the start of the screen to just above
             // the prompt and will trim the trailing whitespace.
             let start_pin = self.pages.get_top_left(Tag::Screen)?;
             let mut end_pin = next.up(list, 1)?;
             end_pin.x = self.pin_cols(end_pin) - 1;
-            for p in pin_iter::cell_iterator(list, end_pin, Direction::LeftUp, Some(start_pin)) {
+            for p in end_pin.cell_iterator(list, Direction::LeftUp, Some(start_pin)) {
                 end_pin = p;
                 if self.pin_cell(p).has_text() {
                     break;
@@ -3016,7 +2976,7 @@ impl Screen {
             .highlight_semantic_content(prompt_pin, SemanticContent::Output)?;
 
         // Trim our trailing whitespace
-        for p in pin_iter::cell_iterator(list, hl_end, Direction::LeftUp, Some(hl_start)) {
+        for p in hl_end.cell_iterator(list, Direction::LeftUp, Some(hl_start)) {
             hl_end = p;
             if self.pin_cell(p).has_text() {
                 break;
@@ -3091,7 +3051,7 @@ impl Screen {
             // We go row-by-row because soft-wrapped rows are still a single
             // line to a shell, so we can't just look at our page row.
             'row_it: for row_pin in
-                pin_iter::row_iterator(list, cursor_pin, Direction::RightDown, Some(click_pin))
+                cursor_pin.row_iterator(list, Direction::RightDown, Some(click_pin))
             {
                 let row = self.pin_row(row_pin);
                 let cells = self.pin_row_cells(row_pin);
@@ -3177,9 +3137,7 @@ impl Screen {
 
         // We go row-by-row because soft-wrapped rows are still a single
         // line to a shell, so we can't just look at our page row.
-        'row_it: for row_pin in
-            pin_iter::row_iterator(list, cursor_pin, Direction::LeftUp, Some(click_pin))
-        {
+        'row_it: for row_pin in cursor_pin.row_iterator(list, Direction::LeftUp, Some(click_pin)) {
             let row = self.pin_row(row_pin);
             let cells = self.pin_row_cells(row_pin);
 

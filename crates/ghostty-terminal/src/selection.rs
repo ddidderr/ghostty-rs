@@ -7,7 +7,6 @@
 use crate::{
     page::{Cell, Error},
     page_list::{Direction, PageList, Pin, TrackedPin},
-    pin_iter,
     point::{Coordinate, Point, Tag},
 };
 
@@ -447,7 +446,8 @@ impl Selection {
             }
 
             Adjustment::Left => {
-                let found = pin_iter::cell_iterator(list, end_pin, Direction::LeftUp, None)
+                let found = end_pin
+                    .cell_iterator(list, Direction::LeftUp, None)
                     .skip(1)
                     .find(|p| cell_has_text(list, *p));
                 if let Some(next) = found {
@@ -458,7 +458,8 @@ impl Selection {
             Adjustment::Right => {
                 // Step right, wrapping to the next row down at the start of each new line,
                 // until we find a non-empty cell.
-                let found = pin_iter::cell_iterator(list, end_pin, Direction::RightDown, None)
+                let found = end_pin
+                    .cell_iterator(list, Direction::RightDown, None)
                     .skip(1)
                     .find(|p| cell_has_text(list, *p));
                 if let Some(next) = found {

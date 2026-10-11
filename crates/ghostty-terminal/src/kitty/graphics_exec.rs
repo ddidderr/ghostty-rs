@@ -470,50 +470,14 @@ mod tests {
     use crate::terminal::{Options, Terminal};
     use ghostty_vt::kitty::graphics_command::{Parser, TransmissionFormat};
 
-    /// A `Terminal` plus the image storage that, once integrated, lives in
-    /// `Screen.kitty_images`.
-    // TODO(integration): replace with `Terminal` once `Terminal` implements
-    // `ExecTerminal` via `screen.kitty_images: ImageStorage`.
-    struct Harness {
-        t: Terminal,
-        storage: ImageStorage,
-    }
-
-    impl Harness {
-        fn new(cols: u16, rows: u16) -> Self {
-            Harness {
-                t: Terminal::new(Options::new(cols, rows)).unwrap(),
-                storage: ImageStorage::default(),
-            }
-        }
-    }
-
-    impl ExecTerminal for Harness {
-        fn kitty_parts(&mut self) -> (&mut ImageStorage, &mut PageList) {
-            (&mut self.storage, &mut self.t.screens.active_mut().pages)
-        }
-        fn exec_info(&self) -> TerminalInfo {
-            TerminalInfo::from_terminal(&self.t)
-        }
-        fn exec_cursor_pin(&self) -> Pin {
-            self.t.screens.active().cursor_pin()
-        }
-        fn exec_index(&mut self) -> Result<(), crate::page::Error> {
-            self.t.index()
-        }
-        fn exec_set_cursor_pos(&mut self, row: usize, col: usize) {
-            self.t.set_cursor_pos(row, col);
-        }
-    }
-
-    fn run(h: &mut Harness, s: &str) -> Option<Response> {
+    fn run(h: &mut Terminal, s: &str) -> Option<Response> {
         let cmd = Parser::parse_string(s.as_bytes()).unwrap();
-        execute(h, &cmd)
+        h.kitty_graphics_command(&cmd)
     }
 
     #[test]
     fn kittygfx_more_chunks_with_q_1() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         // Initial chunk has q=1
         let resp = run(&mut t, "a=T,f=24,t=d,i=1,s=1,v=2,c=10,r=1,m=1,q=1;////");
@@ -526,7 +490,7 @@ mod tests {
 
     #[test]
     fn kittygfx_more_chunks_with_q_0() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         // Initial chunk has q=0
         let resp = run(&mut t, "a=t,f=24,t=d,s=1,v=2,c=10,r=1,m=1,i=1,q=0;////");
@@ -539,7 +503,7 @@ mod tests {
 
     #[test]
     fn kittygfx_more_chunks_with_chunk_increasing_q() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         // Initial chunk has q=0
         let resp = run(&mut t, "a=t,f=24,t=d,s=1,v=2,c=10,r=1,m=1,i=1,q=0;////");
@@ -552,18 +516,18 @@ mod tests {
 
     #[test]
     fn kittygfx_default_format_is_rgba() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         let resp = run(&mut t, "a=t,t=d,i=1,s=1,v=2,c=10,r=1;///////////").unwrap();
         assert!(resp.ok());
 
-        let img = t.storage.image_by_id(1).unwrap();
+        let img = t.screen().kitty_images.image_by_id(1).unwrap();
         assert_eq!(img.format, TransmissionFormat::Rgba);
     }
 
     #[test]
     fn kittygfx_test_valid_u32_expect_invalid_image_id() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         let resp = run(&mut t, "a=p,i=4294967295").unwrap();
         assert!(!resp.ok());
@@ -572,7 +536,7 @@ mod tests {
 
     #[test]
     fn kittygfx_test_valid_i32_expect_invalid_image_id() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         let resp = run(&mut t, "a=p,i=1,z=-2147483648").unwrap();
         assert!(!resp.ok());
@@ -581,7 +545,7 @@ mod tests {
 
     #[test]
     fn kittygfx_no_response_with_no_image_id_or_number() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         let resp = run(&mut t, "a=t,f=24,t=d,s=1,v=2,c=10,r=1,i=0,I=0;////////");
         assert!(resp.is_none());
@@ -589,7 +553,7 @@ mod tests {
 
     #[test]
     fn kittygfx_no_response_with_no_image_id_or_number_load_and_display() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
 
         let resp = run(&mut t, "a=T,f=24,t=d,s=1,v=2,c=10,r=1,i=0,I=0;////////");
         assert!(resp.is_none());
@@ -597,19 +561,19 @@ mod tests {
 
     #[test]
     fn kittygfx_disabled_storage_never_responds() {
-        let mut t = Harness::new(5, 5);
-        t.storage.total_limit = 0;
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
+        t.screen_mut().kitty_images.total_limit = 0;
         assert!(run(&mut t, "a=q,i=1,s=1,v=1,f=24;AAAA").is_none());
     }
 
     #[test]
     fn kittygfx_query_ok_and_error() {
-        let mut t = Harness::new(5, 5);
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
         let resp = run(&mut t, "a=q,i=31,s=1,v=1,f=24;AAAA").unwrap();
         assert!(resp.ok());
         assert_eq!(resp.id, 31);
         // Nothing is stored by a query.
-        assert!(t.storage.images.is_empty());
+        assert!(t.screen().kitty_images.images.is_empty());
 
         // Without an ID there is nothing to respond to (error is only logged).
         assert!(run(&mut t, "a=q,s=1,v=1,f=24;AAAA").is_none());
@@ -617,28 +581,108 @@ mod tests {
 
     #[test]
     fn kittygfx_transmit_and_display_moves_cursor() {
-        let mut t = Harness::new(10, 10);
-        t.t.width_px = 100;
-        t.t.height_px = 100;
+        let mut t = Terminal::new(Options::new(10, 10)).unwrap();
+        t.width_px = 100;
+        t.height_px = 100;
         // 1x2 pixel image shown in 3 columns x 2 rows.
         let resp = run(&mut t, "a=T,f=24,t=d,i=5,s=1,v=2,c=3,r=2;////////").unwrap();
         assert!(resp.ok());
         assert_eq!(resp.id, 5);
-        assert_eq!(t.storage.placements.len(), 1);
+        assert_eq!(t.screen().kitty_images.placements.len(), 1);
 
         // The cursor moves to the last row of the image, right of its last column.
-        let cursor = &t.t.screens.active().cursor;
+        let cursor = &t.screens.active().cursor;
         assert_eq!((cursor.x, cursor.y), (3, 1));
     }
 
     #[test]
     fn kittygfx_delete_all() {
-        let mut t = Harness::new(10, 10);
+        let mut t = Terminal::new(Options::new(10, 10)).unwrap();
         run(&mut t, "a=T,f=24,t=d,i=5,s=1,v=2,C=1;////////").unwrap();
-        assert_eq!(t.storage.placements.len(), 1);
+        assert_eq!(t.screen().kitty_images.placements.len(), 1);
         let resp = run(&mut t, "a=d,d=A");
         assert!(resp.is_none());
-        assert!(t.storage.placements.is_empty());
-        assert!(t.storage.images.is_empty());
+        assert!(t.screen().kitty_images.placements.is_empty());
+        assert!(t.screen().kitty_images.images.is_empty());
+    }
+    #[test]
+    fn kittygfx_screen_lifecycle_releases_placement_pins() {
+        let mut t = Terminal::new(Options::new(10, 10)).unwrap();
+        let baseline = t.screen().pages.count_tracked_pins();
+        run(&mut t, "a=T,f=24,t=d,i=5,s=1,v=2,C=1;////////").unwrap();
+        assert_eq!(t.screen().pages.count_tracked_pins(), baseline + 1);
+        let cloned = t
+            .screen()
+            .clone_screen(
+                crate::point::Point::Active(crate::point::Coordinate::default()),
+                None,
+            )
+            .unwrap();
+        assert!(cloned.kitty_images.images.is_empty());
+        assert!(cloned.kitty_images.placements.is_empty());
+        let screen = t.screen_mut();
+        screen
+            .kitty_images
+            .set_limit(&mut screen.pages, 1024)
+            .unwrap();
+        screen.reset().unwrap();
+        assert!(screen.kitty_images.images.is_empty());
+        assert!(screen.kitty_images.placements.is_empty());
+        assert!(screen.kitty_images.dirty);
+        assert_eq!(
+            screen.kitty_images.total_limit,
+            ImageStorage::default().total_limit
+        );
+        assert_eq!(screen.pages.count_tracked_pins(), baseline);
+        screen.pages.assert_integrity();
+    }
+
+    #[test]
+    fn kittygfx_erase_display_deletes_at_reference_hooks() {
+        use ghostty_vt::csi::EraseDisplay;
+        for mode in [EraseDisplay::Complete, EraseDisplay::ScrollComplete] {
+            let mut t = Terminal::new(Options::new(10, 10)).unwrap();
+            let baseline = t.screen().pages.count_tracked_pins();
+            run(&mut t, "a=T,f=24,t=d,i=5,s=1,v=2,C=1;////////").unwrap();
+            t.erase_display(EraseDisplay::Below, false);
+            assert_eq!(t.screen().kitty_images.placements.len(), 1);
+            t.erase_display(mode, false);
+            assert!(t.screen().kitty_images.images.is_empty());
+            assert!(t.screen().kitty_images.placements.is_empty());
+            assert_eq!(t.screen().pages.count_tracked_pins(), baseline);
+        }
+    }
+
+    #[test]
+    fn kittygfx_alternate_inherits_limit_and_keeps_separate_storage() {
+        use crate::screen_set::Key;
+        let mut t = Terminal::new(Options::new(10, 10)).unwrap();
+        let screen = t.screen_mut();
+        screen
+            .kitty_images
+            .set_limit(&mut screen.pages, 1024)
+            .unwrap();
+        run(&mut t, "a=T,f=24,t=d,i=5,s=1,v=2,C=1;////////").unwrap();
+        t.switch_screen(Key::Alternate).unwrap();
+        assert_eq!(t.screen().kitty_images.total_limit, 1024);
+        assert!(t.screen().kitty_images.dirty);
+        assert!(t.screen().kitty_images.images.is_empty());
+        run(&mut t, "a=T,f=24,t=d,i=7,s=1,v=2,C=1;////////").unwrap();
+        t.full_reset();
+        assert_eq!(t.screens.active_key, Key::Primary);
+        assert!(t.screens.get(Key::Alternate).is_none());
+        assert!(t.screen().kitty_images.images.is_empty());
+        assert_eq!(t.screen().pages.count_tracked_pins(), 2);
+    }
+
+    #[test]
+    fn kittygfx_legacy_entrypoint_and_reset_pending_transfer() {
+        let mut t = Terminal::new(Options::new(5, 5)).unwrap();
+        let mut cmd = Parser::parse_string(b"a=t,f=24,t=d,s=1,v=2,i=1;////////").unwrap();
+        assert!(t.kitty_graphics(&mut cmd).unwrap().ok());
+        assert!(run(&mut t, "a=t,f=24,t=d,s=1,v=2,i=2,m=1;////").is_none());
+        assert!(t.screen().kitty_images.loading.is_some());
+        t.screen_mut().reset().unwrap();
+        assert!(t.screen().kitty_images.loading.is_none());
     }
 }

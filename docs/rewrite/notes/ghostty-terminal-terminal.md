@@ -3,16 +3,15 @@
 ## Ported
 | Zig | Rust | tests |
 |---|---|---|
-| Terminal.zig | `terminal.rs` (+ `terminal/tests/p1..p8.rs`, helpers in `tests/mod.rs`) | 372 of 372 (370 pass, 2 `#[ignore = "pagelist: ..."]`) |
+| Terminal.zig | `terminal.rs` (+ `terminal/tests/p1..p8.rs`, helpers in `tests/mod.rs`) | 372 of 372 (all pass) |
 | stream_readonly.zig | `stream_readonly.rs` | 33 of 33 |
 | StringMap.zig | `string_map.rs` (uses the `onig` crate; `ghostty-config` is a dev-dependency for the URL regex tests; `Screen`'s stand-in `StringMap` is now a re-export) | 3 of 3 |
 
-Ignored tests (PageList gaps, see `ghostty-terminal-pagelist-requests.md`):
-`terminal_index_bottom_of_scroll_region_clear_hyperlinks` (erase_row_bounded keeps the row hyperlink flag) and
-`terminal_resize_with_wraparound_on` (reflow to fewer cols loses a row in the active dump).
-
-Small non-test deviations: `glitch.txt` copied next to the tests (used by the glitch-text test); zero-width attach in
-`print` restores the row dirty flag because `Page::append_grapheme` marks rows dirty (Zig does not; request in the pagelist file).
+The two formerly blocked tests (`terminal_index_bottom_of_scroll_region_clear_hyperlinks`
+and `terminal_resize_with_wraparound_on`) are enabled and pass. `glitch.txt`
+remains next to the tests. The zero-width grapheme dirty-state workaround and
+local cross-page row snapshot helper have been removed: Page/PageList now own
+those semantics.
 
 ## API overview (for termio / renderer / core)
 ```rust
@@ -35,8 +34,38 @@ let text = t.plain_string()?;                             // viewport as text (p
 - Termio's own handler can call the same `Terminal` methods; it should handle side-effect actions (queries, title, clipboard, bell, APC/DCS) itself and delegate the rest, mirroring `stream_readonly::Handler::vt`.
 - Tests: Zig tests that mixed `s.nextSlice` and direct `t.` calls use `feed(&mut t, bytes)` (fresh stream per call) or `t.vt_stream()` + `s.handler.terminal`.
 
-## TODO(integration)
-- `Terminal::kitty_graphics(cmd)` is a stub returning `None` (Zig `kitty.graphics.execute`); `kitty_images_delete_all` (erase display complete/scroll complete) only sets `kitty_images.dirty`; kitty image storage limit on lazily-created screens uses `Options::DEFAULT`. `kitty_images.dirty = true` hooks are in place at every Zig location (index, scroll_up, insert/delete lines, switch_screen, Screen::scroll).
-- tmux control-mode viewer: not required by Terminal/stream_readonly; not ported here.
-- `clone_partial_row_between` local helper (pagelist request).
-- Oniguruma: `onig` crate lacks the retry-limit-in-search setter; only retry-limit-in-match is set.
+## Integration complete (2026-10-11)
+
+- `Terminal` implements `kitty::graphics_exec::ExecTerminal` using its active
+  screen's storage/pages and real cursor/index operations.
+- `kitty_graphics` executes commands and returns real responses. Display erasure
+  uses `Delete::All(true)` at exactly the reference `.complete` and
+  `.scroll_complete` hooks (not `.scrollback`). Lazy alternate-screen creation
+  inherits the primary image limit. All existing dirty hooks remain at their
+  reference locations, including both branches of shared insert/delete-lines.
+- Placeholder printing uses the shared Kitty Unicode constant. Full reset
+  tears down alternate-screen images and resets primary-screen storage.
+- Pin iteration and partial row copying delegate to PageList. Reset/erase no
+  longer swallow internal errors. Existing public Result APIs are retained.
+- Reviewed all workaround/TODO/stand-in/Zig comments. Remaining functional TODO
+  comments are inherited from Terminal.zig, not integration gaps.
+
+## API changes
+
+Added `kitty_graphics_command(&Command) -> Option<Response>` and the
+`ExecTerminal` implementation. Existing `kitty_graphics(&mut Command)` is
+unchanged and delegates to the new entrypoint. No downstream callers changed.
+
+## Remaining representation limitations
+
+- Oniguruma: `onig` lacks the retry-limit-in-search setter; only
+  retry-limit-in-match is set.
+- tmux control-mode viewer is implemented separately in `tmux/`; it is not
+  part of Terminal/stream_readonly's integration surface.
+
+## Quality gate
+
+1252 unit tests and 1 documentation test pass, none failed or ignored.
+`cargo clippy -p ghostty-terminal --all-targets -- -D warnings`, rustfmt, and
+`cargo build -p ghostty-font -p ghostty-renderer -p ghostty-termio` pass.
+No version bump or commit was made.

@@ -20,9 +20,12 @@
 //! To use this, initialize the render state to empty, then call `update`
 //! on each frame to update the state to the latest terminal state.
 //!
-//! ```ignore
+//! ```
+//! # use ghostty_terminal::{render::RenderState, terminal::{Terminal, Options}};
+//! # let mut terminal = Terminal::new(Options::new(80, 24))?;
 //! let mut state = RenderState::new();
 //! state.update(&mut terminal)?;
+//! # Ok::<(), ghostty_terminal::page::Error>(())
 //! ```
 //!
 //! Note: the render state retains as much memory as possible between updates

@@ -530,10 +530,11 @@ impl PageList {
             .filter(|s| s.generation == h.generation)?
             .pin
     }
-    /// Update a tracked location to another valid cell.
+    /// Update a tracked location. The node must be live; row bounds may be
+    /// temporarily exceeded while a caller repairs cursor state after splitting.
     pub fn set_tracked_pin(&mut self, h: TrackedPin, p: Pin) -> Result<(), Error> {
-        if !self.pin_is_valid(p) {
-            return Err(Error::InvalidCoordinate);
+        if self.node(p.node).is_none() {
+            return Err(Error::InvalidId);
         }
         let slot = self
             .pins
@@ -813,12 +814,12 @@ impl PageList {
         }
     }
     fn fixup_viewport(&mut self) {
-        if self.viewport == Viewport::Pin
-            && self
-                .viewport_pin
-                .and_then(|h| self.tracked_pin(h))
-                .is_some_and(|p| self.pin_is_active(p))
-        {
+        let pin = match self.viewport {
+            Viewport::Active => return,
+            Viewport::Top => self.get_top_left(Tag::Screen),
+            Viewport::Pin => self.viewport_pin.and_then(|h| self.tracked_pin(h)),
+        };
+        if pin.is_some_and(|p| self.pin_is_active(p)) {
             self.viewport = Viewport::Active;
         }
     }
@@ -1054,6 +1055,10 @@ impl PageList {
     }
     /// Remove an inclusive row range, regrowing erased active rows.
     pub fn erase_rows(&mut self, start: Point, end: Option<Point>) -> Result<(), Error> {
+        // An empty history produces no chunks in the reference iterator.
+        if start.tag() == Tag::History && self.active_offset() == 0 && end.is_none() {
+            return Ok(());
+        }
         let a = self
             .pin(start)
             .and_then(|p| self.screen_row(p))
@@ -1085,9 +1090,7 @@ impl PageList {
                     .store(cached - (b - a), Ordering::Relaxed);
             }
         }
-        if self.viewport == Viewport::Top && self.active_offset() == 0 {
-            self.viewport = Viewport::Active;
-        }
+        self.fixup_viewport();
         Ok(())
     }
     /// Remove one row, shifting following rows without changing page dimensions.
@@ -1542,6 +1545,79 @@ impl Pin {
             .saturating_add_signed(dx)
             .min(usize::from(list.cols - 1)) as u16;
         Some(p)
+    }
+}
+impl Pin {
+    /// Iterate cells toward an inclusive limit row. The limit column is ignored.
+    pub fn cell_iterator(
+        self,
+        list: &PageList,
+        direction: Direction,
+        limit: Option<Pin>,
+    ) -> CellIterator<'_> {
+        let (front, back) = match direction {
+            Direction::RightDown => (
+                Some(self),
+                limit
+                    .or_else(|| list.get_bottom_right(Tag::Screen))
+                    .map(|p| Pin {
+                        x: list.cols - 1,
+                        ..p
+                    }),
+            ),
+            Direction::LeftUp => (
+                limit
+                    .or_else(|| list.get_top_left(Tag::Screen))
+                    .map(|p| Pin { x: 0, ..p }),
+                Some(self),
+            ),
+        };
+        CellIterator {
+            list,
+            front,
+            back,
+            direction,
+        }
+    }
+    /// Iterate rows directly from a pin, with an inclusive limit row.
+    pub fn row_iterator(
+        self,
+        list: &PageList,
+        direction: Direction,
+        limit: Option<Pin>,
+    ) -> RowIterator<'_> {
+        let cells = self.cell_iterator(list, direction, limit);
+        RowIterator {
+            list,
+            front: cells.front.map(|p| Pin { x: 0, ..p }),
+            back: cells.back.map(|p| Pin { x: 0, ..p }),
+            direction,
+        }
+    }
+    /// Iterate maximal page chunks directly from a pin.
+    pub fn page_iterator(
+        self,
+        list: &PageList,
+        direction: Direction,
+        limit: Option<Pin>,
+    ) -> PageIterator<'_> {
+        PageIterator {
+            rows: self.row_iterator(list, direction, limit),
+        }
+    }
+    /// Iterate prompt starts directly from a pin, with an inclusive limit row.
+    pub fn prompt_iterator(
+        self,
+        list: &PageList,
+        direction: Direction,
+        limit: Option<Pin>,
+    ) -> PromptIterator<'_> {
+        PromptIterator {
+            list,
+            current: Some(self),
+            limit,
+            direction,
+        }
     }
 }
 /// A double-ended cell iterator yielding stable untracked locations.
@@ -2350,7 +2426,9 @@ impl PageList {
             })?;
             self.resize_cols(cols, opts.cursor)?;
         }
-        self.fixup_viewport();
+        if self.viewport == Viewport::Pin {
+            self.fixup_viewport();
+        }
         Ok(())
     }
     fn resize_without_reflow(&mut self, opts: Resize) -> Result<(), Error> {
@@ -2400,12 +2478,52 @@ impl PageList {
                     while self.total_rows < usize::from(rows) {
                         self.grow()?;
                     }
-                    self.fixup_viewport();
+                    if self.viewport == Viewport::Pin {
+                        self.fixup_viewport();
+                    }
                 }
             }
         }
         Ok(())
     }
+    /// Clone a complete row between two page locations, ignoring columns.
+    pub fn clone_row_between(&mut self, src: Pin, dst: Pin) -> Result<(), Error> {
+        if src.node == dst.node {
+            let cols = usize::from(self.node(src.node).ok_or(Error::InvalidId)?.data.size.cols);
+            return self.clone_partial_row_between(src, dst, 0, cols);
+        }
+        self.copy_row(src.node, src.y, dst.node, dst.y)
+    }
+
+    /// Clone columns `[left, right)` between rows without a temporary row copy.
+    pub fn clone_partial_row_between(
+        &mut self,
+        src: Pin,
+        dst: Pin,
+        left: usize,
+        right: usize,
+    ) -> Result<(), Error> {
+        let len = right.checked_sub(left).ok_or(Error::InvalidCoordinate)?;
+        if src.node == dst.node {
+            let page = &mut self.node_mut(src.node).ok_or(Error::InvalidId)?.data;
+            return page.clone_partial_row_within(
+                usize::from(src.y),
+                usize::from(dst.y),
+                left,
+                len,
+            );
+        }
+        let (source, dest) = self.pages_for_copy(src.node, dst.node)?;
+        dest.clone_partial_row_from(
+            source,
+            usize::from(src.y),
+            usize::from(dst.y),
+            left,
+            left,
+            len,
+        )
+    }
+
     /// Borrow distinct source and destination pages without snapshots or unsafe
     /// pointers. Their slab slots remain stable for the duration of the copy.
     fn copy_row(&mut self, src: NodeId, src_y: u16, dst: NodeId, dst_y: u16) -> Result<(), Error> {
@@ -2413,7 +2531,9 @@ impl PageList {
         dest.clone_row_from(source, usize::from(src_y), usize::from(dst_y))
     }
     fn pages_for_copy(&mut self, src: NodeId, dst: NodeId) -> Result<(&Page, &mut Page), Error> {
-        assert_ne!(src.index, dst.index);
+        if self.node(src).is_none() || self.node(dst).is_none() || src.index == dst.index {
+            return Err(Error::InvalidId);
+        }
         let (source, dest) = if src.index < dst.index {
             let (left, right) = self.nodes.split_at_mut(dst.index);
             (left[src.index].as_ref(), right[0].as_mut())
@@ -7448,5 +7568,92 @@ mod tests {
         assert_eq!(s.viewport, Viewport::Pin);
         assert_eq!(s.viewport_row_offset(), 0);
         finish(&s);
+    }
+    #[test]
+    fn pin_iterators_use_inclusive_rows_across_pages() {
+        let mut list = PageList::init(4, 4, None).unwrap();
+        list.split(list.pin(active_point(0, 2)).unwrap()).unwrap();
+        let start = list.pin(active_point(2, 1)).unwrap();
+        let limit = list.pin(active_point(1, 2)).unwrap();
+        let cells: Vec<_> = start
+            .cell_iterator(&list, Direction::RightDown, Some(limit))
+            .collect();
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0], start);
+        assert_eq!(cells[5].x, 3);
+        let reverse: Vec<_> = limit
+            .cell_iterator(&list, Direction::LeftUp, Some(start))
+            .collect();
+        assert_eq!(reverse.len(), 6);
+        assert_eq!(reverse[0], limit);
+        assert_eq!(reverse[5].x, 0);
+        for (start, limit, direction) in [
+            (start, limit, Direction::RightDown),
+            (limit, start, Direction::LeftUp),
+        ] {
+            assert_eq!(start.row_iterator(&list, direction, Some(limit)).count(), 2);
+            let pages: Vec<_> = start.page_iterator(&list, direction, Some(limit)).collect();
+            assert_eq!(pages.len(), 2);
+            assert!(pages.iter().all(|c| c.end - c.start == 1));
+        }
+    }
+
+    #[test]
+    fn row_copy_between_pages_preserves_managed_values_and_metadata() {
+        let mut list = PageList::init(4, 4, None).unwrap();
+        list.split(list.pin(active_point(0, 2)).unwrap()).unwrap();
+        let src = list.pin(active_point(0, 0)).unwrap();
+        let dst = list.pin(active_point(0, 2)).unwrap();
+        let page = &mut list.node_mut(src.node).unwrap().data;
+        page.cells[1] = Cell::init('a' as u32);
+        page.append_grapheme(1, 0, 0x301).unwrap();
+        let id = page
+            .insert_hyperlink(crate::hyperlink::Hyperlink {
+                uri: b"https://example.com".to_vec(),
+                id: crate::hyperlink::HyperlinkId::Implicit(1),
+            })
+            .unwrap();
+        page.set_hyperlink(1, 0, id).unwrap();
+        page.rows[0].set_kitty_virtual_placeholder(true);
+        page.rows[0].set_dirty(false);
+        let page = &mut list.node_mut(dst.node).unwrap().data;
+        page.cells[0] = Cell::init('z' as u32);
+        page.rows[0].set_wrap(true);
+        page.rows[0].set_dirty(true);
+        list.clone_partial_row_between(src, dst, 1, 2).unwrap();
+        let page = &list.node(dst.node).unwrap().data;
+        assert_eq!(page.get_cells(0).unwrap()[0].codepoint(), 'z' as u32);
+        assert!(page.rows[0].wrap());
+        assert!(page.rows[0].dirty());
+        assert!(page.rows[0].kitty_virtual_placeholder());
+        assert_eq!(
+            page.lookup_grapheme(page.cell_index(1, 0).unwrap()),
+            Some(&[0x301][..])
+        );
+        assert!(
+            page.lookup_hyperlink(page.cell_index(1, 0).unwrap())
+                .is_some()
+        );
+        list.clone_row_between(src, dst).unwrap();
+        let page = &list.node(dst.node).unwrap().data;
+        assert_eq!(page.get_cells(0).unwrap()[0].codepoint(), 0);
+        assert!(!page.rows[0].wrap());
+        assert!(!page.rows[0].dirty());
+        list.assert_integrity();
+    }
+
+    #[test]
+    fn erase_empty_history_and_top_viewport() {
+        let mut list = PageList::init(4, 4, None).unwrap();
+        list.erase_rows(Point::History(Coordinate::default()), None)
+            .unwrap();
+        assert_eq!(list.total_rows, 4);
+        list.grow().unwrap();
+        list.scroll(Scroll::Top);
+        list.erase_rows(Point::History(Coordinate::default()), None)
+            .unwrap();
+        assert_eq!(list.total_rows, 4);
+        assert_eq!(list.viewport, Viewport::Active);
+        list.assert_integrity();
     }
 }

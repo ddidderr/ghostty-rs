@@ -845,7 +845,6 @@ impl Page {
         self.grapheme_allocations.insert(i, a);
         self.cells[i].set_content_tag(ContentTag::CodepointGrapheme);
         self.rows[y].set_grapheme(true);
-        self.rows[y].set_dirty(true);
         Ok(())
     }
     /// Append one additional codepoint, retaining allocation chunk semantics.
@@ -873,7 +872,6 @@ impl Page {
         }
         self.grapheme_data[range.end] = cp;
         range.end += 1;
-        self.rows[y].set_dirty(true);
         Ok(())
     }
     /// Release a cell's additional codepoints.
@@ -930,6 +928,12 @@ impl Page {
         link: Hyperlink,
         preferred: Option<u16>,
     ) -> Result<u16, Error> {
+        // Existing live links already own their strings. Retain them before
+        // attempting another allocation on a potentially full page.
+        if let Some(id) = self.hyperlink_set.lookup(&link) {
+            self.hyperlink_set.r#use(id).map_err(|_| Error::InvalidId)?;
+            return Ok(id);
+        }
         let allocations = self.allocate_hyperlink_strings(&link)?;
         let result = if let Some(id) = preferred {
             self.hyperlink_set
@@ -1384,6 +1388,31 @@ impl Page {
             let to = original_row.cells() + dst_x;
             self.cells[to..to + len].copy_from_slice(&src.cells[from..from + len]);
         }
+        let managed = self.rows[dst_y];
+        let mut metadata = source_row;
+        metadata.set_cells(original_row.cells());
+        if len < usize::from(self.size.cols) {
+            metadata.set_wrap(original_row.wrap());
+            metadata.set_wrap_continuation(original_row.wrap_continuation());
+            metadata.set_grapheme(managed.grapheme());
+            metadata.set_styled(managed.styled());
+            metadata.set_hyperlink(managed.hyperlink());
+            metadata.set_dirty(source_row.dirty() || original_row.dirty());
+        }
+        self.rows[dst_y] = metadata;
+        Ok(())
+    }
+    /// Clone columns within a page with the same row metadata rules as a cross-page copy.
+    pub(crate) fn clone_partial_row_within(
+        &mut self,
+        src_y: usize,
+        dst_y: usize,
+        left: usize,
+        len: usize,
+    ) -> Result<(), Error> {
+        let source_row = *self.get_row(src_y).ok_or(Error::InvalidCoordinate)?;
+        let original_row = *self.get_row(dst_y).ok_or(Error::InvalidCoordinate)?;
+        self.clone_cells_within(src_y, dst_y, left, left, len)?;
         let managed = self.rows[dst_y];
         let mut metadata = source_row;
         metadata.set_cells(original_row.cells());
@@ -2382,5 +2411,39 @@ mod tests {
         assert!(p.exact_row_capacity(0, 1).unwrap().hyperlink_bytes >= 4 * 48);
         let q = clone_exact(&p, 1);
         assert_eq!(q.hyperlink_count(), 50);
+    }
+    #[test]
+    fn grapheme_append_preserves_row_dirty_state() {
+        let mut p = page();
+        p.cells[0] = Cell::init('a' as u32);
+        p.rows[0].set_dirty(false);
+        for _ in 0..6 {
+            p.append_grapheme(0, 0, 0x301).unwrap();
+            assert!(!p.rows[0].dirty());
+        }
+        p.rows[0].set_dirty(true);
+        p.append_grapheme(0, 0, 0x302).unwrap();
+        assert!(p.rows[0].dirty());
+        p.assert_integrity();
+    }
+
+    #[test]
+    fn hyperlink_dedup_succeeds_with_full_string_allocator() {
+        let mut p = Page::init(Capacity {
+            cols: 2,
+            rows: 1,
+            string_bytes: 32,
+            ..Capacity::default()
+        })
+        .unwrap();
+        let link = Hyperlink {
+            uri: vec![b'a'; Page::layout(p.capacity).string_alloc_layout.bitmap_count * 64 * 32],
+            id: HyperlinkId::Implicit(1),
+        };
+        let id = p.insert_hyperlink(link.clone()).unwrap();
+        assert!(!p.can_allocate_string(32));
+        assert_eq!(p.insert_hyperlink(link).unwrap(), id);
+        assert_eq!(p.hyperlink_set.ref_count(id), 2);
+        assert!(!p.can_allocate_string(32));
     }
 }

@@ -21,7 +21,6 @@
 use crate::{
     page::{Cell, ContentTag, Page, SemanticContent, SemanticPrompt as RowPrompt, Wide},
     page_list::{Direction, IncreaseCapacity, Pin},
-    pin_iter,
     point::{Coordinate, Point},
     screen::{
         CharsetState, InputClear, Options as ScreenOptions, Resize as ScreenResize, SavedCursor,
@@ -53,7 +52,7 @@ pub use crate::page::Error;
 const TABSTOP_INTERVAL: usize = 8;
 
 /// The unicode codepoint for kitty graphics placeholders.
-const KITTY_PLACEHOLDER: u32 = 0x10EEEE;
+use crate::kitty::graphics_unicode::PLACEHOLDER as KITTY_PLACEHOLDER;
 
 /// The set of screens behind this terminal (e.g. primary vs alternate).
 #[derive(Debug)]
@@ -608,15 +607,7 @@ impl Terminal {
                 }
             }
 
-            // Zig's appendGrapheme does not touch the row dirty flag, but the
-            // Rust Page::append_grapheme marks the row dirty; preserve the old
-            // flag (see pagelist requests).
-            let was_dirty = self.screen().cursor_row().dirty();
-            let r = self.screen_mut().append_grapheme(prev_x, c);
-            if !was_dirty {
-                self.screen_mut().cursor_row_mut().set_dirty(false);
-            }
-            return r;
+            return self.screen_mut().append_grapheme(prev_x, c);
         }
 
         // We have a printable character, save it
@@ -2079,60 +2070,6 @@ impl Terminal {
         });
     }
 
-    /// Copy columns `[left, right)` of a row of one page to a row of another
-    /// page in the same list (Zig: `Page.clonePartialRowFrom` across two page
-    /// nodes).
-    ///
-    /// TODO(integration): replace with a `PageList` helper (see
-    /// ghostty-terminal-pagelist-requests.md).
-    fn clone_partial_row_between(
-        &mut self,
-        src: Pin,
-        dst: Pin,
-        left: usize,
-        right: usize,
-    ) -> Result<(), Error> {
-        let len = right - left;
-        let (source_row, cells) = {
-            let sp = self.screen().page(src.node);
-            let source_row = sp.rows[usize::from(src.y)];
-            let cells: Vec<_> = (left..right)
-                .map(|x| {
-                    sp.cell_index(x, usize::from(src.y))
-                        .map(|i| sp.export_cell(i))
-                })
-                .collect::<Result<_, Error>>()?;
-            (source_row, cells)
-        };
-        let dp = self.screen_mut().page_mut(dst.node);
-        let dy = usize::from(dst.y);
-        let original_row = dp.rows[dy];
-        dp.clear_cells(dy, left, right, false)?;
-        if source_row.managed_memory() {
-            for (n, c) in cells.iter().enumerate() {
-                dp.import_cell(left + n, dy, c)?;
-            }
-        } else {
-            let to = original_row.cells() + left;
-            for (n, c) in cells.iter().enumerate() {
-                dp.cells[to + n] = c.cell;
-            }
-        }
-        let managed = dp.rows[dy];
-        let mut metadata = source_row;
-        metadata.set_cells(original_row.cells());
-        if len < usize::from(dp.size.cols) {
-            metadata.set_wrap(original_row.wrap());
-            metadata.set_wrap_continuation(original_row.wrap_continuation());
-            metadata.set_grapheme(managed.grapheme());
-            metadata.set_styled(managed.styled());
-            metadata.set_hyperlink(managed.hyperlink());
-            metadata.set_dirty(source_row.dirty() || original_row.dirty());
-        }
-        dp.rows[dy] = metadata;
-        Ok(())
-    }
-
     /// Shared implementation of insert_lines / delete_lines. When `insert` is
     /// true rows are shifted down from the cursor (iterating bottom-up),
     /// otherwise rows are shifted up (iterating top-down).
@@ -2229,7 +2166,7 @@ impl Terminal {
                 // If our page doesn't match, then we need to do a copy from
                 // one page to another. This is the slow path.
                 if src_p.node != dst_p.node {
-                    if let Err(err) = self.clone_partial_row_between(
+                    if let Err(err) = self.screen_mut().pages.clone_partial_row_between(
                         src_p,
                         dst_p,
                         usize::from(sr.left),
@@ -2745,7 +2682,9 @@ impl Terminal {
         // Go from the bottom of the active up and see if we're
         // at a prompt.
         // (The Zig loop decides on the first row it sees.)
-        let Some(p) = pin_iter::row_iterator(&scr.pages, active_br, Direction::LeftUp, top).next()
+        let Some(p) = active_br
+            .row_iterator(&scr.pages, Direction::LeftUp, top)
+            .next()
         else {
             return false;
         };
@@ -2761,11 +2700,14 @@ impl Terminal {
     }
 
     /// Delete all kitty graphics state for the active screen.
-    ///
-    /// TODO(integration): call `kitty_images.delete(.{ .all = true })` once
-    /// kitty graphics storage is ported; for now only the dirty flag exists.
     fn kitty_images_delete_all(&mut self) {
-        self.screen_mut().kitty_images.dirty = true;
+        let info = crate::kitty::graphics_storage::TerminalInfo::from_terminal(self);
+        let screen = self.screen_mut();
+        screen.kitty_images.delete(
+            &mut screen.pages,
+            &info,
+            kitty_graphics_command::Delete::All(true),
+        );
     }
 
     /// Resets all margins and fills the whole screen with the character 'E'
@@ -2851,15 +2793,19 @@ impl Terminal {
     /// an error occurred otherwise the behavior of the graphics protocol is
     /// undefined.
     ///
-    /// TODO(integration): call `kitty::graphics::execute(self, cmd)` once
-    /// kitty graphics_exec is ported. Until then no command has any effect and
-    /// no response is produced.
     pub fn kitty_graphics(
         &mut self,
         cmd: &mut kitty_graphics_command::Command,
     ) -> Option<kitty_graphics_command::Response> {
-        let _ = cmd;
-        None
+        self.kitty_graphics_command(cmd)
+    }
+
+    /// Execute a borrowed Kitty graphics command.
+    pub fn kitty_graphics_command(
+        &mut self,
+        cmd: &kitty_graphics_command::Command,
+    ) -> Option<kitty_graphics_command::Response> {
+        crate::kitty::graphics_exec::execute(self, cmd)
     }
 
     /// Set a style attribute.
@@ -3089,8 +3035,7 @@ impl Terminal {
 
                 // Inherit our Kitty image storage limit from the primary
                 // screen if we have to initialize.
-                // TODO(integration): `primary.kitty_images.total_limit`.
-                kitty_image_storage_limit: ScreenOptions::DEFAULT.kitty_image_storage_limit,
+                kitty_image_storage_limit: primary.kitty_images.total_limit,
             };
             self.screens.get_init(key, opts)?;
         }
@@ -3232,9 +3177,7 @@ impl Terminal {
         self.screens.remove(ScreenKey::Alternate);
 
         // Reset our screens
-        if let Err(err) = self.screen_mut().reset() {
-            log::warn!("screen reset failed err={err:?}");
-        }
+        self.screen_mut().reset().expect("screen reset");
 
         // Rest our basic state
         self.modes.reset();
@@ -3269,3 +3212,27 @@ impl Terminal {
 
 #[cfg(test)]
 mod tests;
+
+impl crate::kitty::graphics_exec::ExecTerminal for Terminal {
+    fn kitty_parts(
+        &mut self,
+    ) -> (
+        &mut crate::kitty::graphics_storage::ImageStorage,
+        &mut crate::page_list::PageList,
+    ) {
+        let screen = self.screens.active_mut();
+        (&mut screen.kitty_images, &mut screen.pages)
+    }
+    fn exec_info(&self) -> crate::kitty::graphics_storage::TerminalInfo {
+        crate::kitty::graphics_storage::TerminalInfo::from_terminal(self)
+    }
+    fn exec_cursor_pin(&self) -> Pin {
+        self.screen().cursor_pin()
+    }
+    fn exec_index(&mut self) -> Result<(), Error> {
+        self.index()
+    }
+    fn exec_set_cursor_pos(&mut self, row: usize, col: usize) {
+        self.set_cursor_pos(row, col);
+    }
+}

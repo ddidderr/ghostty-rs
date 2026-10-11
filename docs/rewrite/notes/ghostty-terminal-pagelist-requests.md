@@ -1,15 +1,62 @@
 # Requests for page.rs / page_list.rs (from the Screen port)
 
-1. **Pin-based iterators** (Zig `PageList.zig` ~5100-5170): `Pin::{row_iterator, cell_iterator, page_iterator, prompt_iterator}(direction, limit: Option<Pin>)`.
-   The limit pin is inclusive and applies at row granularity. Screen uses a local copy in `pin_iter.rs`.
-2. **`PageList::set_tracked_pin` validity**: it rejects pins with `y >= node.size.rows`. Zig writes the pin raw; `Screen::split_for_capacity` temporarily restores the cursor to the pre-split node, which may have shrunk. Worked around with a clamped stand-in.
-3. **Cross-page row clone**: Zig `Page.cloneRowFrom(other_page, ...)` between two nodes of one list needs two page borrows. Screen implements it with `export_cell`/`import_cell` (`Screen::clone_row_between`). A `PageList::clone_row_between(src_pin, dst_pin)` would be better.
-4. **String allocator probing**: `Page.string_alloc` is private; Zig `cursorSetHyperlink` probes it before growing. Screen instead re-adds the cursor hyperlink after `increase_capacity`. Also `insert_hyperlink` allocates strings before checking set dedup, so near-full pages can fail needlessly.
-5. **`fixup_viewport` must handle `Viewport::Top`** after `erase_rows` (Zig PageList.zig ~3043-3070). Worked around in `Screen::erase_rows`.
-6. **Resize reflow / no-reflow fewer rows** must drop trailing blank rows, including rows holding only bg-color cells (Zig `resizeCols`/`resizeWithoutReflow`). Three Screen tests are `#[ignore = "pagelist: ..."]`:
-   `screen_resize_no_reflow_less_rows_trims_blank_lines`, `screen_resize_less_cols_with_reflow_but_row_space`, `screen_resize_less_cols_to_wrap_wide_char`.
-7. `PageList::reset` and `erase_rows` return `Result`; `erase_rows` with an empty history start point returns `InvalidCoordinate` (Zig would assert). Screen guards/ignores.
-- (T3/p4) **`erase_row_bounded` must reset row flags on the blanked row**: after rotating, the final row is cleared with `Page::clear_cells`, which leaves `row.hyperlink`/`styled`/`grapheme` set. Zig's row is left with the flags cleared (test `Terminal: index bottom of scroll region clear hyperlinks` expects `!row.hyperlink`; ignored as `terminal_index_bottom_of_scroll_region_clear_hyperlinks`).
-- (T3/p8) **Reflow to fewer cols with a pending-wrap cursor**: 4x2 screen printed "0123", `resize(2,2)` with reflow gives screen contents "01\n23" but the active area/viewport dump is only "23" (active top is one row too low; Zig yields "01\n23"). Ignored test: `terminal_resize_with_wraparound_on`.
-- (T3/p1) **`Page::set_graphemes` / `Page::append_grapheme` must not mark the row dirty** (Zig `Page.appendGrapheme` leaves dirty untouched; callers like `Terminal.print` mark dirty explicitly). Terminal works around it for the zero-width path (test `terminal_ignored_vs16_doesnt_mark_dirty`).
-- (T3/terminal) `PageList::clone_partial_row_between(src_pin, dst_pin, left, right)`: Terminal `insert_lines`/`delete_lines` need Zig's `Page.clonePartialRowFrom` between two different page nodes of one list (needs two page borrows). `terminal.rs::clone_partial_row_between` re-implements it via `export_cell`/`import_cell` (now `pub(crate)` use) plus the row-metadata merge from `Page::clone_partial_row_from`.
+All requests resolved and verified in the 2026-10-11 integration pass.
+
+1. **Resolved — pin-based iterators.** `Pin::{row_iterator, cell_iterator,
+   page_iterator, prompt_iterator}` take the owning `&PageList`, direction, and
+   an inclusive optional limit pin. Limits apply to whole rows; cell iteration
+   begins at the starting column. Construction uses pins directly, without
+   point conversion or a list scan. Screen, Terminal, and Selection use these
+   methods. Public `pin_iter` functions/types remain as compatibility wrappers.
+2. **Resolved — tracked-pin restoration.** `set_tracked_pin` validates the
+   handle and node lifetime, allowing a temporarily out-of-range row during
+   split recovery. Screen restores the exact old pin, with no clamped stand-in.
+   Cursor dirtying accesses the still-allocated row, matching Zig's cached
+   `page_row`. The maximum-style page-split regression passes.
+3. **Resolved — cross-page row clone.** `PageList::clone_row_between(src, dst)`
+   borrows the two pages directly and calls `Page::clone_row_from`. Screen's
+   export/import row snapshot helper is removed.
+4. **Resolved — string allocation and hyperlink deduplication.** Screen probes
+   `Page::can_allocate_string` before capacity growth in `cursor_set_hyperlink`,
+   following Zig's string-growth/hyperlink-growth/retry order. The probe frees
+   its temporary reservation in Rust; the page is then rebuilt. The cursor-link
+   recovery workaround is removed. `insert_hyperlink` retains existing live
+   entries before allocating strings; a full-allocator regression covers this.
+5. **Resolved — Top viewport after erasure.** `fixup_viewport` handles `Top`
+   inside PageList; Screen has no viewport fixup. Resize still only fixes a
+   pinned viewport, preserving Zig's `Top` behavior (covered by the existing
+   resize-no-reflow-more-rows-contains-viewport test).
+6. **Verified resolved — trailing blank rows during resize.** All three tests
+   are enabled and pass: `screen_resize_no_reflow_less_rows_trims_blank_lines`,
+   `screen_resize_less_cols_with_reflow_but_row_space`, and
+   `screen_resize_less_cols_to_wrap_wide_char`.
+7. **Resolved — reset/erase error handling.** Existing public `Result` signatures
+   remain for backwards compatibility. Erasing empty history is a successful
+   no-op. Screen's extra history guard and error swallowing are removed;
+   valid internal erasure/reset calls assert success as in Zig.
+
+- **Verified resolved (T3/p4):** `erase_row_bounded` clears the blanked row's
+  managed flags; `terminal_index_bottom_of_scroll_region_clear_hyperlinks`
+  is enabled and passes.
+- **Verified resolved (T3/p8):** pending-wrap reflow retains the correct active
+  rows; `terminal_resize_with_wraparound_on` is enabled and passes.
+- **Resolved (T3/p1):** `set_graphemes` and `append_grapheme` preserve row dirty
+  state, including allocation growth. Terminal's save/restore workaround is
+  removed; the VS16 test and a direct append regression pass.
+- **Resolved (T3/terminal):** `PageList::clone_partial_row_between(src, dst,
+  left, right)` directly borrows distinct pages and delegates managed-memory
+  and row-metadata handling to `Page::clone_partial_row_from`. Terminal's
+  export/import implementation is removed. The regression checks graphemes,
+  hyperlinks, untouched columns, dirty/wrap flags, and Kitty placeholder flags.
+
+## API changes
+
+Additive methods: the four Pin iterators and both PageList row-copy helpers.
+Existing iterator wrappers and `Result` signatures are retained. No downstream
+caller edits were needed.
+
+## Validation
+
+`cargo test -p ghostty-terminal`: 1252 unit tests and 1 documentation test pass,
+0 failed, 0 ignored. Clippy with `-D warnings`, rustfmt, and the combined build
+of `ghostty-font`, `ghostty-renderer`, and `ghostty-termio` pass.
