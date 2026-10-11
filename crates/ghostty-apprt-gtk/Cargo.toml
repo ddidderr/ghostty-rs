@@ -3,11 +3,64 @@ name = "ghostty-apprt-gtk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
 
 [dependencies]
-ghostty-core.workspace = true
+ghostty-apprt.workspace = true
 ghostty-config.workspace = true
 ghostty-input.workspace = true
+ghostty-datastruct.workspace = true
+ghostty-os.workspace = true
+ghostty-vt.workspace = true
+log = "0.4"
+thiserror = "2"
+bitflags = "2"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14", "gnome_44"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
+gtk4-layer-shell = "0.8"
+gdk4-x11 = { version = "0.11.5", features = ["x11", "xlib"] }
+gdk4-wayland = { version = "0.11.5", features = ["wayland_crate"] }
+wayland-client = "0.31.15"
+wayland-protocols-plasma = { version = "0.3.12", features = ["client"] }
+wayland-protocols = { version = "0.32.13", features = ["client", "staging"] }
+wayland-backend = { version = "0.3.17", features = ["client_system"] }
+half = "2"
+libc = "0.2.190"
+signal-hook = "0.4.5"
+libloading = "0.9.0"
 
-[lints]
-workspace = true
+[build-dependencies]
+glib-build-tools = "0.22"
+
+[dev-dependencies]
+env_logger = "0.11"
+glow = "0.18"
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"

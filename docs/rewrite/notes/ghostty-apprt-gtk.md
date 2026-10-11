@@ -1,4 +1,33 @@
+# ghostty-apprt-gtk notes
 
+## Overview / status
+Port of ZIG/src/apprt/gtk (GTK4 + libadwaita, gtk4-rs 0.11 / libadwaita 0.9, baseline GTK 4.14 / adw 1.5).
+build.rs compiles resources/ui/**/*.blp with blueprint-compiler and bundles UI+CSS+icons into a gresource
+(`register_resources()`). Inspector/imgui deferred (menu action is a no-op with TODO). Dropped the ghostty-core
+dependency (cycle): the core boundary is the trait set in `src/core.rs`.
+
+## Core trait boundary (src/core.rs, authoritative spec = the file)
+- `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,
+  push_message(AppMessage::{OpenConfig,PresentSurface(id),NewWindow}), new_surface(id, config, rt_app, rt_surface)
+  -> Rc<dyn CoreSurface>, delete_surface, surface_ids, cell_size.
+- `CoreSurface`: config, key/preedit/focus/mouse_button/cursor_pos/scroll/size/content_scale callbacks, ime_point,
+  has_selection, perform_binding_action, complete_clipboard_request (+ClipboardError::{UnsafePaste,UnauthorizedPaste}),
+  set_clipboard_read/write_allowed, needs_confirm_quit, child_exited, renderer_realized/unrealized,
+  draw_frame(fbo) (core must query GL_FRAMEBUFFER_BINDING; GL loader: `gl::proc_address`), color_scheme_callback,
+  update_config, readonly/grid_size/font_size, inspector hooks.
+- `RtApp::perform_action(Target<SurfaceId>, Action) -> bool`, `RtSurface` (close, cgroup, get_title/size/scale/cursor_pos,
+  clipboard_request/set_clipboard, default_termio_env), `Waker` (Send+Sync, `app::waker()`).
+- All main-thread only except Waker. Core must not call RtApp from other threads.
+
+## Integration TODOs / gaps
+- libgtk4-layer-shell must be linked/preloaded before libwayland-client for quick terminal.
+- ghostty-termio has its own cgroup wait loop; choose one (cgroup.rs here).
+- Stubs (as upstream): toggle_visibility, float_window, secure_input, close_all_windows; inspector; URLs via xdg-open.
+- Runtime coverage is light: demo launches cleanly (no GTK criticals); tabs/splits/dialogs/palette not driven by hand.
+- Cargo: workspace root lacks `ghostty-apprt` in workspace.dependencies; this crate uses a path dep.
+- Demo: `DEMO_QUIT_AFTER_MS=4000 cargo run -p ghostty-apprt-gtk --example demo`.
+
+# Per-component notes (by sub-agent)
 ## F3: dialogs + config object (class/{dialog,config,config_errors_dialog,close_confirmation_dialog,clipboard_confirmation_dialog,title_dialog,debug_warning}.rs)
 
 Libadwaita >= 1.5 is assumed, so `Dialog` is always an `adw::AlertDialog` subclass (no `MessageDialog` fallback) and DebugWarning uses the `adw::Banner` (1.3) template; the clipboard dialog always uses the 1.4 template (remember switch). GType names, property names, signals and template children match the Zig classes.

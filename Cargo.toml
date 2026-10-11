@@ -38,6 +38,8 @@ ghostty-os = { path = "crates/ghostty-os" }
 ghostty-datastruct = { path = "crates/ghostty-datastruct" }
 ghostty-core = { path = "crates/ghostty-core" }
 ghostty-apprt-gtk = { path = "crates/ghostty-apprt-gtk" }
+ghostty-apprt = { path = "crates/ghostty-apprt" }
+ghostty-cli = { path = "crates/ghostty-cli" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
