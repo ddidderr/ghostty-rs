@@ -16,7 +16,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | ⚠️ | partial committed; round 2 (full parity) running in worktree ../ghostty-rs-t1 branch t1-pagelist |
 | F1 | font engine (freetype/fontconfig/harfbuzz, Collection, SharedGrid) | sonnet | ✅ | run.zig + SharedGridSet deferred (F2) | |
 | IO1 | termio: pty, Command, shell integration, terminfo | sonnet | ✅ | |
-| C1 | cli actions | sonnet | 🟨 | |
+| C1 | cli actions | sonnet | ✅ | list-fonts, show-face, new-window deferred | |
 | T2 | terminal: Screen, ScreenSet, Tabstops, Selection | sonnet | 🟨 | |
 | R1 | renderer: OpenGL base, shaders, shadertoy, size, cursor | sonnet | 🟨 | |
 
