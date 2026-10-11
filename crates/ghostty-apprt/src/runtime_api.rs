@@ -1,4 +1,4 @@
-//! The trait boundary between this app runtime and `ghostty-core`.
+//! The trait boundary between app runtimes (apprt-gtk) and `ghostty-core`.
 //!
 //! In Zig, `apprt/gtk` calls directly into `CoreApp` (App.zig) and
 //! `CoreSurface` (Surface.zig). `ghostty-core` isn't ported yet (and it can't
@@ -18,8 +18,8 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
-use ghostty_apprt::action::{Action, Target};
-use ghostty_apprt::structs::{
+use crate::action::{Action, Target};
+use crate::structs::{
     Clipboard, ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize,
 };
 use ghostty_config::config::Config;
@@ -273,7 +273,26 @@ pub trait RtSurface {
     /// cleanups).
     fn default_termio_env(&self) -> Vec<(String, String)>;
     fn redraw_inspector(&self) {}
+    /// Resolve an OpenGL function pointer for the surface's GL context
+    /// (GTK: dlsym on libepoxy). Called with the context current. Null if
+    /// the symbol is unknown.
+    fn gl_proc_address(&self, name: &str) -> *const std::ffi::c_void {
+        let _ = name;
+        std::ptr::null()
+    }
+    /// Callback to create a transient systemd scope for the child process
+    /// (Zig: `apprt/gtk/cgroup.zig` + `post_fork`). Called on the main
+    /// thread when the surface is created; the returned closure is called
+    /// from the IO thread after fork. `None` disables cgroup isolation.
+    fn create_scope_fn(&self) -> Option<CreateScopeFn> {
+        None
+    }
 }
+
+/// `fn(pid, memory_high, tasks_max)`: `None` if there is no D-Bus
+/// connection, `Some(Err(msg))` on failure.
+pub type CreateScopeFn =
+    Arc<dyn Fn(u32, Option<u64>, Option<u64>) -> Option<Result<(), String>> + Send + Sync>;
 
 /// Thread-safe handle to wake the app thread (`App.wakeup`). Core's threads
 /// call [`Waker::wake`]; the GTK main loop then runs `CoreApp::tick`.

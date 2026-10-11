@@ -12,17 +12,35 @@ use std::sync::Arc;
 use rustix::event::{EventfdFlags, eventfd};
 
 /// See the module docs. Cloning shares the same underlying eventfd.
-#[derive(Clone, Debug)]
-pub struct Wakeup(Arc<OwnedFd>);
+#[derive(Clone)]
+pub struct Wakeup(Arc<OwnedFd>, Option<Arc<dyn Fn() + Send + Sync>>);
+
+impl std::fmt::Debug for Wakeup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Wakeup").field(&self.0).finish()
+    }
+}
 
 impl Wakeup {
     pub fn new() -> io::Result<Wakeup> {
         let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
-        Ok(Wakeup(Arc::new(fd)))
+        Ok(Wakeup(Arc::new(fd), None))
+    }
+
+    /// A wakeup that calls `hook` instead of signalling an eventfd. Used to
+    /// bridge into waiters that are not `poll(2)`-based (the renderer
+    /// thread's channel). `as_fd`/`drain` are meaningless for these.
+    pub fn with_hook(hook: Arc<dyn Fn() + Send + Sync>) -> io::Result<Wakeup> {
+        let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
+        Ok(Wakeup(Arc::new(fd), Some(hook)))
     }
 
     /// Wake up the waiter. Multiple notifications coalesce.
     pub fn notify(&self) -> io::Result<()> {
+        if let Some(hook) = &self.1 {
+            hook();
+            return Ok(());
+        }
         loop {
             match rustix::io::write(&*self.0, &1u64.to_ne_bytes()) {
                 Ok(_) => return Ok(()),

@@ -1,37 +1,49 @@
-//! The shared render state (`renderer/State.zig`, the part termio needs).
+//! The shared render state (`renderer/State.zig`).
 //!
-//! In Zig the terminal is owned by `Termio` and `renderer.State` holds a
-//! mutex plus a pointer to it. In Rust the terminal lives inside the mutex,
-//! shared via `Arc` between the IO thread, the pty read thread, the
-//! surface (core) thread and the renderer thread.
-//!
-//! TODO(integration): `renderer/State.zig` is deferred in ghostty-renderer;
-//! when it lands, this type should move there (and gain `inspector`,
-//! `preedit`, `mouse`).
+//! The canonical type lives in `ghostty-renderer`
+//! ([`ghostty_renderer::state::State`] behind a mutex,
+//! [`SharedState`]). This module only provides a convenience for termio:
+//! locking the state and borrowing just the [`Terminal`].
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::ops::{Deref, DerefMut};
+use std::sync::{MutexGuard, PoisonError};
 
+pub use ghostty_renderer::state::{SharedState, State};
 use ghostty_terminal::terminal::Terminal;
 
-/// The state shared with the renderer.
-#[derive(Debug)]
-pub struct RendererState {
-    /// The terminal emulator state. Hold the lock for as short as possible;
-    /// it is contended by the pty read thread.
-    pub terminal: Mutex<Terminal>,
+/// A locked [`SharedState`] that dereferences to its [`Terminal`].
+pub struct TerminalGuard<'a>(MutexGuard<'a, State>);
+
+impl TerminalGuard<'_> {
+    /// The whole locked state (preedit, mouse, ...).
+    pub fn state(&mut self) -> &mut State {
+        &mut self.0
+    }
 }
 
-impl RendererState {
-    pub fn new(terminal: Terminal) -> Self {
-        Self {
-            terminal: Mutex::new(terminal),
-        }
+impl Deref for TerminalGuard<'_> {
+    type Target = Terminal;
+    fn deref(&self) -> &Terminal {
+        &self.0.terminal
     }
+}
 
-    /// Lock the terminal. Lock poisoning is ignored: a panic on another
-    /// thread must not take the whole terminal down with it (Zig mutexes
-    /// don't poison).
-    pub fn lock(&self) -> MutexGuard<'_, Terminal> {
-        self.terminal.lock().unwrap_or_else(PoisonError::into_inner)
+impl DerefMut for TerminalGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Terminal {
+        &mut self.0.terminal
+    }
+}
+
+/// Lock helpers for [`SharedState`].
+pub trait SharedStateExt {
+    /// Lock the state and borrow the terminal. Lock poisoning is ignored: a
+    /// panic on another thread must not take the whole terminal down with
+    /// it (Zig mutexes don't poison).
+    fn lock_terminal(&self) -> TerminalGuard<'_>;
+}
+
+impl SharedStateExt for SharedState {
+    fn lock_terminal(&self) -> TerminalGuard<'_> {
+        TerminalGuard(self.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }

@@ -5,7 +5,7 @@
 //! scrolled window), embedding a `GtkGLArea` that the core renders into.
 //!
 //! The "apprt Surface" of Zig (`Surface.zig`, the object the core calls back
-//! into) is [`RtSurfaceHandle`], which implements [`crate::core::RtSurface`]
+//! into) is [`RtSurfaceHandle`], which implements [`ghostty_apprt::runtime_api::RtSurface`]
 //! and holds only a weak reference to the widget.
 
 use std::cell::{Cell, RefCell};
@@ -43,11 +43,11 @@ use crate::class::search_overlay::SearchOverlay;
 use crate::class::surface_child_exited::SurfaceChildExited;
 use crate::class::title_dialog::{self, TitleDialog};
 use crate::class::window::Window;
-use crate::core::{
+use crate::key as gtk_key;
+use ghostty_apprt::runtime_api::{
     ClipboardError, CoreSurface, DesiredFontSize, InputEffect, MIN_WINDOW_HEIGHT_CELLS,
     MIN_WINDOW_WIDTH_CELLS, RtSurface, SurfaceId,
 };
-use crate::key as gtk_key;
 
 /// Simple dimensions struct for the surface used by various properties
 /// (Zig: `Surface.Size`, GType `GhosttySurfaceSize`).
@@ -1832,6 +1832,29 @@ impl RtSurface for RtSurfaceHandle {
         self.gobj()
             .map(|s| s.default_termio_env())
             .unwrap_or_default()
+    }
+
+    fn gl_proc_address(&self, name: &str) -> *const std::ffi::c_void {
+        crate::gl::proc_address(name)
+    }
+
+    fn create_scope_fn(&self) -> Option<ghostty_apprt::runtime_api::CreateScopeFn> {
+        // GDBusConnection is thread-safe; the closure runs on the IO thread
+        // right after fork.
+        let dbus = gtk::gio::Application::default().and_then(|a| a.dbus_connection())?;
+        Some(std::sync::Arc::new(move |pid, memory_high, tasks_max| {
+            Some(
+                crate::cgroup::create_scope(
+                    &dbus,
+                    pid,
+                    crate::cgroup::Options {
+                        memory_high,
+                        tasks_max,
+                    },
+                )
+                .map_err(|e| e.to_string()),
+            )
+        }))
     }
 
     fn redraw_inspector(&self) {

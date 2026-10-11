@@ -14,7 +14,7 @@ use ghostty_apprt::action::{Action, Target};
 use ghostty_apprt::ipc;
 
 use crate::class::application::{Application, RunError};
-use crate::core::{CoreApp, SurfaceId, Waker};
+use ghostty_apprt::runtime_api::{CoreApp, SurfaceId, Waker};
 
 /// This is detected by the Renderer, in which case it sends a
 /// `redraw_surface` message so that we can call `drawFrame` ourselves from

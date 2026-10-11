@@ -1208,6 +1208,8 @@ dependencies = [
  "ghostty-config",
  "ghostty-datastruct",
  "ghostty-input",
+ "ghostty-renderer",
+ "ghostty-terminal",
  "ghostty-vt",
  "thiserror 2.0.21",
 ]
@@ -1248,7 +1250,9 @@ name = "ghostty-cli"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "ghostty-apprt",
  "ghostty-config",
+ "ghostty-font",
  "ghostty-input",
  "ghostty-os",
  "log",
@@ -1275,6 +1279,9 @@ dependencies = [
 name = "ghostty-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "crossbeam-channel",
+ "ghostty-apprt",
  "ghostty-config",
  "ghostty-datastruct",
  "ghostty-font",
@@ -1283,6 +1290,12 @@ dependencies = [
  "ghostty-renderer",
  "ghostty-terminal",
  "ghostty-termio",
+ "ghostty-unicode",
+ "ghostty-vt",
+ "log",
+ "onig",
+ "png",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1361,9 +1374,12 @@ dependencies = [
 name = "ghostty-rs"
 version = "0.1.0"
 dependencies = [
+ "ghostty-apprt",
  "ghostty-apprt-gtk",
+ "ghostty-cli",
  "ghostty-config",
  "ghostty-core",
+ "log",
 ]
 
 [[package]]

@@ -6,12 +6,20 @@ use crate::gtk_version::Version;
 pub const COMPTIME_VERSION: Version = (1, 5, 0);
 
 /// Returns the runtime libadwaita version.
+#[allow(unsafe_code)]
 pub fn get_runtime_version() -> Version {
-    (
-        adw::major_version(),
-        adw::minor_version(),
-        adw::micro_version(),
-    )
+    // The safe `adw::major_version()` etc. assert that libadwaita was
+    // initialized, but the C functions don't need it (and `+version` has no
+    // display to initialize GTK with).
+    // SAFETY: these functions only return compile-time constants of the
+    // loaded library and have no preconditions.
+    unsafe {
+        (
+            adw::ffi::adw_get_major_version(),
+            adw::ffi::adw_get_minor_version(),
+            adw::ffi::adw_get_micro_version(),
+        )
+    }
 }
 
 /// Logs the build and runtime libadwaita version.

@@ -40,7 +40,7 @@ use crate::command::{
 use crate::pty::{self, Mode, Pty, Winsize};
 use crate::shell_integration::{self, EnvMap, Shell};
 use crate::sinks::SurfaceMailbox;
-use crate::state::RendererState;
+use crate::state::{SharedState, SharedStateExt};
 use crate::termio::Output;
 use crate::wakeup::Wakeup;
 use ghostty_apprt::surface::{ChildExited, Message as SurfaceMessage};
@@ -192,7 +192,7 @@ impl Exec {
         &mut self,
         output: Arc<Output>,
         surface_mailbox: Arc<dyn SurfaceMailbox>,
-        renderer_state: Arc<RendererState>,
+        renderer_state: SharedState,
     ) -> Result<ThreadData, Error> {
         // Start our subprocess
         let (read_fd, write_fd) = self.subprocess.start()?;
@@ -382,7 +382,7 @@ pub struct ThreadData {
     termios_mode: Mode,
 
     surface_mailbox: Arc<dyn SurfaceMailbox>,
-    renderer_state: Arc<RendererState>,
+    renderer_state: SharedState,
 }
 
 impl ThreadData {
@@ -579,7 +579,7 @@ impl ThreadData {
             // If our password input state changed on the terminal then
             // we notify the surface.
             let changed = {
-                let t = self.renderer_state.lock();
+                let t = self.renderer_state.lock_terminal();
                 t.flags.password_input != password_input
             };
 

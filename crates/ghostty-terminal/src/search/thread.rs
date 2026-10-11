@@ -13,7 +13,8 @@
 //! based refresh timer. The terminal and its mutex are combined into an
 //! `Arc<Mutex<Terminal>>`.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::ops::DerefMut;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
@@ -50,7 +51,7 @@ pub type EventCallback = Arc<dyn Fn(Event) + Send + Sync>;
 pub struct Options {
     /// The terminal data to search. The mutex must be held while
     /// reading/writing the terminal.
-    pub terminal: Arc<Mutex<Terminal>>,
+    pub terminal: Arc<dyn TerminalLock>,
 
     /// The callback for events from the search thread. This can be `None`
     /// if you don't want to receive events, which could be useful for a
@@ -146,8 +147,26 @@ impl Handle {
     }
 }
 
-fn lock(m: &Mutex<Terminal>) -> MutexGuard<'_, Terminal> {
-    m.lock().unwrap_or_else(PoisonError::into_inner)
+/// A locked terminal (any guard that derefs to a [`Terminal`]).
+pub trait TerminalRef: DerefMut<Target = Terminal> {}
+impl<T: DerefMut<Target = Terminal>> TerminalRef for T {}
+
+/// Something that owns a terminal behind a lock. Implemented for
+/// `Mutex<Terminal>`; the core implements it for the shared renderer state
+/// (where the terminal lives next to preedit/mouse state).
+pub trait TerminalLock: Send + Sync {
+    /// Lock and borrow the terminal (poisoning is ignored).
+    fn lock_terminal(&self) -> Box<dyn TerminalRef + '_>;
+}
+
+impl TerminalLock for Mutex<Terminal> {
+    fn lock_terminal(&self) -> Box<dyn TerminalRef + '_> {
+        Box::new(self.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
+fn lock(m: &Arc<dyn TerminalLock>) -> Box<dyn TerminalRef + '_> {
+    m.lock_terminal()
 }
 
 /// The search thread state.
@@ -677,7 +696,7 @@ impl Search {
     /// This doesn't require any locking as it only reads internal state
     /// (the terminal mutex is only passed through for API symmetry and is
     /// not locked).
-    fn notify(&mut self, _terminal: &Arc<Mutex<Terminal>>, cb: &EventCallback) {
+    fn notify(&mut self, _terminal: &Arc<dyn TerminalLock>, cb: &EventCallback) {
         let Some(screen_search) = self.screens[key_index(self.last_screen.key)].as_ref() else {
             return;
         };
@@ -787,7 +806,7 @@ mod tests {
         });
 
         let (handle, join) = Thread::spawn(Options {
-            terminal: Arc::clone(&terminal),
+            terminal: terminal.clone(),
             event_cb: Some(cb),
         })
         .unwrap();
@@ -845,7 +864,7 @@ mod tests {
         });
 
         let (handle, join) = Thread::spawn(Options {
-            terminal: Arc::clone(&terminal),
+            terminal: terminal.clone(),
             event_cb: Some(cb),
         })
         .unwrap();

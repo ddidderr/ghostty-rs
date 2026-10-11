@@ -21,28 +21,10 @@ pub const NOTIFICATION_TITLE_LEN: usize = 64;
 /// `[255:0]u8` => 256 bytes including the sentinel.
 pub const NOTIFICATION_BODY_LEN: usize = 256;
 
-// TODO(integration): `terminal.Scrollbar` lives in ghostty-terminal
-// (page_list::Scrollbar); apprt doesn't depend on it. Local stand-in with
-// identical fields.
-/// Scrollbar geometry in rows.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Scrollbar {
-    /// Total scrollable rows.
-    pub total: usize,
-    /// Viewport's offset from the oldest row.
-    pub offset: usize,
-    /// Visible row count.
-    pub len: usize,
-}
-
-// TODO(integration): `renderer.Health` lives in ghostty-renderer
-// (backend::Health); apprt doesn't depend on it.
-/// The health status of a renderer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RendererHealth {
-    Healthy,
-    Unhealthy,
-}
+/// The health status of a renderer (`renderer.Health`).
+pub use ghostty_renderer::backend::Health as RendererHealth;
+/// Scrollbar geometry in rows (`terminal.Scrollbar`).
+pub use ghostty_terminal::page_list::Scrollbar;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportTitleStyle {

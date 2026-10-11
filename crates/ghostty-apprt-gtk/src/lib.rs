@@ -5,7 +5,6 @@ pub mod adw_version;
 pub mod app;
 pub mod cgroup;
 pub mod class;
-pub mod core;
 pub mod css;
 pub mod ext;
 pub mod flatpak;

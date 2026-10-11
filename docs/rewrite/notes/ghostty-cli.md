@@ -85,3 +85,13 @@ new-window arg hook).
 * crash-report only lists (sentry is not ported). `ssh-cache` locking uses `File::try_lock`;
   like Zig, a lock held by another process is ignored (the boolean result is unused upstream).
 * `Config::load` and `finalize` are called twice in `validate-config` (as in Zig).
+
+## Integration pass: list-fonts / show-face / new-window (wired)
+* `list_fonts.rs`, `show_face.rs` now use `ghostty-font` (fontconfig `Discover`, `SharedGridSet`, `SharedGrid::get_index`,
+  `Collection::get_face`); ghostty-cli depends on ghostty-font and ghostty-apprt. Output is byte-identical to
+  /usr/bin/ghostty for `+list-fonts` (plain, `--family`, `--bold`) and `+show-face` (`--cp`, `--string`, `--presentation`).
+  Like Zig, show-face writes its "stderr" messages to stdout.
+* `new_window.rs`: `set_ipc_handler(fn(&ipc::Target, &ipc::Action) -> Result<bool, String>)` (OnceLock). The root binary must
+  register it (map `ghostty_apprt_gtk::ipc::perform_ipc`'s `Err(IpcFailed)` to `Err(new_window::IPC_FAILED.into())`).
+  Without a handler: prints "+new-window is not supported on this platform." and exits 1 (apprt none behaviour).
+* Still open: `build_info::set`.

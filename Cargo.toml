@@ -12,6 +12,9 @@ path = "src/main.rs"
 ghostty-core.workspace = true
 ghostty-config.workspace = true
 ghostty-apprt-gtk.workspace = true
+ghostty-apprt.workspace = true
+ghostty-cli.workspace = true
+log = "0.4"
 
 [lints]
 workspace = true

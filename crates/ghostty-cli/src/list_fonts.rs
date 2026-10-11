@@ -1,7 +1,4 @@
 //! `+list-fonts` (ZIG/src/cli/list_fonts.zig).
-//!
-//! DEFERRED: needs the font crate (font discovery). Only the options and
-//! help are ported; running the action reports that it is not available.
 
 use ghostty_config::config_struct;
 
@@ -52,6 +49,73 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
-    // TODO(integration): port the discovery/listing once ghostty-font lands.
-    Err(Error::NotYetAvailable("list-fonts"))
+    use std::collections::HashMap;
+    use std::io::Write;
+
+    // We'll be putting our fonts into a list categorized by family
+    // so it is easier to read the output.
+    let mut families: Vec<String> = Vec::new();
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+
+    // Look up all available fonts
+    let disco = ghostty_font::Discover::init();
+    let desc = ghostty_font::Descriptor {
+        monospace: opts.family.is_none(),
+        family: opts.family.clone(),
+        style: opts.style.clone(),
+        bold: opts.bold,
+        italic: opts.italic,
+        ..ghostty_font::Descriptor::default()
+    };
+    let mut it = disco
+        .discover(&desc)
+        .map_err(|e| Error::Other(e.to_string()))?;
+    while let Some(face) = it.next().map_err(|e| Error::Other(e.to_string()))? {
+        let family = match face.family_name() {
+            Ok(v) => v,
+            Err(err) => {
+                log::error!("failed to get font family name: {err}");
+                continue;
+            }
+        };
+        let full_name = match face.name() {
+            Ok(v) => v,
+            Err(err) => {
+                log::error!("failed to get font name: {err}");
+                continue;
+            }
+        };
+        let list = map.entry(family.clone()).or_insert_with(|| {
+            families.push(family);
+            Vec::new()
+        });
+        list.push(full_name);
+    }
+
+    // Sort our keys.
+    if opts.family.is_none() {
+        families.sort_unstable();
+    }
+
+    // Output each
+    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    for family in &families {
+        let Some(list) = map.get_mut(family) else {
+            continue;
+        };
+        if list.is_empty() {
+            continue;
+        }
+        if opts.family.is_none() {
+            list.sort_unstable();
+        }
+
+        writeln!(stdout, "{family}")?;
+        for item in list.iter() {
+            writeln!(stdout, "  {item}")?;
+        }
+        writeln!(stdout)?;
+    }
+    stdout.flush()?;
+    Ok(0)
 }

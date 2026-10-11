@@ -12,10 +12,10 @@
 //! * [`Termio`] is owned by the IO thread (`Thread::thread_main` takes it by
 //!   value) and holds the backend, derived config and cached size.
 //! * [`Output`] (an `Arc`, reachable through [`Termio::output`]) is the part
-//!   the pty read thread needs: the shared [`RendererState`], the VT stream and
+//!   the pty read thread needs: the shared [`SharedState`], the VT stream and
 //!   the renderer/termio notification handles. `Termio::process_output` is
 //!   just `output.process_output`.
-//! * The `Terminal` itself lives in [`RendererState`]
+//! * The `Terminal` itself lives in [`SharedState`]
 //!   (`Arc<Mutex<Terminal>>`), shared with the renderer like Zig's
 //!   `renderer.State`.
 //!
@@ -34,12 +34,14 @@ use ghostty_config::types_b::{ClipboardAccess, GraphemeWidthMethod, OSCColorRepo
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::message::Message as RendererMessage;
 use ghostty_renderer::size::Size;
+use ghostty_terminal::kitty::graphics_storage::TerminalInfo;
 use ghostty_terminal::point::{Coordinate, Point};
 use ghostty_terminal::screen::Scroll;
 use ghostty_terminal::screen_set::Key as ScreenKey;
 use ghostty_terminal::terminal::{Colors, Options as TerminalOptions, ScrollViewport, Terminal};
 use ghostty_vt::color::{DynamicPalette, DynamicRgb, Palette};
 use ghostty_vt::csi;
+use ghostty_vt::kitty::graphics_command::Delete as KittyDelete;
 use ghostty_vt::modes::{Mode, ModePacked};
 use std::sync::MutexGuard;
 
@@ -49,7 +51,7 @@ use crate::mailbox::Mailbox;
 use crate::message::{Message, SizeReport};
 use crate::options::Options;
 use crate::sinks::{RendererMailbox, SurfaceMailbox};
-use crate::state::RendererState;
+use crate::state::{SharedState, SharedStateExt, State};
 use crate::stream_handler::{
     HandlerOptions, HandlerState, TerminalStream, cursor_style_from_config,
 };
@@ -201,7 +203,7 @@ struct OutputInner {
 /// The part of termio used from the pty read thread: parses the pty output
 /// and applies it to the shared terminal.
 pub struct Output {
-    state: Arc<RendererState>,
+    state: SharedState,
     inner: Mutex<OutputInner>,
     renderer_mailbox: Arc<dyn RendererMailbox>,
     mailbox: Mailbox,
@@ -220,7 +222,7 @@ impl Output {
         // We are modifying terminal state from here on out and we need
         // the lock to grab our read data.
         let outbox = {
-            let mut term = self.state.lock();
+            let mut term = self.state.lock_terminal();
             let mut inner = self.inner();
             self.process_output_locked(&mut term, &mut inner, buf);
 
@@ -275,7 +277,7 @@ pub struct Termio {
     config: DerivedConfig,
 
     /// The shared render state (contains the terminal).
-    renderer_state: Arc<RendererState>,
+    renderer_state: SharedState,
 
     /// The part shared with the pty read thread.
     output: Arc<Output>,
@@ -309,7 +311,7 @@ pub struct Termio {
 /// the termio thread. As such, a lock is not necessary.
 pub struct ThreadData {
     /// The shared render state
-    pub renderer_state: Arc<RendererState>,
+    pub renderer_state: SharedState,
 
     /// Mailboxes for different threads
     pub surface_mailbox: Arc<dyn SurfaceMailbox>,
@@ -371,8 +373,7 @@ impl Termio {
         })?;
 
         // Set the image size limits
-        // TODO(integration): `screen.kitty_images.setLimit(config.image_storage_limit)`
-        // once ghostty-terminal ports kitty `ImageStorage` (currently a stub).
+        set_image_limits(&mut term, config.image_storage_limit);
 
         // Set our default cursor style
         term.screen_mut().cursor.cursor_style = cursor_style_from_config(config.cursor_style);
@@ -399,7 +400,7 @@ impl Termio {
 
         let thread_enter_state = ThreadEnterState::create(full_config);
 
-        let renderer_state = Arc::new(RendererState::new(term));
+        let renderer_state = State::new(term).into_shared();
         let output = Arc::new(Output {
             state: Arc::clone(&renderer_state),
             inner: Mutex::new(OutputInner {
@@ -427,7 +428,7 @@ impl Termio {
 
     /// The shared render state (it holds the terminal). Hand this to the
     /// renderer.
-    pub fn renderer_state(&self) -> &Arc<RendererState> {
+    pub fn renderer_state(&self) -> &SharedState {
         &self.renderer_state
     }
 
@@ -522,7 +523,7 @@ impl Termio {
         // The remainder of this function is modifying terminal state or
         // the read thread data, all of which requires holding the renderer
         // state lock.
-        let mut term = self.renderer_state.lock();
+        let mut term = self.renderer_state.lock_terminal();
 
         // Update our stream handler. The stream handler uses the same
         // renderer mutex so this is safe to do despite being executed
@@ -546,7 +547,7 @@ impl Termio {
         term.colors.cursor.default = config.cursor_color.and_then(TerminalColor::to_terminal_rgb);
 
         // Set the image size limits
-        // TODO(integration): kitty_images.setLimit (see `init`).
+        set_image_limits(&mut term, config.image_storage_limit);
 
         self.config = config;
     }
@@ -562,7 +563,7 @@ impl Termio {
         // Enter the critical area that we want to keep small
         {
             let state = Arc::clone(&self.renderer_state);
-            let mut term = state.lock();
+            let mut term = state.lock_terminal();
             self.output().inner().stream.state.size = size;
 
             // Update the size of our terminal state
@@ -594,7 +595,7 @@ impl Termio {
     /// Make a size report.
     pub fn size_report(&mut self, td: &mut ThreadData, style: SizeReport) {
         let state = Arc::clone(&self.renderer_state);
-        let _term = state.lock();
+        let _term = state.lock_terminal();
         self.size_report_locked(td, style);
     }
 
@@ -625,7 +626,7 @@ impl Termio {
     /// Reset the synchronized output mode. This is usually called by timer
     /// expiration from the termio thread.
     pub fn reset_synchronized_output(&mut self) {
-        let mut term = self.renderer_state.lock();
+        let mut term = self.renderer_state.lock_terminal();
         term.modes.set(Mode::SynchronizedOutput, false);
         if let Err(err) = self.renderer_wakeup.notify() {
             log::warn!("failed to notify renderer err={err}");
@@ -635,7 +636,7 @@ impl Termio {
     /// Clear the screen.
     pub fn clear_screen(&mut self, td: &mut ThreadData, history: bool) {
         {
-            let mut term = self.renderer_state.lock();
+            let mut term = self.renderer_state.lock_terminal();
 
             // If we're on the alternate screen, we do not clear. Since this is an
             // emulator-level screen clear, this messes up the running programs
@@ -672,9 +673,11 @@ impl Termio {
                 // graphics that are placed above the cursor or if it deletes
                 // all of them. We delete all of them for now but if this behavior
                 // isn't fully correct we should fix this later.
-                // TODO(integration): `kitty_images.delete(.{ .all = true })`
-                // once kitty image storage is ported; only mark dirty for now.
-                term.screen_mut().kitty_images.dirty = true;
+                let info = TerminalInfo::from_terminal(&term);
+                let screen = term.screen_mut();
+                screen
+                    .kitty_images
+                    .delete(&mut screen.pages, &info, KittyDelete::All(true));
 
                 return;
             }
@@ -690,13 +693,13 @@ impl Termio {
 
     /// Scroll the viewport
     pub fn scroll_viewport(&mut self, scroll: ScrollViewport) {
-        self.renderer_state.lock().scroll_viewport(scroll);
+        self.renderer_state.lock_terminal().scroll_viewport(scroll);
     }
 
     /// Jump the viewport to the prompt.
     pub fn jump_to_prompt(&mut self, delta: isize) {
         {
-            let mut term = self.renderer_state.lock();
+            let mut term = self.renderer_state.lock_terminal();
             term.screen_mut().scroll(Scroll::DeltaPrompt(delta));
         }
 
@@ -707,7 +710,11 @@ impl Termio {
 
     /// Called when focus is gained or lost (when focus events are enabled)
     pub fn focus_gained(&mut self, td: &mut ThreadData, focused: bool) {
-        let focus_event = self.renderer_state.lock().modes.get(Mode::FocusEvent);
+        let focus_event = self
+            .renderer_state
+            .lock_terminal()
+            .modes
+            .get(Mode::FocusEvent);
 
         // If we have focus events enabled, we send the focus event.
         if focus_event {
@@ -727,7 +734,7 @@ impl Termio {
     /// Sends a DSR response for the current color scheme to the pty.
     pub fn color_scheme_report(&mut self, td: &mut ThreadData, force: bool) {
         let state = Arc::clone(&self.renderer_state);
-        let term = state.lock();
+        let term = state.lock_terminal();
         self.color_scheme_report_locked(&term, td, force);
     }
 
@@ -745,5 +752,16 @@ impl Termio {
             conditional::Theme::Dark => b"\x1B[?997;1n",
         };
         self.queue_write(td, output, false);
+    }
+}
+
+/// Apply `image-storage-limit` to every initialized screen.
+fn set_image_limits(term: &mut Terminal, limit: usize) {
+    for key in [ScreenKey::Primary, ScreenKey::Alternate] {
+        if let Some(screen) = term.screens.get_mut(key)
+            && let Err(err) = screen.kitty_images.set_limit(&mut screen.pages, limit)
+        {
+            log::warn!("failed to set kitty image storage limit: {err}");
+        }
     }
 }

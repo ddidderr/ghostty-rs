@@ -19,14 +19,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ghostty_apprt::action::{self, Action, Target};
+use ghostty_apprt::runtime_api::{
+    AppMessage, CellSize, ClipboardError, CoreApp, CoreError, CoreSurface, DesiredFontSize,
+    InputEffect, KeyEvent, RtApp, RtSurface, SurfaceId,
+};
 use ghostty_apprt::structs::{
     ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize,
 };
 use ghostty_apprt_gtk::app::App;
-use ghostty_apprt_gtk::core::{
-    AppMessage, CellSize, ClipboardError, CoreApp, CoreError, CoreSurface, DesiredFontSize,
-    InputEffect, KeyEvent, RtApp, RtSurface, SurfaceId,
-};
 use ghostty_config::config::Config;
 use ghostty_input::binding::set::Value as BindingValue;
 use ghostty_input::binding::{self, Action as Binding};
@@ -204,9 +204,8 @@ impl CoreSurface for DemoSurface {
     fn renderer_realized(&self) -> Result<(), CoreError> {
         // SAFETY: the GLArea context is current while realizing; the loader
         // resolves symbols through libepoxy which dispatches to it.
-        let gl = unsafe {
-            glow::Context::from_loader_function(ghostty_apprt_gtk::gl::proc_address)
-        };
+        let gl =
+            unsafe { glow::Context::from_loader_function(ghostty_apprt_gtk::gl::proc_address) };
         *self.gl.borrow_mut() = Some(gl);
         Ok(())
     }

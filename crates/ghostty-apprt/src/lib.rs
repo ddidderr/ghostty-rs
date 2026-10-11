@@ -7,6 +7,7 @@
 pub mod action;
 pub mod ipc;
 pub mod runtime;
+pub mod runtime_api;
 pub mod structs;
 pub mod surface;
 

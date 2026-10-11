@@ -1886,16 +1886,11 @@ fn update_kitty(
     terminal: &mut ghostty_terminal::terminal::Terminal,
     cell_size: CellSize,
 ) {
-    // TODO(integration): `Screen.kitty_images` is still the placeholder
-    // `KittyImages { dirty }` (see docs/rewrite/notes/ghostty-terminal-kitty.md).
-    // Once it is a `kitty::ImageStorage`, call
-    //   images.kitty_update(&screen.kitty_images, &screen.pages,
-    //       &TerminalInfo::from_terminal(terminal), cell_size);
-    // and then clear `screen.kitty_images.dirty`. `image::State::kitty_update`
-    // is implemented and compiled against the real storage API already.
-    let _ = cell_size;
+    let info = ghostty_terminal::kitty::graphics_storage::TerminalInfo::from_terminal(terminal);
+    let screen = terminal.screen_mut();
+    images.kitty_update(&screen.kitty_images, &screen.pages, &info, cell_size);
     images.force_kitty_update = false;
-    terminal.screen_mut().kitty_images.dirty = false;
+    screen.kitty_images.dirty = false;
 }
 
 // ---------------------------------------------------------------------------

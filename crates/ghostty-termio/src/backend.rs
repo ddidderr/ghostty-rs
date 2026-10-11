@@ -8,7 +8,7 @@ use ghostty_terminal::terminal::Terminal;
 
 use crate::exec::{self, Exec};
 use crate::sinks::SurfaceMailbox;
-use crate::state::RendererState;
+use crate::state::SharedState;
 use crate::termio::Output;
 
 /// The kinds of backends.
@@ -51,7 +51,7 @@ impl Backend {
         &mut self,
         output: Arc<Output>,
         surface_mailbox: Arc<dyn SurfaceMailbox>,
-        renderer_state: Arc<RendererState>,
+        renderer_state: SharedState,
     ) -> Result<ThreadData, exec::Error> {
         match self {
             Backend::Exec(e) => Ok(ThreadData::Exec(e.thread_enter(

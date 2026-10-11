@@ -31,6 +31,7 @@ use rustix::event::{PollFd, PollFlags};
 use crate::backend::ThreadData as BackendThreadData;
 use crate::exec;
 use crate::message::Message;
+use crate::state::SharedStateExt;
 use crate::termio::{Error, Termio, ThreadData};
 use crate::wakeup::Wakeup;
 
@@ -376,7 +377,7 @@ impl Thread {
 /// in some way but this works for now. Without this, the user would
 /// just see a blank terminal window.
 fn report_start_error(io: &Termio, err: &Error) {
-    let mut t = io.renderer_state().lock();
+    let mut t = io.renderer_state().lock_terminal();
 
     // Hide the cursor
     t.modes.set(Mode::CursorVisible, false);

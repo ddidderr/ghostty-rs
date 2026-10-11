@@ -41,9 +41,9 @@ use crate::class::split_tree::SplitTree;
 use crate::class::surface::{Size, Surface};
 use crate::class::tab::Tab;
 use crate::class::window::{SelectTab, TabOverrides, Window};
-use crate::core::{AppMessage, CoreApp, RtApp, SurfaceId};
 use crate::css::CssProviders;
 use crate::winproto;
+use ghostty_apprt::runtime_api::{AppMessage, CoreApp, RtApp, SurfaceId};
 
 /// Errors from [`Application::run_loop`].
 #[derive(Debug, thiserror::Error)]

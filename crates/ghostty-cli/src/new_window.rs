@@ -1,12 +1,30 @@
 //! `+new-window` (ZIG/src/cli/new_window.zig).
 //!
-//! DEFERRED: sending the IPC needs the GTK app (`apprt.App.performIpc`).
-//! The option parsing (including the manual `+new-window` argument gathering
-//! hook) is ported; running the action reports that it is not available.
+//! Sending the IPC needs the app runtime (`apprt.App.performIpc`); the root
+//! binary registers it with [`set_ipc_handler`] so this crate does not
+//! depend on GTK.
 
+use std::sync::OnceLock;
+
+use ghostty_apprt::ipc;
 use ghostty_config::cli_args::{ArgError, ArgIter, CliTarget};
 
 use crate::error::Error;
+
+/// The runtime's IPC entrypoint (`apprt.App.performIpc`). `Ok(true)` means
+/// the action was performed; `Err` carries an error message (use
+/// [`IPC_FAILED`] when the runtime already printed a specific message).
+pub type IpcHandler = fn(&ipc::Target, &ipc::Action) -> Result<bool, String>;
+
+/// Error string for `error.IPCFailed`: the runtime already reported it.
+pub const IPC_FAILED: &str = "IPCFailed";
+
+static IPC_HANDLER: OnceLock<IpcHandler> = OnceLock::new();
+
+/// Register the runtime IPC handler. Only the first call has an effect.
+pub fn set_ipc_handler(f: IpcHandler) {
+    let _ = IPC_HANDLER.set(f);
+}
 
 /// Options of `+new-window`.
 #[derive(Debug, Clone, Default)]
@@ -178,10 +196,42 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
             .insert(0, format!("--working-directory={}", wd.to_string_lossy()));
     }
 
-    // TODO(integration): send the `new_window` IPC (class: `opts.class` or
-    // auto-detected, arguments: `opts.arguments`) via the GTK apprt's
-    // `performIpc`.
-    Err(Error::NotYetAvailable("new-window"))
+    let target = match opts.class {
+        Some(class) => ipc::Target::Class(class),
+        None => ipc::Target::Detect,
+    };
+    let action = ipc::Action::NewWindow(ipc::NewWindow {
+        arguments: if opts.arguments.is_empty() {
+            None
+        } else {
+            Some(opts.arguments)
+        },
+    });
+
+    // Without a registered runtime this behaves like `apprt.none`, whose
+    // performIpc always returns false.
+    let performed = match IPC_HANDLER.get() {
+        Some(handler) => match handler(&target, &action) {
+            Ok(v) => v,
+            Err(e) if e == IPC_FAILED => {
+                // The apprt should have printed a more specific error message
+                // already.
+                return Ok(1);
+            }
+            Err(e) => {
+                eprint!("Sending the IPC failed: {e}");
+                return Ok(1);
+            }
+        },
+        None => false,
+    };
+    if performed {
+        return Ok(0);
+    }
+
+    // If we get here, the platform is not supported.
+    eprintln!("+new-window is not supported on this platform.");
+    Ok(1)
 }
 
 #[cfg(test)]
@@ -235,5 +285,19 @@ mod tests {
         // Like Zig, the manual hook runs before the help check.
         let o = parse_str("--help");
         assert_eq!(vec!["--help"], o.arguments);
+    }
+
+    #[test]
+    fn ipc_handler_registration_is_once() {
+        #[allow(clippy::unnecessary_wraps)]
+        fn h(_: &ipc::Target, _: &ipc::Action) -> Result<bool, String> {
+            Ok(true)
+        }
+        set_ipc_handler(h);
+        let r = IPC_HANDLER.get().unwrap()(
+            &ipc::Target::Detect,
+            &ipc::Action::NewWindow(ipc::NewWindow { arguments: None }),
+        );
+        assert_eq!(r, Ok(true));
     }
 }

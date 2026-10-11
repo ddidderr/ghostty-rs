@@ -18,12 +18,13 @@ use ghostty_config::types_b::{LinuxCgroup, ShellIntegration};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::message::Message as RendererMessage;
 use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
+use ghostty_termio::SharedStateExt;
 use ghostty_termio::backend::{self, Backend};
 use ghostty_termio::exec;
 use ghostty_termio::message::Message;
 use ghostty_termio::termio::DerivedConfig;
 use ghostty_termio::{
-    Mailbox, Options, RendererMailbox, RendererState, SurfaceMailbox, Termio, Thread, Wakeup,
+    Mailbox, Options, RendererMailbox, SharedState, SurfaceMailbox, Termio, Thread, Wakeup,
 };
 
 struct SurfaceRec(Sender<SurfaceMessage>);
@@ -69,7 +70,7 @@ fn size(cols: u32, rows: u32) -> Size {
 }
 
 struct Fixture {
-    state: Arc<RendererState>,
+    state: SharedState,
     mailbox: Mailbox,
     stop: Wakeup,
     thread: Option<JoinHandle<()>>,
@@ -136,7 +137,7 @@ fn sh(script: &str) -> ConfigCommand {
 
 impl Fixture {
     fn text(&self) -> String {
-        self.state.lock().plain_string().unwrap()
+        self.state.lock_terminal().plain_string().unwrap()
     }
 
     fn send(&self, msg: Message) {
@@ -218,7 +219,7 @@ fn printf_output_reaches_terminal_and_exit_is_reported() {
 
     // The SGR was applied: the cursor pen is red (palette 1).
     {
-        let t = f.state.lock();
+        let t = f.state.lock_terminal();
         let style = t.screen().cursor.style;
         assert!(
             !matches!(style.fg_color, ghostty_terminal::style::Color::None),
@@ -308,7 +309,7 @@ fn linefeed_mode_translates_cr() {
     f.wait_text("a^M");
     // cat -v got "a\r\n", so it printed a newline after the ^M.
     f.wait_for("cursor on second row", |f| {
-        (f.state.lock().screen().cursor.y == 1).then_some(())
+        (f.state.lock_terminal().screen().cursor.y == 1).then_some(())
     });
     f.stop();
 }
@@ -346,7 +347,7 @@ fn missing_input_file_shows_error_and_thread_keeps_draining() {
     f.wait_text("A configured `input` path was not found");
     assert!(
         !f.state
-            .lock()
+            .lock_terminal()
             .modes
             .get(ghostty_vt::modes::Mode::CursorVisible)
     );
@@ -366,7 +367,7 @@ fn resize_messages_are_coalesced_and_applied_to_the_pty() {
     f.send(Message::Resize(size(100, 40)));
     f.wait_text("40 100");
     {
-        let t = f.state.lock();
+        let t = f.state.lock_terminal();
         assert_eq!((t.cols, t.rows), (100, 40));
         assert_eq!(t.width_px, 1000);
         assert_eq!(t.height_px, 800);
@@ -385,7 +386,7 @@ fn synchronized_output_is_force_reset_by_timer() {
     let mut f = start(sh("printf '\\033[?2026h'; sleep 5"), |_| {});
     f.wait_for("sync output on", |f| {
         f.state
-            .lock()
+            .lock_terminal()
             .modes
             .get(ghostty_vt::modes::Mode::SynchronizedOutput)
             .then_some(())
@@ -393,7 +394,7 @@ fn synchronized_output_is_force_reset_by_timer() {
     let started = Instant::now();
     f.wait_for("sync output reset", |f| {
         (!f.state
-            .lock()
+            .lock_terminal()
             .modes
             .get(ghostty_vt::modes::Mode::SynchronizedOutput))
         .then_some(())
@@ -462,7 +463,7 @@ fn focus_events_are_sent_when_enabled() {
     );
     f.wait_for("focus mode", |f| {
         f.state
-            .lock()
+            .lock_terminal()
             .modes
             .get(ghostty_vt::modes::Mode::FocusEvent)
             .then_some(())
@@ -529,7 +530,7 @@ fn writes_after_exit_are_ignored_and_thread_stays_alive_until_stopped() {
     f.send(Message::Focused(true));
     f.send(Message::Resize(size(90, 25)));
     f.wait_for("resize after exit", |f| {
-        (f.state.lock().cols == 90).then_some(())
+        (f.state.lock_terminal().cols == 90).then_some(())
     });
     f.stop();
 }
@@ -542,11 +543,11 @@ fn change_config_message_updates_palette_and_colors() {
     cfg.enquiry_response = "x".into();
     f.send(Message::ChangeConfig(Box::new(cfg)));
     f.wait_for("background change", |f| {
-        let t = f.state.lock();
+        let t = f.state.lock_terminal();
         (t.colors.background.default == Some(ghostty_vt::color::Rgb { r: 1, g: 2, b: 3 }))
             .then_some(())
     });
-    assert!(f.state.lock().flags.dirty.palette);
+    assert!(f.state.lock_terminal().flags.dirty.palette);
     f.stop();
 }
 
@@ -571,7 +572,11 @@ fn process_output_manual_api() {
     termio.process_output(b"manual\x1b[31m!");
     assert_eq!(
         "manual!",
-        termio.renderer_state().lock().plain_string().unwrap()
+        termio
+            .renderer_state()
+            .lock_terminal()
+            .plain_string()
+            .unwrap()
     );
     termio.process_output(b"\x1b[5n");
     let m = termio.mailbox().pop().unwrap();

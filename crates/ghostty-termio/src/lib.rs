@@ -42,7 +42,7 @@ pub use message::Message;
 pub use options::Options;
 pub use pty::{Pty, Winsize};
 pub use sinks::{RendererMailbox, SurfaceMailbox};
-pub use state::RendererState;
+pub use state::{SharedState, SharedStateExt, State, TerminalGuard};
 pub use stream_handler::StreamHandler;
 pub use termio::{DerivedConfig, Termio};
 pub use thread::Thread;
