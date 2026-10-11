@@ -19,3 +19,4 @@ Collected from agent reports; resolve during integration phases.
 - [ ] cli: wire list-fonts/show-face (font discovery) and new-window (GTK IPC); call build_info::set from root/apprt.
 - [ ] input: ActionKey::docs() has extra trailing blank line for 4 actions (cli works around locally).
 - [ ] vt: x11_color lacks name listing with original case (cli re-parses rgb.txt).
+- [ ] apprt: Scrollbar/RendererHealth stand-ins → terminal/renderer types; core implements AppMailbox<S>.
