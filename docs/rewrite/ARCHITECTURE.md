@@ -22,6 +22,7 @@ WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 | `ghostty-termio` | termio/*, pty.zig, Command.zig, shell-integration resources | config, terminal, os |
 | `ghostty-cli` | cli/* actions (+list-themes, +show-config, +list-keybinds, ...) | config, input, os, font |
 | `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, apprt/action.zig, apprt/structs.zig, apprt/surface.zig, global.zig | everything below |
+| `ghostty-apprt` | apprt/action.zig, structs.zig, surface.zig, ipc.zig (core↔runtime contract types) | vt, input, config, datastruct |
 | `ghostty-apprt-gtk` | apprt/gtk/* | core, config, input |
 | root `ghostty-rs` (bin `ghostty`) | main_ghostty.zig, build_config.zig | core, config, apprt-gtk |
 
