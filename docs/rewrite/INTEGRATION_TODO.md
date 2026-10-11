@@ -21,3 +21,7 @@ Collected from agent reports; resolve during integration phases.
 - [x] terminal (after T4/T5/K1): Codex round 3 on notes/ghostty-terminal-pagelist-requests.md items 1,2,3,4,5,7 + append_grapheme dirty + clone_partial_row_between; then remove Screen/Terminal workarounds. Items 6 and the two T3 test items are resolved by the parity pass.
 - [ ] tmux viewer wiring into termio stream handler (see notes/ghostty-terminal-search-tmux.md); renderer sets search_viewport_dirty.
 - [ ] apprt-gtk: stubs toggle_visibility/float_window/secure_input/close_all_windows; inspector no-op; cgroup wait loop duplicated with termio; GLArea framebuffer id must be queried by renderer; layer-shell lib load order.
+- [ ] RendererState defined in termio::state; renderer R2 ports State.zig → unify (canonical in renderer, termio depends on renderer).
+- [ ] termio: hook kitty graphics exec/replies (terminal now has it) and image_storage_limit; tmux viewer.
+- [ ] termio: Flatpak stop path needs ghostty-os FlatpakHostCommand change; apprt-gtk create_scope; core restore_rlimit.
+- [ ] renderer: generic::update_kitty → call image::State::kitty_update now that Screen has ImageStorage; apprt-gtk must set GL viewport before draw.

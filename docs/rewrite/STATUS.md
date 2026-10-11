@@ -26,9 +26,10 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | K1 | terminal: kitty graphics image/storage/unicode/render/exec | sonnet | ✅ | wired (TI) | |
 | T4 | terminal: render state, highlight, formatter | sonnet | ✅ | |
 | T5 | terminal: search + tmux viewer | sonnet | ✅ | tmux viewer not wired to termio yet | |
-| IO2 | termio: Exec, Termio, Thread, stream_handler | sonnet | 🟨 | |
-| R2 | renderer: generic, cell, row, link, State, Overlay, image, Thread | sonnet | 🟨 | |
+| IO2 | termio: Exec, Termio, Thread, stream_handler | sonnet | ✅ | |
+| R2 | renderer: generic, cell, row, link, State, Overlay, image, Thread | sonnet | ✅ | kitty update_kitty stub | |
 | TI | terminal integration: kitty wiring + PageList requests, remove workarounds | codex astra | ✅ | 1252 tests |
+| CORE | core App/Surface, trait move, state unification, root main, run app | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -42,3 +43,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-11: PageList parity merged (913 tests, 0 ignored). T4 committed; R2 launched.
 - 2026-10-11: T5, K1 committed (1243 terminal tests). Codex TI launched.
 - 2026-10-11: GTK runtime committed; terminal integration pass done (1252 tests, 0 ignored).
+- 2026-10-11: IO2, R2 committed. CORE integration launched (Phase 6).
