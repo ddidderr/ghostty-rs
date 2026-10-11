@@ -23,11 +23,12 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | G1 | apprt-gtk (GTK4/libadwaita app) | sonnet | 🟨 | against CoreApp/CoreSurface traits |
 | T3 | terminal: Terminal + stream_readonly + StringMap | sonnet | ✅ | kitty/tmux hooks stubbed | |
 | F2 | font: run.zig, SharedGridSet, config integration, terminal shaper tests | sonnet | ✅ | |
-| K1 | terminal: kitty graphics image/storage/unicode/render/exec | sonnet | 🟨 | |
+| K1 | terminal: kitty graphics image/storage/unicode/render/exec | sonnet | ✅ | not wired into Screen/Terminal yet | |
 | T4 | terminal: render state, highlight, formatter | sonnet | ✅ | |
-| T5 | terminal: search + tmux viewer | sonnet | 🟨 | |
+| T5 | terminal: search + tmux viewer | sonnet | ✅ | tmux viewer not wired to termio yet | |
 | IO2 | termio: Exec, Termio, Thread, stream_handler | sonnet | 🟨 | |
 | R2 | renderer: generic, cell, row, link, State, Overlay, image, Thread | sonnet | 🟨 | |
+| TI | terminal integration: kitty wiring + PageList requests, remove workarounds | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -39,3 +40,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-11: F2 committed; K1 launched.
 - 2026-10-11: Terminal committed (849 tests). T4, T5, IO2 launched.
 - 2026-10-11: PageList parity merged (913 tests, 0 ignored). T4 committed; R2 launched.
+- 2026-10-11: T5, K1 committed (1243 terminal tests). Codex TI launched.
