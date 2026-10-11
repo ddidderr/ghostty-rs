@@ -15,3 +15,4 @@ Collected from agent reports; resolve during integration phases.
 - [ ] config: url::REGEX needs onig (lookbehind) in renderer/core link matching.
 - [ ] config: theme::open needs resources dir from ghostty_os.
 - NOTE: Ghostty 1.3.1 is installed at /usr/bin/ghostty — use it as reference oracle (e.g. +show-config, +list-actions, terminfo).
+- [ ] termio: Pty closes slave on drop (Zig didn't) — verify Exec semantics; cgroup/rlimit/D-Bus scope wiring; local option stand-ins → config types.

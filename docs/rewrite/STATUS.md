@@ -13,12 +13,15 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | W6 | config | sonnet | ✅ | |
 | W7 | font: metrics + sprite | sonnet | ✅ | |
 | S1 | vt: stream.zig + simd | sonnet | ✅ | |
-| T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | 🟨 | |
-| F1 | font engine (freetype/fontconfig/harfbuzz, Collection, SharedGrid) | sonnet | 🟨 | |
-| IO1 | termio: pty, Command, shell integration, terminfo | sonnet | 🟨 | |
+| T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | ⚠️ | partial committed; round 2 (full parity) running in worktree ../ghostty-rs-t1 branch t1-pagelist |
+| F1 | font engine (freetype/fontconfig/harfbuzz, Collection, SharedGrid) | sonnet | ✅ | run.zig + SharedGridSet deferred (F2) | |
+| IO1 | termio: pty, Command, shell integration, terminfo | sonnet | ✅ | |
 | C1 | cli actions | sonnet | 🟨 | |
+| T2 | terminal: Screen, ScreenSet, Tabstops, Selection | sonnet | 🟨 | |
+| R1 | renderer: OpenGL base, shaders, shadertoy, size, cursor | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
 - 2026-10-11: vt (W1+W2) and font sprite (W7) committed; S1 + T1 launched.
 - 2026-10-11: Phase 1 done (vt, unicode, datastruct, os, input, config, font sprite). F1, IO1, C1 launched; T1 (Codex) still running.
+- 2026-10-11: termio IO1 + font F1 committed. T1 partial (snapshot reflow, head-walking pins) → Codex round 2 in worktree. T2, R1 launched.
