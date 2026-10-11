@@ -1,0 +1,27 @@
+# Codex (gpt-6-astra) audit: core Surface vs Zig (2026-10-12)
+
+Read-only static audit; I made no changes and ran no tests. Findings below exclude macOS-only paths and the inspector.
+
+**Critical**
+
+- **Replacing an existing selection panics with copy-on-select enabled.** Rust: [surface/mod.rs:1337](../../../crates/ghostty-core/src/surface/mod.rs:1337); Zig: [Surface.zig:2311](../../../../ghostty/src/Surface.zig:2311). Rust replaces the selection, invalidating `prev`’s tracked handles, then compares against `prev`; the lookup’s [`expect`](../../../crates/ghostty-terminal/src/selection.rs:125) consequently panics—for example, on Select All twice. Zig has the same unsafe ordering with raw pointers, but the port turns it into a deterministic handle-validation failure; snapshot the previous concrete bounds or compare before replacement.
+
+**Major**
+
+- **Child-environment filtering is undone.** Rust: [surface/mod.rs:1783](../../../crates/ghostty-core/src/surface/mod.rs:1783); Zig: [Surface.zig:623](../../../../ghostty/src/Surface.zig:623). Rust overlays the runtime’s environment onto the process environment, restoring variables GTK deliberately removed—including `GDK_DISABLE`, `GSK_RENDERER`, and `NOTIFY_SOCKET`—whereas Zig uses the runtime environment wholesale and falls back only on failure. Collect the runtime-provided environment directly, preserving its deletions.
+
+- **Global/all `new_window` bindings incorrectly inherit a parent surface.** Rust: [surface/keyboard.rs:734](../../../crates/ghostty-core/src/surface/keyboard.rs:734); Zig: [App.zig:445](../../../../ghostty/src/App.zig:445), reached through [Surface.zig:2941](../../../../ghostty/src/Surface.zig:2941). Rust’s duplicated app dispatcher targets the invoking surface, enabling parent-based directory/font inheritance; Zig explicitly creates the window with `parent = null`. Use `Target::App` in this dispatcher, retaining surface targeting for ordinary surface-local bindings.
+
+- **Flatpak resource discovery bypasses the runtime-specific implementation.** Rust: [global.rs:135](../../../crates/ghostty-core/src/global.rs:135); Zig: [global.zig:174](../../../../ghostty/src/global.zig:174). Rust calls generic resource discovery, which never populates `host_path`, whereas Zig’s [GTK discovery](../../../../ghostty/src/apprt/gtk/flatpak.zig:7) obtains the host installation path from `/.flatpak-info`; consequently, host-side shells can receive an unusable sandbox resource path for shell integration. Restore runtime-specific discovery and preserve separate application and host paths.
+
+- **Invalid-locale recovery is missing.** Rust: [global.rs:130](../../../crates/ghostty-core/src/global.rs:130); Zig: [global.zig:164](../../../../ghostty/src/global.zig:164). Rust omits `ensureLocale`, and its [GTK substitute](../../../crates/ghostty-apprt-gtk/src/class/application.rs:198) ignores `setlocale` failure; Zig removes an invalid `LANG`, retries the system locale, then attempts `en_US.UTF-8` and updates `LANG` on success. Port that recovery before locale-dependent initialization and child-environment capture.
+
+- **Failed screen-file opening incorrectly counts as a performed binding.** Rust: [surface/binding.rs:592](../../../crates/ghostty-core/src/surface/binding.rs:592); Zig: [Surface.zig:4543](../../../../ghostty/src/Surface.zig:4543) and [Surface.zig:6106](../../../../ghostty/src/Surface.zig:6106). When the runtime declines opening and the fallback opener fails, Rust logs the error and returns success, so a `performable:` screen/history/selection-file binding consumes the key despite opening nothing; Zig propagates the error and permits fallback input. Return and propagate a `Result` from `open_url_with_fallback`.
+
+**Minor**
+
+- **OSC 52 Base64 acceptance differs in both directions.** Rust: [surface/clipboard.rs:49](../../../crates/ghostty-core/src/surface/clipboard.rs:49); Zig: [Surface.zig:2149](../../../../ghostty/src/Surface.zig:2149) and [Surface.zig:2163](../../../../ghostty/src/Surface.zig:2163). Rust accepts unpadded `YQ`, which Zig rejects during size validation, but rejects nonzero trailing bits in `YR==`, which Zig decodes to `a` and accepts by ignoring the decoding-stage `InvalidPadding`. Match Zig’s separate size-validation and decode-error rules.
+
+- **Oversized CSI/ESC bindings are accepted instead of rejected.** Rust: [surface/binding.rs:694](../../../crates/ghostty-core/src/surface/binding.rs:694); Zig: [Surface.zig:5155](../../../../ghostty/src/Surface.zig:5155). Rust dynamically constructs and sends arbitrary-length sequences, whereas Zig’s 128-byte buffer rejects CSI payloads exceeding 126 bytes and ESC payloads exceeding 127 bytes before sending anything. Enforce the same limits and propagate failure for strict parity.
+
+- **`GHOSTTY_LOG` parsing has different boolean and empty-value behavior.** Rust: [global.rs:33](../../../crates/ghostty-core/src/global.rs:33); Zig: [global.zig:116](../../../../ghostty/src/global.zig:116), using [args.zig:607](../../../../ghostty/src/cli/args.zig:607). `GHOSTTY_LOG=false` leaves stderr logging enabled in Rust but disables it in Zig; an empty value disables logging in Rust but retains Zig’s default. Implement the packed-struct parser’s boolean aliases, default initialization, and invalid-field handling.
