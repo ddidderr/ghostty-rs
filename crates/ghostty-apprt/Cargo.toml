@@ -9,6 +9,7 @@ ghostty-vt.workspace = true
 ghostty-input.workspace = true
 ghostty-config.workspace = true
 ghostty-datastruct.workspace = true
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
