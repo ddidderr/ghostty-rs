@@ -4,6 +4,7 @@ pub mod cursor;
 pub mod formatter;
 pub mod highlight;
 pub mod hyperlink;
+pub mod kitty;
 pub mod page;
 pub mod page_list;
 pub mod pin_iter;
