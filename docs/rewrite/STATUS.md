@@ -17,18 +17,18 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | F1 | font engine (freetype/fontconfig/harfbuzz, Collection, SharedGrid) | sonnet | ✅ | run.zig + SharedGridSet deferred (F2) | |
 | IO1 | termio: pty, Command, shell integration, terminfo | sonnet | ✅ | |
 | C1 | cli actions | sonnet | ✅ | list-fonts, show-face, new-window deferred | |
-| T2 | terminal: Screen, ScreenSet, Tabstops, Selection | sonnet | ✅ | 3 tests ignored pending pagelist | |
+| T2 | terminal: Screen, ScreenSet, Tabstops, Selection | sonnet | ✅ | | |
 | R1 | renderer: OpenGL base, shaders, shadertoy, size, cursor | sonnet | ✅ | |
 | A0 | apprt contract types | sonnet | ✅ | |
-| G1 | apprt-gtk (GTK4/libadwaita app) | sonnet | 🟨 | against CoreApp/CoreSurface traits |
-| T3 | terminal: Terminal + stream_readonly + StringMap | sonnet | ✅ | kitty/tmux hooks stubbed | |
+| G1 | apprt-gtk (GTK4/libadwaita app) | sonnet | ✅ | against CoreApp/CoreSurface traits; untested interactively |
+| T3 | terminal: Terminal + stream_readonly + StringMap | sonnet | ✅ | tmux viewer not wired | |
 | F2 | font: run.zig, SharedGridSet, config integration, terminal shaper tests | sonnet | ✅ | |
-| K1 | terminal: kitty graphics image/storage/unicode/render/exec | sonnet | ✅ | not wired into Screen/Terminal yet | |
+| K1 | terminal: kitty graphics image/storage/unicode/render/exec | sonnet | ✅ | wired (TI) | |
 | T4 | terminal: render state, highlight, formatter | sonnet | ✅ | |
 | T5 | terminal: search + tmux viewer | sonnet | ✅ | tmux viewer not wired to termio yet | |
 | IO2 | termio: Exec, Termio, Thread, stream_handler | sonnet | 🟨 | |
 | R2 | renderer: generic, cell, row, link, State, Overlay, image, Thread | sonnet | 🟨 | |
-| TI | terminal integration: kitty wiring + PageList requests, remove workarounds | codex astra | 🟨 | |
+| TI | terminal integration: kitty wiring + PageList requests, remove workarounds | codex astra | ✅ | 1252 tests |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -41,3 +41,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-11: Terminal committed (849 tests). T4, T5, IO2 launched.
 - 2026-10-11: PageList parity merged (913 tests, 0 ignored). T4 committed; R2 launched.
 - 2026-10-11: T5, K1 committed (1243 terminal tests). Codex TI launched.
+- 2026-10-11: GTK runtime committed; terminal integration pass done (1252 tests, 0 ignored).
