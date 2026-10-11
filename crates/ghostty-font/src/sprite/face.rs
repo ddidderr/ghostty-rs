@@ -26,22 +26,8 @@ use crate::atlas::{self, Atlas};
 use crate::glyph::Glyph;
 use crate::metrics::Metrics;
 
-/// Text/emoji presentation.
-// TODO(integration): replace with the real `font::Presentation` once the
-// rest of the font engine (face.zig / main.zig) is ported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Presentation {
-    Text,
-    Emoji,
-}
-
-/// The subset of `font.face.RenderOptions` that the sprite face uses.
-// TODO(integration): replace with the real `font::face::RenderOptions`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct RenderOptions {
-    /// The number of grid cells this glyph will take up (0..=3, a `u2` in Zig).
-    pub cell_width: Option<u8>,
-}
+pub use crate::Presentation;
+pub use crate::face::RenderOptions;
 
 /// Errors from [`Face::render_glyph`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -469,7 +455,14 @@ mod tests {
             for cp in cps {
                 for cell_width in [None, Some(1), Some(2)] {
                     let g = face
-                        .render_glyph(&mut atlas, cp, RenderOptions { cell_width })
+                        .render_glyph(
+                            &mut atlas,
+                            cp,
+                            RenderOptions {
+                                cell_width,
+                                ..RenderOptions::new(metrics)
+                            },
+                        )
                         .unwrap_or_else(|e| panic!("cp {cp:X} {w}x{}: {e}", asc + desc));
                     // The glyph must stay within the padded canvas.
                     let cw = metrics.cell_width * u32::from(cell_width.unwrap_or(1).max(1));
@@ -538,7 +531,7 @@ mod tests {
             .render_glyph(
                 &mut atlas,
                 Sprite::CursorBar as u32,
-                RenderOptions::default(),
+                RenderOptions::new(face.metrics),
             )
             .unwrap();
         // 1px bar placed at x = -1 (half its thickness rounded up).
