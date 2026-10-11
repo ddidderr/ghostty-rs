@@ -15,6 +15,8 @@ ghostty-unicode.workspace = true
 bitflags = "2.13.2"
 yeslogic-fontconfig-sys = "6.0.1"
 ghostty-datastruct.workspace = true
+ghostty-config.workspace = true
+ghostty-terminal.workspace = true
 
 # This crate wraps the freetype / harfbuzz / fontconfig C libraries through
 # their `-sys` crates; unsafe is denied by default and allowed on minimal,
@@ -47,3 +49,6 @@ return_self_not_must_use = "allow"
 used_underscore_binding = "allow"
 large_stack_arrays = "allow"
 inline_always = "allow"
+
+[dev-dependencies]
+ghostty-vt.workspace = true

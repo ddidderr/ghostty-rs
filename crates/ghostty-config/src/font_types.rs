@@ -1,7 +1,7 @@
-//! Local ports of the pieces of the Zig font package that the config needs
-//! (`font/face.zig` `Variation`, `font/CodepointMap.zig`, and
+//! Canonical definitions of the pieces of the Zig font package that the config
+//! needs (`font/face.zig` `Variation`, `font/CodepointMap.zig`, and
 //! `font/discovery.zig` `Descriptor`). `ghostty-font` depends on this crate,
-//! so these live here and the font crate should re-use them.
+//! so these live here and the font crate re-exports them.
 
 use std::hash::{Hash, Hasher};
 

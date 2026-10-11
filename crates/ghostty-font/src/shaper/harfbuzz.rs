@@ -1,6 +1,6 @@
 //! HarfBuzz shaper. Port of `font/shaper/harfbuzz.zig`.
 //!
-//! The Zig shaper is driven by `RunIterator` (shaper/run.zig, deferred to F2)
+//! The Zig shaper is driven by `RunIterator` (shaper/run.rs)
 //! through the hooks `prepare` / `addCodepoint` / `finalize`; those hooks are
 //! exposed here as [`Shaper::prepare`], [`Shaper::add_codepoint`] and
 //! [`Shaper::finalize`]. [`Shaper::shape`] takes the face of the run's font
@@ -12,7 +12,8 @@
 
 use super::hb;
 use crate::face::freetype::Face;
-use crate::shape::{self, Cell, DEFAULT_FEATURES, FeatureList};
+use crate::shape::{self, Cell, DEFAULT_FEATURES, FeatureList, TextRun};
+use crate::shared_grid::SharedGrid;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShapeError {
@@ -20,6 +21,15 @@ pub enum ShapeError {
     BufferCreate,
     #[error("harfbuzz failed")]
     HarfbuzzFailed,
+}
+
+/// Errors from [`Shaper::shape_run`].
+#[derive(Debug, thiserror::Error)]
+pub enum ShapeRunError {
+    #[error(transparent)]
+    GetFace(#[from] crate::collection::GetFaceError),
+    #[error(transparent)]
+    Shape(#[from] ShapeError),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -135,6 +145,28 @@ impl Shaper {
         }
         self.finalize();
         self.shape(face)
+    }
+
+    /// Shape the given text run (`shape(run)` in Zig). The run must be the
+    /// immediately previous run that was iterated since it shares state with
+    /// the shaper. The face is looked up in `grid` under its exclusive lock
+    /// (FreeType faces are not thread safe).
+    ///
+    /// The return value is only valid until the next shape call is called.
+    pub fn shape_run(
+        &mut self,
+        grid: &SharedGrid,
+        run: &TextRun,
+    ) -> Result<&[Cell], ShapeRunError> {
+        // We only do shaping if the font is not a special-case. For
+        // special-case fonts, the codepoint == glyph_index so we don't need
+        // to run any shaping.
+        if run.font_index.special().is_none() {
+            let mut guard = grid.write();
+            let face = guard.resolver.collection.get_face(run.font_index)?;
+            return Ok(self.shape(Some(face))?);
+        }
+        Ok(self.shape(None)?)
     }
 
     /// Shape the current run (as built through the hooks). `face` is the face
@@ -266,6 +298,11 @@ impl Shaper {
 mod tests {
     use super::*;
     use crate::face::{DesiredSize, FontData, Options};
+    use crate::shaper::run::{RunIterator, RunOptions};
+    use crate::shaper::test_util::{
+        Term, TestFont, shape_all, test_shaper, test_shaper_with_discovered_font,
+        test_shaper_with_font,
+    };
     use crate::{Library, embedded};
 
     fn text(s: &str) -> Vec<(u32, u32)> {
@@ -300,32 +337,6 @@ mod tests {
     }
 
     #[test]
-    fn shape_inconsolata_ligs() {
-        let f = face(embedded::INCONSOLATA);
-        // Some of our tests rely on dlig being enabled by default.
-        let mut s = Shaper::new(&shape::Options {
-            features: vec!["dlig".to_string()],
-        })
-        .unwrap();
-        let cells = s.shape_text(Some(&f), &text(">=")).unwrap();
-        assert_eq!(1, cells.len());
-        let cells = s.shape_text(Some(&f), &text("===")).unwrap();
-        assert_eq!(1, cells.len());
-    }
-
-    #[test]
-    fn shape_monaspace_ligs() {
-        let f = face(embedded::MONASPACE_NEON);
-        // Some of our tests rely on dlig being enabled by default.
-        let mut s = Shaper::new(&shape::Options {
-            features: vec!["dlig".to_string()],
-        })
-        .unwrap();
-        let cells = s.shape_text(Some(&f), &text("===")).unwrap();
-        assert_eq!(1, cells.len());
-    }
-
-    #[test]
     fn shape_ligatures_disabled_by_feature() {
         let f = face(embedded::INCONSOLATA);
         let mut s = Shaper::new(&shape::Options {
@@ -334,37 +345,6 @@ mod tests {
         .unwrap();
         let cells = s.shape_text(Some(&f), &text("===")).unwrap();
         assert_eq!(3, cells.len());
-    }
-
-    #[test]
-    fn shape_arabic_forced_ltr() {
-        let f = face(embedded::ARABIC);
-        let mut s = Shaper::new(&shape::Options::default()).unwrap();
-        let arabic = include_str!("../../testdata/arabic.txt");
-        let line = arabic.lines().next().unwrap();
-        let t = text(line);
-        let n = t.len();
-        let cells = s.shape_text(Some(&f), &t).unwrap();
-        assert_eq!(n, cells.len());
-        let mut x = cells[0].x;
-        for cell in &cells[1..] {
-            assert_eq!(x + 1, cell.x);
-            x = cell.x;
-        }
-    }
-
-    #[test]
-    fn shape_combining_characters() {
-        let f = face(embedded::INCONSOLATA);
-        let mut s = Shaper::new(&shape::Options::default()).unwrap();
-        // n + two combining diaeresis in cell 0, then 'a' in cell 1.
-        let t = [('n' as u32, 0), (0x0308, 0), (0x0308, 0), ('a' as u32, 1)];
-        let cells = s.shape_text(Some(&f), &t).unwrap();
-        assert_eq!(4, cells.len());
-        assert_eq!(0, cells[0].x);
-        assert_eq!(0, cells[1].x);
-        assert_eq!(0, cells[2].x);
-        assert_eq!(1, cells[3].x);
     }
 
     #[test]
@@ -396,5 +376,609 @@ mod tests {
         assert_eq!(2, cells.len());
         assert_eq!(0, cells[0].x);
         assert_eq!(3, cells[1].x);
+    }
+
+    /// Run all runs over `row` of `t` with the default options and return
+    /// the shaped runs.
+    fn run_row(
+        ts: &mut crate::shaper::test_util::TestShaper,
+        t: &Term,
+        y: u32,
+    ) -> Vec<crate::shaper::test_util::Shaped> {
+        let cells = t.row(y);
+        shape_all(&mut ts.shaper, RunOptions::new(&ts.grid, &cells))
+    }
+
+    fn count_runs(
+        ts: &mut crate::shaper::test_util::TestShaper,
+        cells: &[crate::shaper::run::RunCell],
+        selection: Option<[u16; 2]>,
+        cursor_x: Option<usize>,
+    ) -> usize {
+        let mut opts = RunOptions::new(&ts.grid, cells);
+        opts.selection = selection;
+        opts.cursor_x = cursor_x;
+        shape_all(&mut ts.shaper, opts).len()
+    }
+
+    #[test]
+    fn run_iterator() {
+        let mut ts = test_shaper();
+
+        {
+            let mut t = Term::new(5, 3);
+            t.print("ABCD");
+            let cells = t.row(0);
+            let mut it = RunIterator::new(RunOptions::new(&ts.grid, &cells));
+            let mut count = 0;
+            while it.next(&mut ts.shaper).unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(1, count);
+        }
+
+        // Spaces should be part of a run
+        {
+            let mut t = Term::new(10, 3);
+            t.print("ABCD   EFG");
+            let cells = t.row(0);
+            let mut it = RunIterator::new(RunOptions::new(&ts.grid, &cells));
+            let mut count = 0;
+            while it.next(&mut ts.shaper).unwrap().is_some() {
+                count += 1;
+            }
+            assert_eq!(1, count);
+        }
+
+        {
+            let mut t = Term::new(5, 3);
+            t.print("A\u{1F603}D");
+            let cells = t.row(0);
+            let mut it = RunIterator::new(RunOptions::new(&ts.grid, &cells));
+            let mut count = 0;
+            while it.next(&mut ts.shaper).unwrap().is_some() {
+                count += 1;
+
+                // All runs should be exactly length 1
+                assert_eq!(1, ts.shaper.hb_buf_len());
+            }
+            assert_eq!(3, count);
+        }
+    }
+
+    #[test]
+    fn run_iterator_empty_cells_with_background_set() {
+        use ghostty_terminal::page::{Cell, ContentTag};
+        use ghostty_vt::color::Rgb;
+
+        let mut ts = test_shaper();
+        let mut t = Term::new(5, 3);
+        // Set red background and write A
+        t.bg_rgb(255, 0, 0);
+        t.print("A");
+
+        // Get our first row
+        for x in [1, 2] {
+            let mut cell = Cell::default();
+            cell.set_content_tag(ContentTag::BgColorRgb);
+            cell.set_color_rgb(Rgb {
+                r: 0xFF,
+                g: 0,
+                b: 0,
+            });
+            *t.cell_mut(x, 0) = cell;
+        }
+
+        let cells = t.row(0);
+        let mut it = RunIterator::new(RunOptions::new(&ts.grid, &cells));
+        {
+            let run = it.next(&mut ts.shaper).unwrap().unwrap();
+            assert_eq!(3, ts.shaper.hb_buf_len());
+            let shaped = ts.shaper.shape_run(&ts.grid, &run).unwrap();
+            assert_eq!(3, shaped.len());
+        }
+        assert!(it.next(&mut ts.shaper).unwrap().is_none());
+    }
+
+    #[test]
+    fn shape() {
+        let mut ts = test_shaper();
+        // Thumbs up plain, thumbs up plain, medium skin tone
+        let mut t = Term::new(10, 3);
+        t.print("\u{1F44D}\u{1F44D}\u{1F3FD}");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(3, runs[0].hb_len);
+    }
+
+    #[test]
+    fn shape_inconsolata_ligs() {
+        let mut ts = test_shaper();
+
+        {
+            let mut t = Term::new(5, 3);
+            t.print(">=");
+            let runs = run_row(&mut ts, &t, 0);
+            assert_eq!(1, runs.len());
+            assert_eq!(2, runs[0].run.cells);
+            assert_eq!(1, runs[0].cells.len());
+        }
+
+        {
+            let mut t = Term::new(5, 3);
+            t.print("===");
+            let runs = run_row(&mut ts, &t, 0);
+            assert_eq!(1, runs.len());
+            assert_eq!(3, runs[0].run.cells);
+            assert_eq!(1, runs[0].cells.len());
+        }
+    }
+
+    #[test]
+    fn shape_monaspace_ligs() {
+        let mut ts = test_shaper_with_font(TestFont::MonaspaceNeon);
+
+        let mut t = Term::new(5, 3);
+        t.print("===");
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(3, runs[0].run.cells);
+        assert_eq!(1, runs[0].cells.len());
+    }
+
+    // Ghostty doesn't currently support RTL and our renderers assume
+    // that cells are in strict LTR order. This means that we need to
+    // force RTL text to be LTR for rendering. This test ensures that
+    // we are correctly forcing RTL text to be LTR.
+    #[test]
+    fn shape_arabic_forced_ltr() {
+        let mut ts = test_shaper_with_font(TestFont::Arabic);
+
+        let mut t = Term::new(120, 30);
+        t.print(include_str!("../../testdata/arabic.txt"));
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(25, runs[0].run.cells);
+        let cells = &runs[0].cells;
+        assert_eq!(25, cells.len());
+        let mut x = cells[0].x;
+        for cell in &cells[1..] {
+            assert_eq!(x + 1, cell.x);
+            x = cell.x;
+        }
+    }
+
+    #[test]
+    fn shape_emoji_width() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(5, 3);
+        t.print("\u{1F44D}");
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(2, runs[0].run.cells);
+        assert_eq!(1, runs[0].cells.len());
+    }
+
+    #[test]
+    fn shape_emoji_width_long() {
+        use ghostty_terminal::page::{Cell, ContentTag};
+
+        let mut ts = test_shaper();
+
+        // Make a screen and add a long emoji sequence to it.
+        let mut t = Term::new(30, 3);
+        {
+            let pin = t
+                .screen
+                .pages
+                .pin(ghostty_terminal::point::Point::Active(
+                    ghostty_terminal::point::Coordinate { x: 0, y: 1 },
+                ))
+                .unwrap();
+            let page = t.screen.page_mut(pin.node);
+            let y = usize::from(pin.y);
+            let mut cell = Cell::default();
+            cell.set_content_tag(ContentTag::Codepoint);
+            cell.set_codepoint(0x1F9D4); // Person with beard
+            *page.get_cells_mut(y).unwrap().first_mut().unwrap() = cell;
+            let graphemes = [
+                0x1F3FB, // Light skin tone (Fitz 1-2)
+                0x200D,  // ZWJ
+                0x2642,  // Male sign
+                0xFE0F,  // Emoji presentation selector
+            ];
+            page.set_graphemes(0, y, &graphemes).unwrap();
+        }
+
+        let runs = run_row(&mut ts, &t, 1);
+        assert_eq!(1, runs.len());
+        assert_eq!(4, runs[0].hb_len);
+        assert_eq!(1, runs[0].cells.len());
+    }
+
+    #[test]
+    fn shape_variation_selector_vs15() {
+        let mut ts = test_shaper();
+
+        // Victory sign (default text) + VS15 to force text
+        let mut t = Term::new(10, 3);
+        t.print("\u{270C}\u{FE0E}");
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(1, runs[0].hb_len);
+        assert_eq!(1, runs[0].cells.len());
+    }
+
+    #[test]
+    fn shape_variation_selector_vs16() {
+        let mut ts = test_shaper();
+
+        // Victory sign (default text) + VS16 to force color
+        let mut t = Term::new(10, 3);
+        t.print("\u{270C}\u{FE0F}");
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(1, runs[0].hb_len);
+        assert_eq!(1, runs[0].cells.len());
+    }
+
+    #[test]
+    fn shape_with_empty_cells_in_between() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(30, 3);
+        t.print("A");
+        t.cursor_right(5);
+        t.print("B");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(7, runs[0].cells.len());
+    }
+
+    #[test]
+    fn shape_combining_characters() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(30, 3);
+        t.print("n\u{0308}\u{0308}a");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(4, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+        assert_eq!(0, cells[2].x);
+        assert_eq!(1, cells[3].x);
+    }
+
+    // This test exists because the string it uses causes HarfBuzz to output a
+    // non-monotonic run with our cluster level set to `characters`, which we need
+    // to handle by tracking the max cluster for the run.
+    #[test]
+    fn shape_devanagari_string() {
+        // We need a font that supports devanagari for this to work, if we can't
+        // find Arial Unicode MS, which is a system font on macOS, we just skip
+        // the test.
+        let Some(mut ts) = test_shaper_with_discovered_font("Arial Unicode MS") else {
+            return;
+        };
+
+        // Disable grapheme clustering
+        let mut t = Term::new(30, 3);
+        t.print("अपार्टमेंट");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(8, cells.len());
+        let xs: Vec<u16> = cells.iter().map(|c| c.x).collect();
+        assert_eq!(vec![0, 1, 2, 4, 4, 5, 5, 6], xs);
+    }
+
+    // This test fails on Linux if you have the "Noto Sans Tai Tham" font installed
+    // locally. Disabled upstream (`return error.SkipZigTest`).
+    #[test]
+    #[ignore = "skipped upstream: fails on Linux with Noto Sans Tai Tham installed"]
+    fn shape_tai_tham_vowels_position_differs_from_advance() {
+        // Note that while this test was necessary for CoreText, the old logic was
+        // working for HarfBuzz. Still we keep it to ensure it has the correct
+        // behavior.
+        let Some(mut ts) = test_shaper_with_discovered_font("Noto Sans Tai Tham") else {
+            return;
+        };
+
+        let mut t = Term::new(30, 3);
+        t.print_clustered("\u{1a2F}\u{1a70}"); // ᨯ ᩰ
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(2, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+
+        // The first glyph renders in the next cell. We expect the x_offset
+        // to equal the cell width. However, with FreeType the cell_width is
+        // computed from ASCII glyphs, and Noto Sans Tai Tham only has the
+        // space character in ASCII (with a 3px advance), so the cell_width
+        // metric doesn't match the actual Tai Tham glyph positioning.
+        assert_eq!(7, cells[0].x_offset);
+        assert_eq!(0, cells[1].x_offset);
+    }
+
+    #[test]
+    fn shape_tibetan_characters() {
+        // We need a font that has multiple glyphs for this codepoint to reproduce
+        // the old broken behavior, and Noto Serif Tibetan is one of them. If we
+        // can't find it we just skip the test.
+        let Some(mut ts) = test_shaper_with_discovered_font("Noto Serif Tibetan") else {
+            return;
+        };
+
+        // Enable grapheme clustering
+        let mut t = Term::new(30, 3);
+        t.print_clustered("\u{0f00}"); // ༀ
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(2, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+
+        // The second glyph renders at the correct location
+        assert!(cells[1].x_offset < 2);
+    }
+
+    // Disabled upstream (`return error.SkipZigTest`).
+    #[test]
+    #[ignore = "skipped upstream: fails on Linux with Noto Sans Tai Tham installed"]
+    fn shape_tai_tham_letters_run_offset_y_differs_from_zero() {
+        let Some(mut ts) = test_shaper_with_discovered_font("Noto Sans Tai Tham") else {
+            return;
+        };
+
+        let mut t = Term::new(30, 3);
+        // First grapheme cluster: HA, SAKOT. Second grapheme cluster,
+        // combining with the first in a ligature: YA, U.
+        t.print_clustered("\u{1a49}\u{1a60}\u{1a3f}\u{1a69}");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(3, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+        assert_eq!(0, cells[2].x); // U from second grapheme
+
+        // The U glyph renders at a y below zero
+        assert_eq!(-3, cells[2].y_offset);
+    }
+
+    // Disabled upstream (`return error.SkipZigTest`).
+    #[test]
+    #[ignore = "skipped upstream (error.SkipZigTest)"]
+    fn shape_javanese_ligatures() {
+        let Some(mut ts) = test_shaper_with_discovered_font("Noto Sans Javanese") else {
+            return;
+        };
+
+        let mut t = Term::new(30, 3);
+        // NA, PANGKON; then HA, vowel sign SUKU combining in a ligature.
+        t.print_clustered("\u{a9a4}\u{a9c0}\u{a9b2}\u{a9b8}");
+
+        let cell_width = ts.grid.metrics().cell_width;
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(3, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+        assert_eq!(0, cells[2].x);
+
+        // The vowel sign SUKU renders with correct x_offset
+        assert!(i64::from(cells[2].x_offset) > 3 * i64::from(cell_width));
+    }
+
+    #[test]
+    fn shape_chakma_vowel_sign_with_ligature_vowel_sign_renders_first() {
+        // We need a font that supports Chakma for this to work, if we can't find
+        // Noto Sans Chakma Regular we just skip the test.
+        let Some(mut ts) = test_shaper_with_discovered_font("Noto Sans Chakma") else {
+            return;
+        };
+
+        let mut t = Term::new(30, 3);
+        // BAA; TAA + Virama; YYAA + Vowel Sign U (ligature with the second).
+        t.print_clustered("\u{1111d}\u{11116}\u{11133}\u{11120}\u{1112c}");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(4, cells.len());
+        assert_eq!(0, cells[0].x);
+        // See the giant "We need to reset the `cell_offset`" comment, but here
+        // we should technically have the rest of these be `x` of 1, but that
+        // would require going back in the stream to adjust past cells, and
+        // we don't take on that complexity.
+        assert_eq!(0, cells[1].x);
+        assert_eq!(0, cells[2].x);
+        assert_eq!(0, cells[3].x);
+
+        // The vowel sign U renders before the TAA:
+        assert!(cells[1].x_offset < cells[2].x_offset);
+    }
+
+    #[test]
+    fn shape_bengali_ligatures_with_out_of_order_vowels() {
+        // Whereas this test in CoreText had everything shaping into one giant
+        // ligature, HarfBuzz splits it into a few clusters. It still looks okay
+        // (see #10332).
+        let Some(mut ts) = test_shaper_with_discovered_font("Arial Unicode MS") else {
+            return;
+        };
+
+        let mut t = Term::new(30, 3);
+        // RA + AA; SSA + Virama; TTA + Virama; RA + Vowel sign E.
+        t.print_clustered("\u{09b0}\u{09be}\u{09b7}\u{09cd}\u{099f}\u{09cd}\u{09b0}\u{09c7}");
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        let cells = &runs[0].cells;
+        assert_eq!(8, cells.len());
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0, cells[1].x);
+        // Whereas CoreText puts everything all into the first cell (see the
+        // corresponding test), HarfBuzz splits into two clusters.
+        for c in &cells[2..] {
+            assert_eq!(2, c.x);
+        }
+
+        // The vowel sign E renders before the SSA:
+        assert!(cells[2].x_offset < cells[3].x_offset);
+    }
+
+    #[test]
+    fn shape_box_glyphs() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(10, 3);
+        t.print("\u{2500}\u{2501}"); // horiz line
+
+        let runs = run_row(&mut ts, &t, 0);
+        assert_eq!(1, runs.len());
+        assert_eq!(2, runs[0].hb_len);
+        let cells = &runs[0].cells;
+        assert_eq!(2, cells.len());
+        assert_eq!(0x2500, cells[0].glyph_index);
+        assert_eq!(0, cells[0].x);
+        assert_eq!(0x2501, cells[1].glyph_index);
+        assert_eq!(1, cells[1].x);
+    }
+
+    #[test]
+    fn shape_selection_boundary() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(10, 3);
+        t.print("a1b2c3d4e5");
+        let cells = t.row(0);
+
+        // Full line selection
+        assert_eq!(1, count_runs(&mut ts, &cells, Some([0, 9]), None));
+        // Offset x, goes to end of line selection
+        assert_eq!(2, count_runs(&mut ts, &cells, Some([2, 9]), None));
+        // Offset x, starts at beginning of line
+        assert_eq!(2, count_runs(&mut ts, &cells, Some([0, 3]), None));
+        // Selection only subset of line
+        assert_eq!(3, count_runs(&mut ts, &cells, Some([1, 3]), None));
+        // Selection only one character
+        assert_eq!(3, count_runs(&mut ts, &cells, Some([1, 1]), None));
+    }
+
+    #[test]
+    fn shape_cursor_boundary() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(10, 3);
+        t.print("a1b2c3d4e5");
+        let cells = t.row(0);
+
+        // No cursor is full line
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+
+        // Cursor at index 0 is two runs
+        assert_eq!(2, count_runs(&mut ts, &cells, None, Some(0)));
+        // And without cursor splitting remains one
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+
+        // Cursor at index 1 is three runs
+        assert_eq!(3, count_runs(&mut ts, &cells, None, Some(1)));
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+
+        // Cursor at last col is two runs
+        assert_eq!(2, count_runs(&mut ts, &cells, None, Some(9)));
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+
+        // The font break config disables cursor splitting.
+        let mut opts = RunOptions::new(&ts.grid, &cells);
+        opts.cursor_x = Some(1);
+        opts.apply_break_config(ghostty_config::types_a::FontShapingBreak { cursor: false });
+        assert_eq!(1, shape_all(&mut ts.shaper, opts).len());
+    }
+
+    #[test]
+    fn shape_cursor_boundary_and_colored_emoji() {
+        let mut ts = test_shaper();
+
+        let mut t = Term::new(3, 10);
+        t.print("\u{1F44D}\u{1F3FC}");
+        let cells = t.row(0);
+
+        // No cursor is full line
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+
+        // Cursor on emoji does not split it
+        assert_eq!(1, count_runs(&mut ts, &cells, None, Some(0)));
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+        assert_eq!(1, count_runs(&mut ts, &cells, None, Some(1)));
+        assert_eq!(1, count_runs(&mut ts, &cells, None, None));
+    }
+
+    #[test]
+    fn shape_cell_attribute_change() {
+        use ghostty_vt::sgr::Attribute;
+
+        let mut ts = test_shaper();
+
+        // Plain >= should shape into 1 run
+        {
+            let mut t = Term::new(10, 3);
+            t.print(">=");
+            assert_eq!(1, count_runs(&mut ts, &t.row(0), None, None));
+        }
+
+        // Bold vs regular should split
+        {
+            let mut t = Term::new(3, 10);
+            t.print(">");
+            t.sgr(Attribute::Bold);
+            t.print("=");
+            assert_eq!(2, count_runs(&mut ts, &t.row(0), None, None));
+        }
+
+        // Changing fg color should split
+        {
+            let mut t = Term::new(3, 10);
+            t.fg_rgb(1, 2, 3);
+            t.print(">");
+            t.fg_rgb(3, 2, 1);
+            t.print("=");
+            assert_eq!(2, count_runs(&mut ts, &t.row(0), None, None));
+        }
+
+        // Changing bg color should not split
+        {
+            let mut t = Term::new(3, 10);
+            t.bg_rgb(1, 2, 3);
+            t.print(">");
+            t.bg_rgb(3, 2, 1);
+            t.print("=");
+            assert_eq!(1, count_runs(&mut ts, &t.row(0), None, None));
+        }
+
+        // Same bg color should not split
+        {
+            let mut t = Term::new(3, 10);
+            t.bg_rgb(1, 2, 3);
+            t.print(">");
+            t.print("=");
+            assert_eq!(1, count_runs(&mut ts, &t.row(0), None, None));
+        }
     }
 }

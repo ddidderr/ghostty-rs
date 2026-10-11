@@ -3,89 +3,16 @@
 //! font, the codepoint is rendered using the default font.
 //! Port of `font/CodepointMap.zig`.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
+//!
+//! The canonical definition lives in `ghostty-config` (the `font-codepoint-map`
+//! option parses straight into it); it is re-exported here.
 
-use crate::discovery::Descriptor;
-
-#[derive(Debug, Clone)]
-pub struct Entry {
-    /// Unicode codepoint range (inclusive). Asserts range.0 <= range.1.
-    pub range: (u32, u32),
-
-    /// The discovery descriptor of the font to use for this range.
-    pub descriptor: Descriptor,
-}
-
-/// The list of entries.
-///
-/// Note: we just do a linear search because we expect to always have very
-/// few entries, so the overhead of a binary search is not worth it. This is
-/// possible to defeat with some pathological inputs, but there is no realistic
-/// scenario where this will be a problem except people trying to fuck around.
-#[derive(Debug, Clone, Default)]
-pub struct CodepointMap {
-    pub list: Vec<Entry>,
-}
-
-impl CodepointMap {
-    /// Add an entry to the map.
-    ///
-    /// For conflicting codepoints, entries added later take priority over
-    /// entries added earlier.
-    pub fn add(&mut self, entry: Entry) {
-        assert!(entry.range.0 <= entry.range.1);
-        self.list.push(entry);
-    }
-
-    /// Get a descriptor for a codepoint.
-    pub fn get(&self, cp: u32) -> Option<&Descriptor> {
-        self.list
-            .iter()
-            .rev()
-            .find(|e| e.range.0 <= cp && cp <= e.range.1)
-            .map(|e| &e.descriptor)
-    }
-
-    /// Hash with the given hasher.
-    pub fn hash_into<H: Hasher>(&self, hasher: &mut H) {
-        self.list.len().hash(hasher);
-        for entry in &self.list {
-            entry.range.hash(hasher);
-            hash_descriptor(&entry.descriptor, hasher);
-        }
-    }
-
-    /// Returns a hash code that can be used to uniquely identify this
-    /// action.
-    pub fn hashcode(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash_into(&mut hasher);
-        hasher.finish()
-    }
-}
-
-/// Mirrors `Descriptor.hash` of the Zig discovery module (same fields, same
-/// float handling) without depending on how the discovery module exposes it.
-fn hash_descriptor<H: Hasher>(d: &Descriptor, hasher: &mut H) {
-    d.family.hash(hasher);
-    d.style.hash(hasher);
-    d.codepoint.hash(hasher);
-    d.size.to_bits().hash(hasher);
-    d.bold.hash(hasher);
-    d.italic.hash(hasher);
-    d.monospace.hash(hasher);
-    d.variations.len().hash(hasher);
-    for v in &d.variations {
-        v.id.hash(hasher);
-        // This is not correct, but we don't currently depend on the
-        // hash value being different based on decimal values of variations.
-        (v.value as i64).hash(hasher);
-    }
-}
-
+pub use ghostty_config::font_types::CodepointMap;
+pub use ghostty_config::font_types::CodepointMapEntry as Entry;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ghostty_config::font_types::Descriptor;
 
     fn desc(family: &str) -> Descriptor {
         Descriptor {
@@ -96,7 +23,7 @@ mod tests {
 
     fn entry(a: u32, b: u32, family: &str) -> Entry {
         Entry {
-            range: (a, b),
+            range: [a, b],
             descriptor: desc(family),
         }
     }

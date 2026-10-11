@@ -11,8 +11,8 @@ use crate::metrics::Metrics;
 
 pub mod freetype;
 
-pub use crate::config_types::FreetypeLoadFlags;
 pub use freetype::Face;
+pub use ghostty_config::types_b::FreetypeLoadFlags;
 
 /// If a DPI can't be calculated, this DPI is used. This is probably
 /// wrong on modern devices so it is highly recommended you get the DPI
@@ -118,51 +118,8 @@ impl DesiredSize {
     }
 }
 
-/// A font variation setting. The best documentation for this I know of
-/// is actually the CSS font-variation-settings property on MDN:
-/// https://developer.mozilla.org/en-US/docs/Web/CSS/font-variation-settings
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Variation {
-    pub id: VariationId,
-    pub value: f64,
-}
-
-/// A four byte OpenType variation axis tag (`wght`, `slnt`, ...). The
-/// numeric value is the big-endian interpretation of the 4 characters
-/// (Zig: `packed struct(u32) { d, c, b, a }`, i.e. `a` is the high byte).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VariationId {
-    pub a: u8,
-    pub b: u8,
-    pub c: u8,
-    pub d: u8,
-}
-
-impl VariationId {
-    pub fn new(v: &[u8; 4]) -> VariationId {
-        VariationId {
-            a: v[0],
-            b: v[1],
-            c: v[2],
-            d: v[3],
-        }
-    }
-
-    /// The raw 32-bit tag value.
-    pub fn as_u32(self) -> u32 {
-        u32::from_be_bytes([self.a, self.b, self.c, self.d])
-    }
-
-    pub fn from_u32(v: u32) -> VariationId {
-        let [a, b, c, d] = v.to_be_bytes();
-        VariationId { a, b, c, d }
-    }
-
-    /// Converts the ID to a string.
-    pub fn str(self) -> [u8; 4] {
-        [self.a, self.b, self.c, self.d]
-    }
-}
+/// Font variation types: canonical definitions live in `ghostty-config`.
+pub use ghostty_config::font_types::{Variation, VariationId};
 
 /// The size and position of a glyph.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -621,26 +578,6 @@ impl Constraint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn variation_id_wght_should_be_2003265652() {
-        let id = VariationId::new(b"wght");
-        assert_eq!(2003265652, id.as_u32());
-        assert_eq!(b"wght", &id.str());
-    }
-
-    #[test]
-    fn variation_id_slnt_should_be_1936486004() {
-        let id = VariationId {
-            a: b's',
-            b: b'l',
-            c: b'n',
-            d: b't',
-        };
-        assert_eq!(1936486004, id.as_u32());
-        assert_eq!(b"slnt", &id.str());
-        assert_eq!(VariationId::from_u32(1936486004), id);
-    }
 
     #[test]
     fn desired_size_pixels() {

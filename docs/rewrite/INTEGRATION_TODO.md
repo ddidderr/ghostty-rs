@@ -6,12 +6,10 @@ Collected from agent reports; resolve during integration phases.
 - [ ] os `locale::ensure_locale` no-op → call setlocale from apprt-gtk (unsafe allowed) at startup, as Ghostty's global.zig does.
 - [ ] os `passwd` Flatpak branch needs termio Pty.
 - [ ] os `open::OpenUrlKind` → replace with core apprt action type.
-- [ ] font `sprite/face.rs`: local `Presentation`/`RenderOptions` stand-ins → real font types (Phase 3).
-- [ ] font crate: re-add deps on config/unicode/terminal in Phase 3.
 - [ ] terminal crate: re-add deps on unicode/datastruct once those land.
 - [ ] input: key_encode::Options / paste::Options from terminal modes (Zig `fromTerminal`) — in terminal or core.
 - [ ] input: `binding::set::EntryFormatter` must be implemented by config formatter.
-- [ ] config: font_types.rs (Variation, CodepointMap, Descriptor), clipboard_codepoint_map::Entry, CursorStyle are local copies → unify with font/terminal.
+- [ ] config: clipboard_codepoint_map::Entry and CursorStyle are local copies → unify with terminal/formatter (font types are unified: canonical in ghostty-config, re-exported by ghostty-font).
 - [ ] config: url::REGEX needs onig (lookbehind) in renderer/core link matching.
 - [ ] config: theme::open needs resources dir from ghostty_os.
 - NOTE: Ghostty 1.3.1 is installed at /usr/bin/ghostty — use it as reference oracle (e.g. +show-config, +list-actions, terminfo).

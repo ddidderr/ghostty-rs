@@ -24,6 +24,7 @@ pub mod opentype;
 pub mod shape;
 pub mod shaper;
 pub mod shared_grid;
+pub mod shared_grid_set;
 pub mod sprite;
 
 pub use atlas::Atlas;
@@ -40,6 +41,7 @@ pub use library::Library;
 pub use metrics::Metrics;
 
 pub use shared_grid::SharedGrid;
+pub use shared_grid_set::SharedGridSet;
 pub use sprite::{Face as SpriteFace, Sprite};
 
 /// The styles that a family can take.

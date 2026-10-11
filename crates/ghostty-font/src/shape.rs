@@ -3,10 +3,9 @@
 //! The shaper implementation for the Linux backend is HarfBuzz
 //! ([`crate::shaper::harfbuzz::Shaper`]).
 
-use crate::collection::Index;
-
 pub use crate::shaper::cache::Cache;
 pub use crate::shaper::feature::{DEFAULT_FEATURES, Feature, FeatureList};
+pub use crate::shaper::run::{RunIterator, RunIteratorHook, RunOptions, TextRun};
 pub use crate::shaper::{harfbuzz, noop};
 
 /// Shaper implementation for our compile options (backend
@@ -45,27 +44,4 @@ pub struct Options {
     /// want to support per-face feature configuration. For now, we only
     /// support applying features globally.
     pub features: Vec<String>,
-}
-
-/// A single text run. Port of `shaper/run.zig` `TextRun`.
-///
-/// TODO(integration): `run.zig` (RunIterator over terminal rows) is deferred
-/// to F2; the `grid: *SharedGrid` field is omitted here and should be added
-/// when `SharedGrid` and the run iterator are wired in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TextRun {
-    /// A unique hash for this run. This can be used to cache the shaping
-    /// results.
-    pub hash: u64,
-
-    /// The offset in the row where this run started. This is added to the
-    /// X position of the final shaped cells to get the absolute position
-    /// in the row where they belong.
-    pub offset: u16,
-
-    /// The total number of cells produced by this run.
-    pub cells: u16,
-
-    /// The font index to use for the glyphs of this run.
-    pub font_index: Index,
 }

@@ -188,7 +188,7 @@ impl Face {
             log::debug!("variation axes font={}", result.name());
             if let Ok(axes) = result.face.mm_axes(&result.lib.inner.lib) {
                 for axis in axes {
-                    let id = super::VariationId::from_u32(axis.tag);
+                    let id = super::VariationId(axis.tag);
                     log::debug!(
                         "variation axis: id={} min={} max={} def={}",
                         String::from_utf8_lossy(&id.str()),
@@ -321,7 +321,7 @@ impl Face {
         // variations, either.
         for (i, axis) in axes.iter().take(n).enumerate() {
             for v in vs {
-                if axis.tag == v.id.as_u32() {
+                if axis.tag == v.id.0 {
                     coords[i] = (v.value * 65536.0) as i64;
                     break;
                 }
@@ -1365,7 +1365,7 @@ mod tests {
         let o = opts(12.0, 96);
         face.set_variations(
             &[Variation {
-                id: super::super::VariationId::new(b"wght"),
+                id: super::super::VariationId::init(b"wght"),
                 value: 800.0,
             }],
             o,
@@ -1375,7 +1375,7 @@ mod tests {
         let mut face = init(&lib, embedded::INCONSOLATA, 12.0, 96);
         face.set_variations(
             &[Variation {
-                id: super::super::VariationId::new(b"wght"),
+                id: super::super::VariationId::init(b"wght"),
                 value: 800.0,
             }],
             o,

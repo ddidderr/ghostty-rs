@@ -1,7 +1,6 @@
 //! Font discovery. Port of `font/discovery.zig` (fontconfig backend only;
 //! the CoreText discoverer is macOS-only and out of scope).
 
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::collection::Collection;
@@ -12,111 +11,44 @@ use crate::fontconfig as fc;
 /// Discover implementation for the compile options.
 pub type Discover = Fontconfig;
 
-/// Descriptor is used to search for fonts. The only required field
-/// is "family". The rest are ignored unless they're set to a non-zero
-/// value.
-#[derive(Debug, Clone, Default)]
-pub struct Descriptor {
-    /// Font family to search for. This can be a fully qualified font
-    /// name such as "Fira Code", "monospace", "serif", etc.
-    ///
-    /// On systems that use fontconfig (Linux), this can be a full
-    /// fontconfig pattern, such as "Fira Code-14:bold".
-    pub family: Option<String>,
+/// Descriptor is used to search for fonts (canonical definition in `ghostty-config`).
+pub use ghostty_config::font_types::Descriptor;
 
-    /// Specific font style to search for. This will filter the style
-    /// string the font advertises. The "bold/italic" booleans later in this
-    /// struct filter by the style trait the font has, not the string, so
-    /// these can be used in conjunction or not.
-    pub style: Option<String>,
-
-    /// A codepoint that this font must be able to render.
-    pub codepoint: u32,
-
-    /// Font size in points that the font should support. For conversion
-    /// to pixels, we will use 72 DPI for Mac and 96 DPI for everything else.
-    /// (If pixel conversion is necessary, i.e. emoji fonts)
-    pub size: f32,
-
-    /// True if we want to search specifically for a font that supports
-    /// specific styles.
-    pub bold: bool,
-    pub italic: bool,
-    pub monospace: bool,
-
-    /// Variation axes to apply to the font. This also impacts searching
-    /// for fonts since fonts with the ability to set these variations
-    /// will be preferred, but not guaranteed.
-    pub variations: Vec<Variation>,
-}
-
-impl Hash for Descriptor {
-    /// Hash the descriptor with the given hasher. Covers the same fields
-    /// as the Zig implementation.
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.family.hash(state);
-        self.style.hash(state);
-        self.codepoint.hash(state);
-        self.size.to_bits().hash(state);
-        self.bold.hash(state);
-        self.italic.hash(state);
-        self.monospace.hash(state);
-        self.variations.len().hash(state);
-        for variation in &self.variations {
-            variation.id.hash(state);
-
-            // This is not correct, but we don't currently depend on the
-            // hash value being different based on decimal values of variations.
-            (variation.value as i64).hash(state);
-        }
+/// Convert to Fontconfig pattern to use for lookup. The pattern does
+/// not have defaults filled/substituted (Fontconfig thing) so callers
+/// must still do this. (`Descriptor.toFcPattern`)
+pub fn to_fc_pattern(desc: &Descriptor) -> fc::Pattern {
+    let mut pat = fc::Pattern::create();
+    if let Some(family) = &desc.family {
+        assert!(pat.add_string(fc::Property::Family, family));
     }
-}
-
-impl Descriptor {
-    /// Returns a hash code that can be used to uniquely identify this
-    /// action.
-    pub fn hashcode(&self) -> u64 {
-        // `DefaultHasher::new()` uses fixed keys, so this is deterministic.
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
+    if let Some(style) = &desc.style {
+        assert!(pat.add_string(fc::Property::Style, style));
+    }
+    if desc.codepoint > 0 {
+        let mut cs = fc::CharSet::create();
+        assert!(cs.add_char(desc.codepoint));
+        assert!(pat.add_charset(fc::Property::Charset, &cs));
+    }
+    if desc.size > 0.0 {
+        assert!(pat.add_integer(fc::Property::Size, desc.size.round() as i32));
+    }
+    if desc.bold {
+        assert!(pat.add_integer(fc::Property::Weight, fc::Weight::Bold as i32));
+    }
+    if desc.italic {
+        assert!(pat.add_integer(fc::Property::Slant, fc::Slant::Italic as i32));
     }
 
-    /// Convert to Fontconfig pattern to use for lookup. The pattern does
-    /// not have defaults filled/substituted (Fontconfig thing) so callers
-    /// must still do this.
-    pub fn to_fc_pattern(&self) -> fc::Pattern {
-        let mut pat = fc::Pattern::create();
-        if let Some(family) = &self.family {
-            assert!(pat.add_string(fc::Property::Family, family));
-        }
-        if let Some(style) = &self.style {
-            assert!(pat.add_string(fc::Property::Style, style));
-        }
-        if self.codepoint > 0 {
-            let mut cs = fc::CharSet::create();
-            assert!(cs.add_char(self.codepoint));
-            assert!(pat.add_charset(fc::Property::Charset, &cs));
-        }
-        if self.size > 0.0 {
-            assert!(pat.add_integer(fc::Property::Size, self.size.round() as i32));
-        }
-        if self.bold {
-            assert!(pat.add_integer(fc::Property::Weight, fc::Weight::Bold as i32));
-        }
-        if self.italic {
-            assert!(pat.add_integer(fc::Property::Slant, fc::Slant::Italic as i32));
-        }
+    // For fontconfig, we always add monospace in the pattern. Since
+    // fontconfig sorts by closeness to the pattern, this doesn't fully
+    // exclude non-monospace but helps prefer it.
+    assert!(pat.add_integer(fc::Property::Spacing, fc::Spacing::Mono as i32));
 
-        // For fontconfig, we always add monospace in the pattern. Since
-        // fontconfig sorts by closeness to the pattern, this doesn't fully
-        // exclude non-monospace but helps prefer it.
-        assert!(pat.add_integer(fc::Property::Spacing, fc::Spacing::Mono as i32));
-
-        pat
-    }
+    pat
 }
 
+#[derive(Clone)]
 pub struct Fontconfig {
     fc_config: Arc<fc::Config>,
 }
@@ -145,7 +77,7 @@ impl Fontconfig {
     /// be used to build up the deferred fonts.
     pub fn discover(&self, desc: &Descriptor) -> Result<DiscoverIterator, DiscoverError> {
         // Build our pattern that we'll search for
-        let mut pat = desc.to_fc_pattern();
+        let mut pat = to_fc_pattern(desc);
         assert!(self.fc_config.substitute_with_pat_pattern(&mut pat));
         pat.default_substitute();
 

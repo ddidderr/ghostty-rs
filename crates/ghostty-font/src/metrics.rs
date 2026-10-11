@@ -537,127 +537,9 @@ fn add_float_to_int(int: &mut u32, float: f64) {
 /// little space as possible.
 pub type ModifierSet = HashMap<Key, Modifier>;
 
-/// Error returned by [`Modifier::parse`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum ModifierParseError {
-    #[error("invalid format")]
-    InvalidFormat,
-    #[error("value required")]
-    ValueRequired,
-}
-
-/// A modifier to apply to a metrics value. The modifier value represents
-/// a delta, so percent is a percentage to change, not a percentage of.
-/// For example, "20%" is 20% larger, not 20% of the value. Likewise,
-/// an absolute value of "20" is 20 larger, not literally 20.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Modifier {
-    Percent(f64),
-    Absolute(i32),
-}
-
-impl Modifier {
-    /// Parses the modifier value. If the value ends in "%" it is assumed
-    /// to be a percent, otherwise the value is parsed as an integer.
-    pub fn parse(input: &str) -> Result<Modifier, ModifierParseError> {
-        if input.is_empty() {
-            return Err(ModifierParseError::InvalidFormat);
-        }
-
-        if let Some(num) = input.strip_suffix('%') {
-            let mut percent = parse_float(num).ok_or(ModifierParseError::InvalidFormat)?;
-            percent /= 100.0;
-
-            if percent <= -1.0 {
-                return Ok(Modifier::Percent(0.0));
-            }
-            if percent < 0.0 {
-                return Ok(Modifier::Percent(1.0 + percent));
-            }
-            return Ok(Modifier::Percent(1.0 + percent));
-        }
-
-        parse_int_i32(input)
-            .map(Modifier::Absolute)
-            .ok_or(ModifierParseError::InvalidFormat)
-    }
-
-    /// So it works with the config framework.
-    pub fn parse_cli(input: Option<&str>) -> Result<Modifier, ModifierParseError> {
-        Modifier::parse(input.ok_or(ModifierParseError::ValueRequired)?)
-    }
-
-    /// Used by config formatter. Returns the value text of the config entry.
-    pub fn format_entry(&self) -> String {
-        match self {
-            Modifier::Percent(v) => format!("{}%", (v - 1.0) * 100.0),
-            Modifier::Absolute(v) => format!("{v}"),
-        }
-    }
-
-    /// Apply a modifier to an unsigned 32-bit value.
-    pub fn apply_u32(&self, v: u32) -> u32 {
-        match *self {
-            Modifier::Percent(p) => {
-                let p_clamped = p.max(0.0);
-                (f64::from(v) * p_clamped).round() as u32
-            }
-            Modifier::Absolute(abs) => {
-                let applied = i64::from(v).saturating_add(i64::from(abs));
-                let clamped = applied.max(0);
-                u32::try_from(clamped).unwrap_or(u32::MAX)
-            }
-        }
-    }
-
-    /// Apply a modifier to a signed 32-bit value.
-    pub fn apply_i32(&self, v: i32) -> i32 {
-        match *self {
-            Modifier::Percent(p) => {
-                let p_clamped = p.max(0.0);
-                (f64::from(v) * p_clamped).round() as i32
-            }
-            Modifier::Absolute(abs) => {
-                let applied = i64::from(v).saturating_add(i64::from(abs));
-                // Mirrors Zig: out-of-range yields maxInt * sign.
-                i32::try_from(applied).unwrap_or(if applied > 0 { i32::MAX } else { -i32::MAX })
-            }
-        }
-    }
-
-    /// Apply a modifier to a float value.
-    pub fn apply_f64(&self, v: f64) -> f64 {
-        match *self {
-            Modifier::Percent(p) => v * p.max(0.0),
-            Modifier::Absolute(abs) => v + f64::from(abs),
-        }
-    }
-}
-
-impl FromStr for Modifier {
-    type Err = ModifierParseError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Modifier::parse(s)
-    }
-}
-
-/// Zig `std.fmt.parseInt(i32, s, 10)`: optional sign, digits only
-/// (underscores are only accepted with base 0, so not here).
-fn parse_int_i32(s: &str) -> Option<i32> {
-    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return None;
-    }
-    s.parse::<i32>().ok()
-}
-
-/// Approximation of Zig `std.fmt.parseFloat(f64, s)` for decimal input.
-fn parse_float(s: &str) -> Option<f64> {
-    if s.is_empty() || s.contains(char::is_whitespace) {
-        return None;
-    }
-    s.parse::<f64>().ok()
-}
+/// A modifier to apply to a metrics value (canonical definition in
+/// `ghostty-config`, which parses and formats the `adjust-*` options).
+pub use ghostty_config::metric_modifier::MetricModifier as Modifier;
 
 /// Key is an enum of all the available metrics keys (every u32/i32/f64
 /// field of [`Metrics`]).
@@ -683,6 +565,27 @@ pub enum Key {
 }
 
 impl Key {
+    /// Every key, in declaration order.
+    pub const ALL: [Key; 17] = [
+        Key::CellWidth,
+        Key::CellHeight,
+        Key::CellBaseline,
+        Key::UnderlinePosition,
+        Key::UnderlineThickness,
+        Key::StrikethroughPosition,
+        Key::StrikethroughThickness,
+        Key::OverlinePosition,
+        Key::OverlineThickness,
+        Key::BoxThickness,
+        Key::CursorThickness,
+        Key::CursorHeight,
+        Key::IconHeight,
+        Key::IconHeightSingle,
+        Key::FaceWidth,
+        Key::FaceHeight,
+        Key::FaceY,
+    ];
+
     /// The snake_case field name, matching the Zig `@tagName`.
     pub fn name(&self) -> &'static str {
         match self {
@@ -736,20 +639,6 @@ impl FromStr for Key {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn formatconfig_percent() {
-        let p = Modifier::parse_cli(Some("24%")).unwrap();
-        // Zig test checks the config-formatted line "a = 24%\n"; the config
-        // entry formatter lives in ghostty-config, so check the value text.
-        assert_eq!(p.format_entry(), "24%");
-    }
-
-    #[test]
-    fn formatconfig_absolute() {
-        let p = Modifier::parse_cli(Some("-30")).unwrap();
-        assert_eq!(p.format_entry(), "-30");
-    }
 
     #[test]
     fn metrics_apply_modifiers() {
@@ -873,17 +762,11 @@ mod tests {
 
     #[test]
     fn modifier_parse_errors() {
-        assert_eq!(Err(ModifierParseError::InvalidFormat), Modifier::parse(""));
-        assert_eq!(
-            Err(ModifierParseError::InvalidFormat),
-            Modifier::parse("abc")
-        );
-        assert_eq!(Err(ModifierParseError::InvalidFormat), Modifier::parse("%"));
+        assert!(Modifier::parse("").is_err());
+        assert!(Modifier::parse("abc").is_err());
+        assert!(Modifier::parse("%").is_err());
         assert_eq!(Ok(Modifier::Percent(0.0)), Modifier::parse("-150%"));
-        assert_eq!(
-            Err(ModifierParseError::ValueRequired),
-            Modifier::parse_cli(None)
-        );
+        assert!(Modifier::parse_cli_value(None).is_err());
     }
 
     #[test]

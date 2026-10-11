@@ -81,7 +81,8 @@ impl MetricModifier {
     #[must_use]
     pub fn apply_i32(&self, v: i32) -> i32 {
         let r = self.apply_i64(i64::from(v), false);
-        i32::try_from(r).unwrap_or(if r < 0 { i32::MIN } else { i32::MAX })
+        // Mirrors Zig: out-of-range yields maxInt * sign.
+        i32::try_from(r).unwrap_or(if r < 0 { -i32::MAX } else { i32::MAX })
     }
 
     /// Apply to a float value.
