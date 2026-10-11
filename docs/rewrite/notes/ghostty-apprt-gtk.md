@@ -124,3 +124,18 @@ keybindings from the user config drive window/tab/split/palette actions; `draw_f
 * `toggle_visibility`/`float_window`/`secure_input`/`close_all_windows` etc.: unimplemented like upstream.
 * Open URL uses `xdg-open` (OpenURI portal is a TODO upstream too).
 * `async-backend` (libxev) is meaningless in Rust and ignored.
+
+## F7: window + command palette (class/{window,command_palette}.rs)
+
+`window::Window` (GhosttyWindow, `adw::ApplicationWindow` subclass; template `ui/1.5/window.ui`). Props: `active-surface` (ro), `config` (rw), `debug` (ro), `titlebar-style` (ro, enum `window::TitlebarStyle` = GEnum `GhosttyWindowTitlebarStyle`), `headerbar-visible`, `tabs-autohide`, `tabs-wide`, `tabs-visible`, `toolbar-style` (`adw::ToolbarStyle`), `quick-terminal` (rw). Template callbacks follow GtkBuilder's `[sender, args.., template_instance]` calling convention (instance is the LAST parameter); the two blueprint closures use `#[template_callback(function)]`.
+Actions registered on the window (`win.*`, same names/param types as Zig): about, close, close-tab (s), new-tab, new-window, prompt-surface-title, prompt-tab-title, prompt-context-tab-title, ring-bell, split-{right,left,up,down}, copy, paste, reset, clear, toggle-command-palette, toggle-inspector (no-op, inspector deferred).
+
+Public API: `Window::new(&Application, Option<&str> title)`, `Window::new_quick_terminal(&Application)`, `winproto() -> RefMut<winproto::Window>`, `is_quick_terminal()`, `get_active_surface() -> Option<Surface>`, `get_config() -> Option<Config>`, `tab_view()/get_tab_view()`, `get_window_decoration()`, `toggle_window_decorations()`, `get_needs_confirm_quit()`, `new_tab(Option<&Surface>)`, `new_tab_for_window(Option<&Surface>, TabOverrides{command,working_directory,title})`, `select_tab(SelectTab::{Previous,Next,Last,N(usize)}) -> bool`, `move_tab(&Surface, isize) -> bool`, `toggle_tab_overview()`, `toggle_visibility()`.
+Everything else (sync_appearance, sync_actions, tab/surface signal wiring: present-request, clipboard-write (toast for standard clipboard only), menu, toggle-fullscreen, toggle-maximize, init (default/min size once), tab close-request, split-tree `changed`) is private and ported 1:1, incl. tab-overview focus timer (500ms), close confirmations for window/tab, new-window-from-dragged-tab, quick-terminal autohide, urgency reset, winproto resize/scale hooks.
+
+Deviations: parent surfaces are GTK `Surface` objects (not core surfaces); `adw::AboutDialog` always (adw >= 1.5 assumed); `GBindingGroup` replaced by a single `glib::Binding` (tab title -> window title, no sync_create, like Zig); signal handler "disconnect by data" is a registry of `SignalHandlerId`s; command palette `clipboard-write` enum compared by value 0 / nick `standard`.
+TODO: toggle-inspector is a stub (log only).
+
+`command_palette::CommandPalette` (GhosttyCommandPalette, `adw::Bin`, template `ui/1.5/command-palette.ui`, root object is the `AdwDialog`): prop `config`; signal `trigger(BoxedAction)` with `connect_trigger(|palette, &binding::Action|)`; `new()` (keeps a self-reference until the dialog's `closed`, like Zig's refSink), `toggle(&Window)`. Private `GhosttyCommand` list item (props `config`, `action-key`, `action`, `title`, `description`; regular + jump commands, comparator `compare_commands` with colon normalisation) sourced from `config.command_palette_entry` filtered by `is_action_supported_on_gtk` plus one jump command per `Application::surfaces()`.
+Tests: 3 unit tests (title ordering, unsupported actions, titlebar conversion); GObject runtime paths need a display (exercised by the demo).
+Shared edit: added `"gnome_44"` to the gtk4 features in Cargo.toml (glib >= 2.74/2.76 APIs such as SignalGroup/BindingGroup).

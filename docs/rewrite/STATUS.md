@@ -13,7 +13,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | W6 | config | sonnet | ✅ | |
 | W7 | font: metrics + sprite | sonnet | ✅ | |
 | S1 | vt: stream.zig + simd | sonnet | ✅ | |
-| T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | ⚠️ | partial committed; round 2 (full parity) running in worktree ../ghostty-rs-t1 branch t1-pagelist |
+| T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | ✅ | full parity; open API requests in notes/ghostty-terminal-pagelist-requests.md |
 | F1 | font engine (freetype/fontconfig/harfbuzz, Collection, SharedGrid) | sonnet | ✅ | run.zig + SharedGridSet deferred (F2) | |
 | IO1 | termio: pty, Command, shell integration, terminfo | sonnet | ✅ | |
 | C1 | cli actions | sonnet | ✅ | list-fonts, show-face, new-window deferred | |
