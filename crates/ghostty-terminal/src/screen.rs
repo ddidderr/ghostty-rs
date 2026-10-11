@@ -361,14 +361,7 @@ pub enum SemanticContentSet {
     Input(InputClear),
 }
 
-/// A string and a map from each byte of the string to the pin it came from.
-///
-/// TODO(integration): replace with `string_map::StringMap` once ported.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct StringMap {
-    pub string: String,
-    pub map: Vec<Pin>,
-}
+pub use crate::string_map::StringMap;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionString {

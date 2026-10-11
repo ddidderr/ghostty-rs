@@ -11,5 +11,8 @@ pub mod screen;
 pub mod screen_set;
 pub mod selection;
 pub mod size;
+pub mod stream_readonly;
+pub mod string_map;
 pub mod style;
 pub mod tabstops;
+pub mod terminal;
