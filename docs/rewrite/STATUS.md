@@ -32,7 +32,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | CORE | core App/Surface, trait move, state unification, root main, run app | sonnet | ✅ | app runs; input untested at runtime |
 | V1 | headless e2e tests (input/mouse/clipboard/actions) + GTK input replay, fix bugs | sonnet | 🟨 | |
 | V2 | resources bundling (themes, terminfo), INTEGRATION_TODO cleanup | sonnet | 🟨 | |
-| RV1 | Codex read-only audit core Surface vs Zig | codex astra | 🟨 | findings → scratch then fix WP |
+| RV1 | Codex read-only audit core Surface vs Zig | codex astra | ✅ | 9 findings (notes/review-core-codex.md) → handed to V1 |
+| P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
