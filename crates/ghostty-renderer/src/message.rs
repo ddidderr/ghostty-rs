@@ -1,30 +1,15 @@
 //! Messages that can be sent to a renderer thread (`renderer/message.zig`).
 use std::sync::Arc;
 
-use ghostty_font::SharedGrid;
+use ghostty_config::config::Config;
+use ghostty_font::shared_grid_set::Key as SharedGridKey;
+use ghostty_font::{SharedGrid, SharedGridSet};
+use ghostty_terminal::highlight::Flattened;
 
+use crate::generic::DerivedConfig as RendererDerivedConfig;
+use crate::link;
 use crate::size::Size;
-
-/// Key identifying a font grid in the `SharedGridSet`.
-// TODO(integration): replace with ghostty_font's SharedGridSet key once
-// SharedGridSet is ported (it needs ghostty-config).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SharedGridKey(pub u64);
-
-/// The renderer-thread derived config (`renderer.Thread.DerivedConfig`).
-// TODO(integration): defined with Thread.zig (deferred; needs ghostty-config).
-#[derive(Debug, Clone, Default)]
-pub struct ThreadDerivedConfig {}
-
-/// The renderer implementation derived config (`Renderer.DerivedConfig`).
-// TODO(integration): defined with generic.zig (deferred; needs ghostty-config).
-#[derive(Debug, Clone, Default)]
-pub struct RendererDerivedConfig {}
-
-/// A flattened highlight (`terminal.highlight.Flattened`), used for search matches.
-// TODO(integration): replace with ghostty_terminal::highlight::Flattened.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Flattened {}
+use crate::thread::DerivedConfig as ThreadDerivedConfig;
 
 /// The messages that can be sent to a renderer thread.
 pub enum Message {
@@ -48,7 +33,7 @@ pub enum Message {
 
     /// Change the font grid. This can happen for any number of reasons
     /// including a font size change, family change, etc.
-    FontGrid(FontGridChange),
+    FontGrid(Box<FontGridChange>),
 
     /// Changes the size. The screen size might change, padding, grid, etc.
     Resize(Size),
@@ -78,6 +63,7 @@ pub enum Message {
 /// Payload of [`Message::FontGrid`].
 pub struct FontGridChange {
     pub grid: Arc<SharedGrid>,
+    pub set: Arc<SharedGridSet>,
 
     /// The key for the new grid. If adopting the new grid fails for any
     /// reason, the old grid should be kept but the new key should be
@@ -87,21 +73,15 @@ pub struct FontGridChange {
     /// After accepting the new grid, the old grid must be dereferenced
     /// using this key.
     pub old_key: SharedGridKey,
-    // TODO(integration): upstream also carries `set: *SharedGridSet`.
 }
 
 impl Message {
-    /// Initialize a change_config message.
-    // TODO(integration): `initChangeConfig(alloc, config)` builds the derived
-    // configs from `config.Config`; add once the derived config types exist.
-    pub fn init_change_config(
-        thread: ThreadDerivedConfig,
-        r#impl: RendererDerivedConfig,
-    ) -> Message {
-        Message::ChangeConfig {
-            thread: Box::new(thread),
-            r#impl: Box::new(r#impl),
-        }
+    /// Initialize a change_config message (`initChangeConfig`).
+    pub fn init_change_config(config: &Config) -> Result<Message, link::Error> {
+        Ok(Message::ChangeConfig {
+            thread: Box::new(ThreadDerivedConfig::new(config)),
+            r#impl: Box::new(RendererDerivedConfig::new(config)?),
+        })
     }
 }
 
@@ -111,7 +91,7 @@ mod tests {
 
     #[test]
     fn change_config_message_roundtrip() {
-        let m = Message::init_change_config(ThreadDerivedConfig {}, RendererDerivedConfig {});
+        let m = Message::init_change_config(&Config::default()).unwrap();
         assert!(matches!(m, Message::ChangeConfig { .. }));
     }
 }

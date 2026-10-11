@@ -6,11 +6,21 @@ license.workspace = true
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
+crossbeam-channel = "0.5.17"
+ghostty-config.workspace = true
+ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
+ghostty-input.workspace = true
+ghostty-terminal.workspace = true
+ghostty-unicode.workspace = true
+ghostty-vt.workspace = true
 glow = "0.18.0"
+jpeg-decoder = { version = "0.3.2", default-features = false }
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 log = "0.4.34"
 naga = { version = "30.0.1", features = ["glsl-in", "glsl-out", "wgsl-in"] }
+onig = "6.5.3"
+png = "0.18.1"
 thiserror = "2.0.21"
 
 [lints.rust]

@@ -388,3 +388,461 @@ fn headless_invalid_shader_reports_compile_error() {
         Err(ghostty_renderer::opengl::gl::Error::CompileFailed(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Full renderer: Terminal -> RenderState -> generic renderer -> offscreen target
+
+mod full_renderer {
+    use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use ghostty_config::config::Config;
+    use ghostty_config::types_a::Color as ConfigColor;
+    use ghostty_config::types_b::AlphaBlending as ConfigBlending;
+    use ghostty_font::face::DesiredSize;
+    use ghostty_font::shared_grid_set::{DerivedConfig as FontDerivedConfig, SharedGridSet};
+    use ghostty_renderer::generic::{DerivedConfig, Host, Renderer};
+    use ghostty_renderer::options::Options;
+    use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
+    use ghostty_renderer::state::State;
+    use ghostty_terminal::page_list::Scrollbar;
+    use ghostty_terminal::terminal::{Options as TermOptions, Terminal};
+    use ghostty_vt::color::DynamicRgb;
+
+    #[derive(Default)]
+    struct TestHost {
+        scrollbars: Mutex<Vec<Scrollbar>>,
+        health: Mutex<Vec<ghostty_renderer::Health>>,
+        redraws: AtomicUsize,
+    }
+
+    impl Host for TestHost {
+        fn scrollbar(&self, s: Scrollbar) -> bool {
+            self.scrollbars.lock().unwrap().push(s);
+            true
+        }
+        fn renderer_health(&self, h: ghostty_renderer::Health) {
+            self.health.lock().unwrap().push(h);
+        }
+        fn redraw_surface(&self) -> bool {
+            self.redraws.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    const PAD: u32 = 10;
+    const COLS: u16 = 20;
+    const ROWS: u16 = 5;
+
+    struct Fixture {
+        _h: Headless,
+        renderer: Arc<Renderer>,
+        gl: Gl,
+        state: ghostty_renderer::state::SharedState,
+        host: Arc<TestHost>,
+        cell: CellSize,
+        w: usize,
+        h: usize,
+        bg: [u8; 3],
+    }
+
+    impl Fixture {
+        fn new(text: &str) -> Option<Fixture> {
+            let (h, mut api) = {
+                let h = match Headless::new() {
+                    Ok(h) => h,
+                    Err(e) => {
+                        eprintln!("SKIP: headless EGL unavailable: {e}");
+                        return None;
+                    }
+                };
+                // Native blending so the stored bytes are exact.
+                let mut api = OpenGL::init(ConfigBlending::Native);
+                if let Err(e) = api.prepare_context(|n| h.proc_address(n)) {
+                    eprintln!("SKIP: cannot prepare GL context: {e}");
+                    return None;
+                }
+                (h, api)
+            };
+            let _ = &mut api;
+
+            let config = Config {
+                alpha_blending: ConfigBlending::Native,
+                background: ConfigColor {
+                    r: 0x10,
+                    g: 0x20,
+                    b: 0x30,
+                },
+                background_opacity: 1.0,
+                ..Config::default()
+            };
+
+            // Fonts: the embedded JetBrains Mono (no font-family configured).
+            let set = Arc::new(SharedGridSet::new().unwrap());
+            let (_key, grid) = set
+                .ref_(
+                    &FontDerivedConfig::new(&config),
+                    DesiredSize {
+                        points: 12.0,
+                        xdpi: 96,
+                        ydpi: 96,
+                    },
+                )
+                .unwrap();
+            let gc = grid.cell_size();
+            let cell = CellSize {
+                width: gc.width,
+                height: gc.height,
+            };
+
+            // As termio does at startup, give the terminal the configured colors.
+            let mut topts = TermOptions::new(COLS, ROWS);
+            topts.colors.background = DynamicRgb::init(config.background.to_terminal_rgb());
+            topts.colors.foreground = DynamicRgb::init(config.foreground.to_terminal_rgb());
+            let mut term = Terminal::new(topts).unwrap();
+            {
+                let mut s = term.vt_stream();
+                s.next_slice(text.as_bytes()).unwrap();
+            }
+            let state = State::new(term).into_shared();
+
+            let w = (u32::from(COLS) * cell.width + 2 * PAD) as usize;
+            let hh = (u32::from(ROWS) * cell.height + 2 * PAD) as usize;
+            let size = Size {
+                screen: ScreenSize {
+                    width: w as u32,
+                    height: hh as u32,
+                },
+                cell,
+                padding: Padding {
+                    top: PAD,
+                    bottom: PAD,
+                    left: PAD,
+                    right: PAD,
+                },
+            };
+
+            let gl: Gl = api.gl().unwrap().clone();
+            // A surfaceless context has no default viewport (GTK's GLArea sets one).
+            gl.viewport(0, 0, w as i32, hh as i32).unwrap();
+
+            let host = Arc::new(TestHost::default());
+            let renderer = Arc::new(
+                Renderer::new(
+                    Options {
+                        config: DerivedConfig::new(&config).unwrap(),
+                        font_grid: grid,
+                        size,
+                        host: host.clone(),
+                    },
+                    api,
+                )
+                .unwrap(),
+            );
+
+            Some(Fixture {
+                _h: h,
+                gl,
+                renderer,
+                state,
+                host,
+                cell,
+                w,
+                h: hh,
+                bg: [0x10, 0x20, 0x30],
+            })
+        }
+
+        fn frame(&self, blink_visible: bool) -> Vec<u8> {
+            self.renderer
+                .update_frame(&self.state, blink_visible)
+                .unwrap();
+            self.renderer.draw_frame(true).unwrap();
+            let (w, h, px) = self
+                .renderer
+                .last_frame_pixels()
+                .expect("a frame was drawn");
+            assert_eq!((w, h), (self.w, self.h));
+            px
+        }
+
+        /// Pixel at terminal-space (top-left origin) pixel coordinates.
+        fn at(&self, px: &[u8], x: usize, y_top: usize) -> [u8; 4] {
+            super::px(px, self.w, x, self.h - 1 - y_top)
+        }
+
+        /// The pixel at the center of a rectangle.
+        fn at_center(&self, px: &[u8], r: (usize, usize, usize, usize)) -> [u8; 4] {
+            self.at(px, usize::midpoint(r.0, r.2), usize::midpoint(r.1, r.3))
+        }
+
+        /// The (x0, y0, x1, y1) pixel rectangle of grid cell (cx, cy).
+        fn cell_rect(&self, cx: usize, cy: usize) -> (usize, usize, usize, usize) {
+            let (cw, ch) = (self.cell.width as usize, self.cell.height as usize);
+            let (x0, y0) = (PAD as usize + cx * cw, PAD as usize + cy * ch);
+            (x0, y0, x0 + cw, y0 + ch)
+        }
+
+        /// Pixels of a rectangle.
+        fn region(&self, px: &[u8], r: (usize, usize, usize, usize)) -> Vec<[u8; 4]> {
+            let mut v = Vec::new();
+            for y in r.1..r.3 {
+                for x in r.0..r.2 {
+                    v.push(self.at(px, x, y));
+                }
+            }
+            v
+        }
+    }
+
+    fn is_bg(p: [u8; 4], bg: [u8; 3]) -> bool {
+        p[..3] == bg
+    }
+
+    #[test]
+    fn headless_full_renderer_draws_terminal() {
+        // Line 1: red "hello"; line 2: three palette-green cells then the cursor.
+        let Some(f) = Fixture::new("\x1b[31mhello\x1b[0m\r\n\x1b[42m   \x1b[0m") else {
+            return;
+        };
+        let px = f.frame(true);
+
+        // The padding shows the configured background exactly, in all corners.
+        for (x, y) in [
+            (0, 0),
+            (f.w - 1, 0),
+            (0, f.h - 1),
+            (f.w - 1, f.h - 1),
+            (PAD as usize / 2, f.h / 2),
+        ] {
+            let p = f.at(&px, x, y);
+            assert_eq!(p[..3], f.bg, "padding pixel ({x},{y}) = {p:?}");
+        }
+
+        // The text area has non-background pixels in the "hello" cells and they
+        // are red (palette 1 is a red hue: r dominates).
+        let hello = f.region(&px, f.cell_rect(0, 0));
+        let hello_all: Vec<_> = (0..5)
+            .flat_map(|cx| f.region(&px, f.cell_rect(cx, 0)))
+            .collect();
+        assert!(hello_all.iter().any(|p| !is_bg(*p, f.bg)), "text drawn");
+        assert!(
+            hello_all
+                .iter()
+                .any(|p| p[0] > 150 && u16::from(p[0]) > u16::from(p[1]) + 80),
+            "red glyph pixels exist"
+        );
+        let _ = hello;
+
+        // Cells past the text on line 1 are untouched background.
+        for p in f.region(&px, f.cell_rect(10, 0)) {
+            assert!(is_bg(p, f.bg), "empty cell is bg: {p:?}");
+        }
+
+        // Palette-green background cells are filled with the exact palette color.
+        let green = ghostty_vt::color::DEFAULT[2];
+        let mid = f.cell_rect(1, 1);
+        let p = f.at_center(&px, mid);
+        assert_eq!(p[..3], [green.r, green.g, green.b], "cell bg color");
+
+        // The block cursor (focused, blink visible) is drawn in the foreground
+        // color at (3, 1).
+        let c = f.cell_rect(3, 1);
+        let p = f.at_center(&px, c);
+        assert_eq!(p[..3], [255, 255, 255], "cursor block");
+
+        // The frame was healthy, and the first scrollbar state was pushed.
+        assert_eq!(f.renderer.health(), ghostty_renderer::Health::Healthy);
+        assert!(!f.host.scrollbars.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn headless_full_renderer_updates_incrementally_and_blinks() {
+        let Some(f) = Fixture::new("hi") else {
+            return;
+        };
+        let px = f.frame(true);
+        // The cursor is at (2, 0).
+        let c = f.cell_rect(2, 0);
+        let center = |px: &[u8]| f.at_center(px, c);
+        assert_eq!(center(&px)[..3], [255, 255, 255]);
+
+        // Blink off: the cursor disappears (partial/no-op row rebuild keeps
+        // the rest of the screen).
+        {
+            let mut st = f.state.lock().unwrap();
+            let mut s = st.terminal.vt_stream();
+            // Make the terminal's cursor blink so blink_visible=false hides it.
+            s.next_slice(b"\x1b[?12h").unwrap();
+        }
+        let px = f.frame(false);
+        assert_eq!(center(&px)[..3], f.bg, "hidden blinking cursor shows bg");
+        let hi = (0..2)
+            .flat_map(|cx| f.region(&px, f.cell_rect(cx, 0)))
+            .any(|p| !is_bg(p, f.bg));
+        assert!(hi, "existing text survives a rebuild");
+
+        // New output only dirties its own row; the old row stays.
+        {
+            let mut st = f.state.lock().unwrap();
+            let mut s = st.terminal.vt_stream();
+            s.next_slice(b"\r\n\x1b[1;32mbold\x1b[0m").unwrap();
+        }
+        let px = f.frame(true);
+        assert!(
+            (0..4)
+                .flat_map(|cx| f.region(&px, f.cell_rect(cx, 1)))
+                .any(|p| !is_bg(p, f.bg)),
+            "second line drawn"
+        );
+        assert!(
+            (0..2)
+                .flat_map(|cx| f.region(&px, f.cell_rect(cx, 0)))
+                .any(|p| !is_bg(p, f.bg)),
+            "first line still drawn"
+        );
+    }
+
+    #[test]
+    fn headless_full_renderer_selection_and_underline() {
+        // Underlined text on row 0 and a selected region.
+        let Some(f) = Fixture::new("\x1b[4mab\x1b[0m cd") else {
+            return;
+        };
+        let px = f.frame(false);
+        // The underline sits near the bottom of the cell: some non-bg pixel in
+        // the lower third of cell (0,0) that is a full-width line.
+        let r = f.cell_rect(0, 0);
+        let low = (r.0, r.1 + (r.3 - r.1) * 2 / 3, r.2, r.3);
+        assert!(
+            f.region(&px, low).iter().any(|p| !is_bg(*p, f.bg)),
+            "underline drawn"
+        );
+    }
+
+    #[test]
+    fn headless_full_renderer_resize_and_font_change() {
+        let Some(f) = Fixture::new("resize") else {
+            return;
+        };
+        let _ = f.frame(true);
+        // A screen size change (padding only) is accepted without a GL error.
+        f.renderer.set_screen_size(Size {
+            screen: ScreenSize {
+                width: f.w as u32,
+                height: f.h as u32,
+            },
+            cell: f.cell,
+            padding: Padding {
+                top: PAD,
+                bottom: PAD,
+                left: PAD,
+                right: PAD,
+            },
+        });
+        f.renderer.mark_dirty();
+        let px = f.frame(true);
+        assert_eq!(f.at(&px, 0, 0)[..3], f.bg);
+        assert_eq!(f.renderer.health(), ghostty_renderer::Health::Healthy);
+    }
+
+    #[test]
+    fn headless_full_renderer_survives_unrealize_realize() {
+        let Some(f) = Fixture::new("realize") else {
+            return;
+        };
+        let _ = f.frame(true);
+
+        // GTK destroys and recreates the GL objects when the widget is
+        // unrealized/realized (e.g. moved between windows).
+        f.renderer.display_unrealized();
+        assert!(matches!(
+            f.renderer.draw_frame(true),
+            Err(ghostty_renderer::generic::Error::Defunct)
+        ));
+        f.renderer
+            .display_realized(|n| f._h.proc_address(n))
+            .unwrap();
+        // The new context needs a viewport again in the surfaceless case.
+        let gl = Gl::clone(&f.gl);
+        gl.viewport(0, 0, f.w as i32, f.h as i32).unwrap();
+
+        let px = f.frame(true);
+        assert_eq!(f.at(&px, 0, 0)[..3], f.bg);
+        assert!(
+            (0..7)
+                .flat_map(|cx| f.region(&px, f.cell_rect(cx, 0)))
+                .any(|p| !is_bg(p, f.bg)),
+            "text is drawn again after realize"
+        );
+        assert_eq!(f.renderer.health(), ghostty_renderer::Health::Healthy);
+    }
+
+    #[test]
+    fn headless_renderer_thread_updates_and_requests_draws() {
+        use ghostty_renderer::message::Message;
+        use ghostty_renderer::thread::Thread;
+        use std::time::{Duration, Instant};
+
+        let Some(f) = Fixture::new("thread") else {
+            return;
+        };
+        let wait_for = |n: usize| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while f.host.redraws.load(Ordering::SeqCst) < n {
+                assert!(Instant::now() < end, "timed out waiting for redraw {n}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        let thread = Thread::new(
+            &Config::default(),
+            f.renderer.clone(),
+            f.state.clone(),
+            f.host.clone(),
+        );
+        let running = thread.spawn().unwrap();
+
+        // The initial wakeup renders (update_frame) and asks the apprt
+        // (here: this test, standing in for the GTK main thread) to draw.
+        wait_for(1);
+        f.renderer.draw_frame(true).unwrap();
+        let (w, h, px) = f.renderer.last_frame_pixels().unwrap();
+        assert_eq!((w, h), (f.w, f.h));
+        assert_eq!(f.at(&px, 0, 0)[..3], f.bg);
+        assert!(
+            (0..6)
+                .flat_map(|cx| f.region(&px, f.cell_rect(cx, 0)))
+                .any(|p| !is_bg(p, f.bg)),
+            "thread-rendered text is visible"
+        );
+
+        // Messages are processed and cause another update + draw request.
+        let before = f.host.redraws.load(Ordering::SeqCst);
+        assert!(running.handle.send(Message::Focus(false)));
+        wait_for(before + 1);
+        // Unfocused: the hollow block cursor is drawn at (6, 0); its center
+        // stays background but its left edge is foreground.
+        {
+            let mut st = f.state.lock().unwrap();
+            st.terminal.vt_stream().next_slice(b"!").unwrap();
+        }
+        running.handle.wakeup();
+        wait_for(before + 2);
+        f.renderer.draw_frame(true).unwrap();
+        let (_, _, px) = f.renderer.last_frame_pixels().unwrap();
+        let c = f.cell_rect(7, 0);
+        assert_eq!(
+            f.at_center(&px, c)[..3],
+            f.bg,
+            "hollow cursor is empty in the middle"
+        );
+        assert!(
+            f.region(&px, c).iter().any(|p| !is_bg(*p, f.bg)),
+            "hollow cursor outline is drawn"
+        );
+
+        running.stop_and_join();
+    }
+}

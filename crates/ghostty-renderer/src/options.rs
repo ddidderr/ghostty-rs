@@ -3,14 +3,17 @@ use std::sync::Arc;
 
 use ghostty_font::SharedGrid;
 
+use crate::generic::Host;
 use crate::size::Size;
 
 /// Options for constructing a renderer.
 ///
 /// `config` is the derived renderer configuration (`Renderer.DerivedConfig`).
-// TODO(integration): upstream also carries `surface_mailbox`, `rt_surface`
-// and `thread` (apprt / Thread.zig types). They are added when the generic
-// renderer and the apprt exist; the GL loader closure replaces `rt_surface`.
+///
+/// Zig also carries `rt_surface` (used by the graphics API to prepare the
+/// GL context) and `thread`; in Rust the apprt prepares the GL context
+/// itself (`OpenGL::prepare_context`) before constructing the renderer, and
+/// the thread is wired up by [`crate::thread::Thread`].
 pub struct Options<C> {
     /// The derived configuration for this renderer implementation.
     pub config: C,
@@ -20,4 +23,7 @@ pub struct Options<C> {
 
     /// The size of everything.
     pub size: Size,
+
+    /// The surface mailbox / apprt callbacks (Zig: `surface_mailbox`).
+    pub host: Arc<dyn Host>,
 }

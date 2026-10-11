@@ -51,23 +51,7 @@ pub const MIN_VERSION_MAJOR: u32 = 4;
 pub const MIN_VERSION_MINOR: u32 = 3;
 
 /// `config.AlphaBlending`.
-// TODO(integration): replace with ghostty_config's AlphaBlending.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum AlphaBlending {
-    #[default]
-    Native,
-    Linear,
-    LinearCorrected,
-}
-
-impl AlphaBlending {
-    pub fn is_linear(self) -> bool {
-        match self {
-            AlphaBlending::Native => false,
-            AlphaBlending::Linear | AlphaBlending::LinearCorrected => true,
-        }
-    }
-}
+pub use ghostty_config::types_b::AlphaBlending;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -294,6 +278,12 @@ impl OpenGL {
             self.present(&target)?;
         }
         Ok(())
+    }
+
+    /// The most recently presented target, if any (also set when the blit to
+    /// the default framebuffer is a no-op, e.g. on a surfaceless context).
+    pub fn last_target(&self) -> Option<&Arc<Target>> {
+        self.last_target.as_ref()
     }
 
     /// Drop the remembered last-presented target (call when the target it

@@ -1,33 +1,9 @@
 //! Cursor style decision logic (`renderer/cursor.zig`).
 
-/// Terminal cursor styles (`terminal.CursorStyle`).
-// TODO(integration): replace with ghostty_terminal's CursorStyle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TerminalCursorStyle {
-    Bar,
-    #[default]
-    Block,
-    BlockHollow,
-    Underline,
-}
+use ghostty_terminal::render::RenderState;
 
-/// The subset of `terminal.RenderState.cursor` that the cursor style
-/// decision needs.
-// TODO(integration): replace with `&ghostty_terminal::RenderState` (use its
-// `cursor` field) once the terminal crate is a dependency.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RenderStateCursor {
-    /// Viewport position of the cursor (`None` if it isn't in the viewport).
-    pub viewport: Option<(u16, u16)>,
-    /// Whether the terminal is at a password prompt.
-    pub password_input: bool,
-    /// Cursor visibility via terminal mode.
-    pub visible: bool,
-    /// Whether the cursor is blinking.
-    pub blinking: bool,
-    /// The visual style requested by the terminal.
-    pub visual_style: TerminalCursorStyle,
-}
+/// Terminal cursor styles (`terminal.CursorStyle`).
+pub type TerminalCursorStyle = ghostty_terminal::cursor::Style;
 
 /// Available cursor styles for drawing that renderers must support.
 /// This is a superset of terminal cursor styles since the renderer supports
@@ -65,13 +41,13 @@ pub struct StyleOptions {
 
 /// Returns the cursor style to use for the current render state or None
 /// if a cursor should not be rendered at all.
-pub fn style(state: &RenderStateCursor, opts: StyleOptions) -> Option<Style> {
+pub fn style(state: &RenderState, opts: StyleOptions) -> Option<Style> {
     // Note the order of conditionals below is important. It represents
     // a priority system of how we determine what state overrides cursor
     // visibility and style.
 
     // The cursor must be visible in the viewport to be rendered.
-    state.viewport?;
+    state.cursor.viewport?;
 
     // If we are in preedit, then we always show the block cursor. We do
     // this even if the cursor is explicitly not visible because it shows
@@ -81,12 +57,12 @@ pub fn style(state: &RenderStateCursor, opts: StyleOptions) -> Option<Style> {
     }
 
     // If we're at a password input its always a lock.
-    if state.password_input {
+    if state.cursor.password_input {
         return Some(Style::Lock);
     }
 
     // If the cursor is explicitly not visible by terminal mode, we don't render.
-    if !state.visible {
+    if !state.cursor.visible {
         return None;
     }
 
@@ -98,31 +74,19 @@ pub fn style(state: &RenderStateCursor, opts: StyleOptions) -> Option<Style> {
 
     // If the cursor is blinking and our blink state is not visible,
     // then we don't show the cursor.
-    if state.blinking && !opts.blink_visible {
+    if state.cursor.blinking && !opts.blink_visible {
         return None;
     }
 
     // Otherwise, we use whatever style the terminal wants.
-    Some(Style::from_terminal(state.visual_style))
+    Some(Style::from_terminal(state.cursor.visual_style))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // The Zig tests drive a real Terminal + RenderState; until
-    // ghostty-terminal is a dependency these build the cursor state directly
-    // with the values the Zig tests produce.
-    // TODO(integration): port to use Terminal/RenderState.
-    fn state(visible: bool, blinking: bool) -> RenderStateCursor {
-        RenderStateCursor {
-            viewport: Some((0, 0)),
-            password_input: false,
-            visible,
-            blinking,
-            visual_style: TerminalCursorStyle::Bar,
-        }
-    }
+    use ghostty_terminal::terminal::{Options, ScrollViewport, Terminal};
+    use ghostty_vt::modes::Mode;
 
     fn o(preedit: bool, focused: bool, blink_visible: bool) -> StyleOptions {
         StyleOptions {
@@ -132,57 +96,109 @@ mod tests {
         }
     }
 
+    fn term() -> Terminal {
+        Terminal::new(Options::new(10, 10)).unwrap()
+    }
+
+    fn update(term: &mut Terminal, state: &mut RenderState) {
+        state.update(term).unwrap();
+    }
+
     #[test]
     fn cursor_default_uses_configured_style() {
-        let s = state(true, true);
-        assert_eq!(style(&s, o(false, true, true)), Some(Style::Bar));
-        assert_eq!(style(&s, o(false, false, true)), Some(Style::BlockHollow));
-        assert_eq!(style(&s, o(false, false, false)), Some(Style::BlockHollow));
-        assert_eq!(style(&s, o(false, true, false)), None);
+        let mut term = term();
+        term.screen_mut().cursor.cursor_style = TerminalCursorStyle::Bar;
+        term.modes.set(Mode::CursorBlinking, true);
+
+        let mut state = RenderState::new();
+        update(&mut term, &mut state);
+
+        assert_eq!(style(&state, o(false, true, true)), Some(Style::Bar));
+        assert_eq!(
+            style(&state, o(false, false, true)),
+            Some(Style::BlockHollow)
+        );
+        assert_eq!(
+            style(&state, o(false, false, false)),
+            Some(Style::BlockHollow)
+        );
+        assert_eq!(style(&state, o(false, true, false)), None);
     }
 
     #[test]
     fn cursor_blinking_disabled() {
-        let s = state(true, false);
-        assert_eq!(style(&s, o(false, true, true)), Some(Style::Bar));
-        assert_eq!(style(&s, o(false, true, false)), Some(Style::Bar));
-        assert_eq!(style(&s, o(false, false, true)), Some(Style::BlockHollow));
-        assert_eq!(style(&s, o(false, false, false)), Some(Style::BlockHollow));
+        let mut term = term();
+        term.screen_mut().cursor.cursor_style = TerminalCursorStyle::Bar;
+        term.modes.set(Mode::CursorBlinking, false);
+
+        let mut state = RenderState::new();
+        update(&mut term, &mut state);
+
+        assert_eq!(style(&state, o(false, true, true)), Some(Style::Bar));
+        assert_eq!(style(&state, o(false, true, false)), Some(Style::Bar));
+        assert_eq!(
+            style(&state, o(false, false, true)),
+            Some(Style::BlockHollow)
+        );
+        assert_eq!(
+            style(&state, o(false, false, false)),
+            Some(Style::BlockHollow)
+        );
     }
 
     #[test]
     fn cursor_explicitly_not_visible() {
-        let s = state(false, false);
+        let mut term = term();
+        term.screen_mut().cursor.cursor_style = TerminalCursorStyle::Bar;
+        term.modes.set(Mode::CursorVisible, false);
+        term.modes.set(Mode::CursorBlinking, false);
+
+        let mut state = RenderState::new();
+        update(&mut term, &mut state);
+
         for focused in [true, false] {
             for blink in [true, false] {
-                assert_eq!(style(&s, o(false, focused, blink)), None);
+                assert_eq!(style(&state, o(false, focused, blink)), None);
             }
         }
     }
 
     #[test]
     fn cursor_always_block_with_preedit() {
-        let mut s = state(true, true);
+        let mut term = term();
+        let mut state = RenderState::new();
+        update(&mut term, &mut state);
+
+        // In any bool state
         for focused in [true, false] {
             for blink in [true, false] {
-                assert_eq!(style(&s, o(true, focused, blink)), Some(Style::Block));
+                assert_eq!(style(&state, o(true, focused, blink)), Some(Style::Block));
             }
         }
 
         // If we're scrolled though, then we don't show the cursor.
-        s.viewport = None;
+        for _ in 0..100 {
+            term.index().unwrap();
+        }
+        term.scroll_viewport(ScrollViewport::Top);
+        update(&mut term, &mut state);
+
+        // In any bool state
         for focused in [true, false] {
             for blink in [true, false] {
-                assert_eq!(style(&s, o(true, focused, blink)), None);
+                assert_eq!(style(&state, o(true, focused, blink)), None);
             }
         }
     }
 
     #[test]
     fn cursor_password_input_is_lock() {
-        let mut s = state(false, true);
-        s.password_input = true;
-        assert_eq!(style(&s, o(false, true, true)), Some(Style::Lock));
-        assert_eq!(style(&s, o(true, true, true)), Some(Style::Block));
+        let mut term = term();
+        term.flags.password_input = true;
+        let mut state = RenderState::new();
+        update(&mut term, &mut state);
+        assert_eq!(style(&state, o(false, true, true)), Some(Style::Lock));
+        // Preedit still wins.
+        assert_eq!(style(&state, o(true, true, true)), Some(Style::Block));
     }
 }
