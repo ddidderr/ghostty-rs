@@ -6,8 +6,6 @@ license.workspace = true
 
 [dependencies]
 ghostty-vt.workspace = true
-ghostty-unicode.workspace = true
-ghostty-datastruct.workspace = true
 
 [lints]
 workspace = true

@@ -872,6 +872,7 @@ dependencies = [
  "ghostty-os",
  "log",
  "ratatui",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -916,6 +917,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
  "freetype-sys",
+ "ghostty-datastruct",
  "ghostty-unicode",
  "harfbuzz-sys",
  "log",
