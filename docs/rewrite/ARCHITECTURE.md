@@ -20,7 +20,8 @@ WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 | `ghostty-font` | font/* (Metrics, sprite/*, Atlas, discovery via fontconfig, face via freetype, shaper via harfbuzz, Collection, CodepointResolver, SharedGrid(Set), opentype/*, nerd_font_attributes) | config, unicode, terminal |
 | `ghostty-renderer` | renderer/ generic, OpenGL (+ opengl/*), cell, cursor, image, link, size, State, Thread, Overlay, shadertoy, row, shaders/glsl | config, font, terminal |
 | `ghostty-termio` | termio/*, pty.zig, Command.zig, shell-integration resources | config, terminal, os |
-| `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, apprt/action.zig, apprt/structs.zig, apprt/surface.zig, global.zig, cli/* actions (+list-fonts, +show-config, ...) | everything below |
+| `ghostty-cli` | cli/* actions (+list-themes, +show-config, +list-keybinds, ...) | config, input, os, font |
+| `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, apprt/action.zig, apprt/structs.zig, apprt/surface.zig, global.zig | everything below |
 | `ghostty-apprt-gtk` | apprt/gtk/* | core, config, input |
 | root `ghostty-rs` (bin `ghostty`) | main_ghostty.zig, build_config.zig | core, config, apprt-gtk |
 
