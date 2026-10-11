@@ -7,12 +7,12 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | P0 | scaffolding | opus | ✅ | |
 | W1 | vt: parser/osc/color | sonnet | ✅ | |
 | W2 | vt: csi/sgr/modes/kitty/apc/dcs | sonnet | ✅ | |
-| W3 | unicode + datastruct | sonnet | 🟨 | |
+| W3 | unicode + datastruct | sonnet | ✅ | |
 | W4 | os | sonnet | ⚠️ | ensure_locale no-op, flatpak untested | |
-| W5 | input | sonnet | 🟨 | |
-| W6 | config | sonnet | 🟨 | |
+| W5 | input | sonnet | ✅ | |
+| W6 | config | sonnet | ✅ | |
 | W7 | font: metrics + sprite | sonnet | ✅ | |
-| S1 | vt: stream.zig + simd | sonnet | 🟨 | |
+| S1 | vt: stream.zig + simd | sonnet | ✅ | |
 | T1 | terminal: size/point/style/hyperlink/rcset/page/PageList | codex astra | 🟨 | |
 
 ## Log
