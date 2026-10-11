@@ -5,7 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
+log = "0.4.34"
+nix = { version = "0.31.3", features = ["user"] }
+rustix = { version = "1.1.5", features = ["fs", "process", "system", "pipe", "net", "time", "rand"] }
+thiserror = "2.0.21"
+zbus = "5.19.0"
 
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+temp-env = "0.3.6"
