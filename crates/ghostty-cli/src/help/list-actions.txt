@@ -1,0 +1,7 @@
+The `list-actions` command is used to list all the available keybind
+actions for Ghostty. These are distinct from the CLI Actions which can
+be listed via `+help`
+
+Flags:
+
+  * `--docs`: will print out the documentation for each action.

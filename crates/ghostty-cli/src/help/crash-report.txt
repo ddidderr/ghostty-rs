@@ -1,0 +1,6 @@
+The `crash-report` command is used to inspect and send crash reports.
+
+When executed without any arguments, this will list existing crash reports.
+
+This command currently only supports listing crash reports. Viewing
+and sending crash reports is unimplemented and will be added in the future.

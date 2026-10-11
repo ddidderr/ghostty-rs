@@ -1,0 +1,23 @@
+Manage the SSH terminfo cache for automatic remote host setup.
+
+When SSH integration is enabled with `shell-integration-features = ssh-terminfo`,
+Ghostty automatically installs its terminfo on remote hosts. This command
+manages the cache of successful installations to avoid redundant uploads.
+
+The cache stores hostnames (or user@hostname combinations) along with timestamps.
+Entries older than the expiration period are automatically removed during cache
+operations. By default, entries never expire.
+
+Only one of `--clear`, `--add`, `--remove`, or `--host` can be specified.
+If multiple are specified, one of the actions will be executed but
+it isn't guaranteed which one. This is entirely unsafe so you should split
+multiple actions into separate commands.
+
+Examples:
+  ghostty +ssh-cache                          # List all cached hosts
+  ghostty +ssh-cache --host=example.com       # Check if host is cached
+  ghostty +ssh-cache --add=example.com        # Manually add host to cache
+  ghostty +ssh-cache --add=user@example.com   # Add user@host combination
+  ghostty +ssh-cache --remove=example.com     # Remove host from cache
+  ghostty +ssh-cache --clear                  # Clear entire cache
+  ghostty +ssh-cache --expire-days=30         # Set custom expiration period
