@@ -49,6 +49,13 @@ impl Utf8Decoder {
         }
     }
 
+    /// True if the decoder is in the middle of a multi-byte sequence
+    /// (Zig: `state != 0`).
+    #[inline]
+    pub const fn in_sequence(&self) -> bool {
+        self.state != ACCEPT_STATE
+    }
+
     /// Takes the next byte in the utf-8 sequence and emits a tuple of
     /// - The codepoint that was generated, if there is one.
     /// - A boolean that indicates whether the provided byte was consumed.

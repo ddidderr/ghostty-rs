@@ -157,6 +157,20 @@ pub struct Esc {
 }
 
 impl Esc {
+    /// Build an ESC from slices (extra intermediates beyond the maximum are
+    /// dropped). Used by the stream to synthesize C1 controls.
+    pub fn new(intermediates: &[u8], final_: u8) -> Self {
+        let mut e = Esc {
+            intermediates_buf: [0; MAX_INTERMEDIATE],
+            intermediates_len: 0,
+            final_,
+        };
+        let n = intermediates.len().min(MAX_INTERMEDIATE);
+        e.intermediates_buf[..n].copy_from_slice(&intermediates[..n]);
+        e.intermediates_len = n as u8;
+        e
+    }
+
     pub fn intermediates(&self) -> &[u8] {
         &self.intermediates_buf[..self.intermediates_len as usize]
     }
@@ -252,12 +266,12 @@ pub struct Parser {
     intermediates: [u8; MAX_INTERMEDIATE],
     intermediates_idx: u8,
 
-    /// Param tracking, building
-    params: [u16; MAX_PARAMS],
-    params_sep: SepList,
-    params_idx: u8,
-    param_acc: u16,
-    param_acc_idx: u8,
+    /// Param tracking, building (crate-visible for the stream's CSI fast path)
+    pub(crate) params: [u16; MAX_PARAMS],
+    pub(crate) params_sep: SepList,
+    pub(crate) params_idx: u8,
+    pub(crate) param_acc: u16,
+    pub(crate) param_acc_idx: u8,
 
     /// Parser for OSC sequences
     pub osc_parser: osc::Parser,
