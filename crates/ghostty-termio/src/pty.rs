@@ -143,11 +143,7 @@ impl Pty {
 
     /// Get the modes of the pty (read from the master).
     pub fn get_mode(&self) -> Result<Mode, Error> {
-        let attrs = termios::tcgetattr(&self.master).map_err(|_| Error::GetModeFailed)?;
-        Ok(Mode {
-            canonical: attrs.local_modes.contains(termios::LocalModes::ICANON),
-            echo: attrs.local_modes.contains(termios::LocalModes::ECHO),
-        })
+        get_mode_fd(&self.master)
     }
 
     /// Return the size of the pty.
@@ -176,6 +172,16 @@ impl Pty {
         let (master, slave) = self.raw_fds();
         child_pre_exec(master, slave.unwrap_or(-1))
     }
+}
+
+/// Read the termios mode from a pty master fd (what Exec's termios timer
+/// does by rebuilding a `Pty` around the master in Zig).
+pub fn get_mode_fd(master: impl std::os::fd::AsFd) -> Result<Mode, Error> {
+    let attrs = termios::tcgetattr(master).map_err(|_| Error::GetModeFailed)?;
+    Ok(Mode {
+        canonical: attrs.local_modes.contains(termios::LocalModes::ICANON),
+        echo: attrs.local_modes.contains(termios::LocalModes::ECHO),
+    })
 }
 
 /// Signals reset to their default disposition in the child.

@@ -89,45 +89,74 @@ impl Exit {
     }
 }
 
-/// Mirrors `config.Command`'s relevant enum `LinuxCgroup`.
-/// TODO(integration): replace with the ghostty-config type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LinuxCgroup {
-    Never,
-    Always,
-    #[default]
-    SingleInstance,
-}
-
-/// TODO(integration): replace with the ghostty-config type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum GtkSingleInstance {
-    False,
-    True,
-    #[default]
-    Detect,
-}
+pub use ghostty_config::types_b::{GtkSingleInstance, LinuxCgroup};
 
 /// Configuration information needed by the apprt pre exec function
 /// (`apprt/gtk/pre_exec.zig` `PreExecInfo`). Trivially copyable.
-/// TODO(integration): build from `ghostty-config::Config` (`init(cfg)`).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RtPreExecInfo {
     pub gtk_single_instance: GtkSingleInstance,
     pub linux_cgroup: LinuxCgroup,
     pub linux_cgroup_hard_fail: bool,
 }
 
+impl Default for RtPreExecInfo {
+    /// Config defaults (`linux-cgroup = single-instance`,
+    /// `gtk-single-instance = detect`).
+    fn default() -> Self {
+        Self {
+            gtk_single_instance: GtkSingleInstance::Detect,
+            linux_cgroup: LinuxCgroup::SingleInstance,
+            linux_cgroup_hard_fail: false,
+        }
+    }
+}
+
+impl RtPreExecInfo {
+    /// `PreExecInfo.init(cfg)`.
+    pub fn init(cfg: &ghostty_config::config::Config) -> Self {
+        Self {
+            gtk_single_instance: cfg.gtk_single_instance,
+            linux_cgroup: cfg.linux_cgroup,
+            linux_cgroup_hard_fail: cfg.linux_cgroup_hard_fail,
+        }
+    }
+}
+
 /// Configuration information needed by the apprt post fork function
 /// (`apprt/gtk/post_fork.zig` `PostForkInfo`).
-/// TODO(integration): build from `ghostty-config::Config` (`init(cfg)`).
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RtPostForkInfo {
     pub gtk_single_instance: GtkSingleInstance,
     pub linux_cgroup: LinuxCgroup,
     pub linux_cgroup_hard_fail: bool,
     pub linux_cgroup_memory_limit: Option<u64>,
     pub linux_cgroup_processes_limit: Option<u64>,
+}
+
+impl Default for RtPostForkInfo {
+    fn default() -> Self {
+        Self {
+            gtk_single_instance: GtkSingleInstance::Detect,
+            linux_cgroup: LinuxCgroup::SingleInstance,
+            linux_cgroup_hard_fail: false,
+            linux_cgroup_memory_limit: None,
+            linux_cgroup_processes_limit: None,
+        }
+    }
+}
+
+impl RtPostForkInfo {
+    /// `PostForkInfo.init(cfg)`.
+    pub fn init(cfg: &ghostty_config::config::Config) -> Self {
+        Self {
+            gtk_single_instance: cfg.gtk_single_instance,
+            linux_cgroup: cfg.linux_cgroup,
+            linux_cgroup_hard_fail: cfg.linux_cgroup_hard_fail,
+            linux_cgroup_memory_limit: cfg.linux_cgroup_memory_limit,
+            linux_cgroup_processes_limit: cfg.linux_cgroup_processes_limit,
+        }
+    }
 }
 
 /// A command to launch.

@@ -42,120 +42,8 @@ impl Shell {
     }
 }
 
-/// Local stand-in for `config.Command`.
-/// TODO(integration): replace with `ghostty_config::Command`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Command {
-    /// A shell command line, split with `ArgIteratorGeneral` rules.
-    Shell(String),
-    /// Directly executed argv.
-    Direct(Vec<String>),
-}
-
-impl Command {
-    /// The arguments of the command. For shell commands this is a best
-    /// effort parse equivalent to Zig's `std.process.ArgIteratorGeneral(.{})`
-    /// (whitespace separated, double quotes group, backslashes only special
-    /// before a quote).
-    pub fn arg_iterator(&self) -> std::vec::IntoIter<String> {
-        match self {
-            Command::Direct(v) => v.clone().into_iter(),
-            Command::Shell(s) => split_args_general(s).into_iter(),
-        }
-    }
-}
-
-/// `std.process.ArgIteratorGeneral(.{})` (Windows command-line rules).
-fn split_args_general(cmd_line: &str) -> Vec<String> {
-    let b = cmd_line.as_bytes();
-    let mut i = 0;
-    let mut out = Vec::new();
-    loop {
-        // Skip whitespace
-        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
-            i += 1;
-        }
-        if i >= b.len() {
-            return out;
-        }
-        let mut buf: Vec<u8> = Vec::new();
-        let mut backslashes = 0usize;
-        let mut in_quote = false;
-        loop {
-            let c = b.get(i).copied();
-            match c {
-                None => {
-                    buf.extend(std::iter::repeat_n(b'\\', backslashes));
-                    break;
-                }
-                Some(b' ' | b'\t') if !in_quote => {
-                    buf.extend(std::iter::repeat_n(b'\\', backslashes));
-                    i += 1;
-                    break;
-                }
-                Some(b'\\') => {
-                    backslashes += 1;
-                    i += 1;
-                }
-                Some(b'"') => {
-                    let real = backslashes.is_multiple_of(2);
-                    buf.extend(std::iter::repeat_n(b'\\', backslashes / 2));
-                    backslashes = 0;
-                    if real {
-                        in_quote = !in_quote;
-                    } else {
-                        buf.push(b'"');
-                    }
-                    i += 1;
-                }
-                Some(ch) => {
-                    buf.extend(std::iter::repeat_n(b'\\', backslashes));
-                    backslashes = 0;
-                    buf.push(ch);
-                    i += 1;
-                }
-            }
-        }
-        out.push(String::from_utf8_lossy(&buf).into_owned());
-    }
-}
-
-/// Local stand-in for `config.ShellIntegrationFeatures` (same defaults).
-/// TODO(integration): replace with `ghostty_config::ShellIntegrationFeatures`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ShellIntegrationFeatures {
-    pub cursor: bool,
-    pub sudo: bool,
-    pub title: bool,
-    pub ssh_env: bool,
-    pub ssh_terminfo: bool,
-    pub path: bool,
-}
-
-impl Default for ShellIntegrationFeatures {
-    fn default() -> Self {
-        Self {
-            cursor: true,
-            sudo: false,
-            title: true,
-            ssh_env: false,
-            ssh_terminfo: false,
-            path: true,
-        }
-    }
-}
-
-impl ShellIntegrationFeatures {
-    /// All features disabled (`std.mem.zeroes`).
-    pub const NONE: Self = Self {
-        cursor: false,
-        sudo: false,
-        title: false,
-        ssh_env: false,
-        ssh_terminfo: false,
-        path: false,
-    };
-}
+pub use ghostty_config::command::Command;
+pub use ghostty_config::types_b::ShellIntegrationFeatures;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -486,6 +374,15 @@ fn setup_zsh(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<
 
 #[cfg(test)]
 mod tests {
+    const NONE_FEATURES: ShellIntegrationFeatures = ShellIntegrationFeatures {
+        cursor: false,
+        sudo: false,
+        title: false,
+        ssh_env: false,
+        ssh_terminfo: false,
+        path: false,
+    };
+
     use ghostty_os::TempDir;
 
     use super::*;
@@ -602,7 +499,7 @@ mod tests {
 
         // all features disabled
         let mut env = EnvMap::new();
-        setup_features(&mut env, ShellIntegrationFeatures::NONE, true);
+        setup_features(&mut env, NONE_FEATURES, true);
         assert!(!env.contains_key("GHOSTTY_SHELL_FEATURES"));
 
         // mixed features
@@ -612,7 +509,7 @@ mod tests {
             ShellIntegrationFeatures {
                 sudo: true,
                 ssh_env: true,
-                ..ShellIntegrationFeatures::NONE
+                ..NONE_FEATURES
             },
             true,
         );
@@ -621,7 +518,7 @@ mod tests {
         // blinking cursor
         let only_cursor = ShellIntegrationFeatures {
             cursor: true,
-            ..ShellIntegrationFeatures::NONE
+            ..NONE_FEATURES
         };
         let mut env = EnvMap::new();
         setup_features(&mut env, only_cursor, true);

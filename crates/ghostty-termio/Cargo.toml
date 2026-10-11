@@ -4,17 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
-# NOTE: the `ghostty-config` and `ghostty-terminal` dependencies were removed
-# for now (config is being written concurrently, terminal is in progress).
-# TODO(integration): re-add them when Exec/Termio/stream_handler are ported and
-# replace the local stand-ins (shell_integration::{Command, ShellIntegrationFeatures},
-# command::{LinuxCgroup, GtkSingleInstance}).
 [dependencies]
+crossbeam-channel = "0.5.17"
+ghostty-apprt.workspace = true
+ghostty-config.workspace = true
+ghostty-datastruct.workspace = true
 ghostty-os.workspace = true
+ghostty-renderer.workspace = true
+ghostty-terminal.workspace = true
+ghostty-vt.workspace = true
 libc = "0.2.190"
 log = "0.4.34"
 nix = { version = "0.31.3", features = ["signal"] }
-rustix = { version = "1.1.5", features = ["fs", "process", "pty", "termios", "stdio"] }
+rustix = { version = "1.1.5", features = ["fs", "process", "pty", "termios", "stdio", "event", "pipe"] }
 thiserror = "2.0.21"
 
 # Termio forks/execs children and sets up ptys; unsafe is denied by default
