@@ -25,8 +25,7 @@ Zig tests skipped: none. (`debugDump` not ported: debug-only helper.)
 - `imageById`/`imageByNumber` return `Option<&Image>` (no copy). Placements are a `BTreeMap` (deterministic order); images a `HashMap`.
 - zlib via `flate2`, PNG via `png` crate (EXPAND|STRIP_16, then converted to 8-bit RGBA like wuffs' RGBA_NONPREMUL); shm via
   `rustix::shm::open` + `File::read_exact_at` (no mmap, so no unsafe). The segment is unlinked after reading, as in Zig.
-- File medium `S=` (size): data is truncated to `min(S, 400MB)`. (Zig's `appendRemaining(.limited(n))` may error when the file is longer; I chose
-  the Kitty-spec behavior. Zig tests only use S=0.)
+- File medium `S=` (size): data is truncated to `min(S, 400MB)`. Verified against Zig std: `appendRemaining(.limited(n))` returns `StreamTooLong` whenever n bytes are read (even if the file is exactly n bytes), so Zig fails with InvalidData for any `S>0` that is satisfiable. This looks like a Zig bug; I deliberately follow the Kitty spec instead. Zig tests only use S=0. (zlib: Zig also errors at exactly 400MB output; Rust errors only above it.)
 - `Placement::rect` uses `saturating_sub(1)` on rows/cols (Zig would underflow for a 0-sized grid).
 - Preserved Zig quirks: `delete range` uses `||` (`id >= first || id <= last`, matches everything); eviction stops only when
   `evicted > req` (strictly); `set_limit(0)` resets storage to defaults (limit then set to 0); screen reset `.{ .dirty = true }` also resets total_limit to default.
