@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-font"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostty-config.workspace = true
+ghostty-unicode.workspace = true
+ghostty-terminal.workspace = true
+
+[lints]
+workspace = true

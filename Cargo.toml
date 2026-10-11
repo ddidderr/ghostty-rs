@@ -2,16 +2,74 @@
 name = "ghostty-rs"
 version = "0.1.0"
 edition = "2024"
+description = "A Rust rewrite of the Ghostty terminal emulator"
+
+[[bin]]
+name = "ghostty"
+path = "src/main.rs"
 
 [dependencies]
+ghostty-core.workspace = true
+ghostty-config.workspace = true
+ghostty-apprt-gtk.workspace = true
 
-[lints.clippy]
+[lints]
+workspace = true
+
+[workspace]
+resolver = "3"
+members = [".", "crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+ghostty-vt = { path = "crates/ghostty-vt" }
+ghostty-unicode = { path = "crates/ghostty-unicode" }
+ghostty-terminal = { path = "crates/ghostty-terminal" }
+ghostty-input = { path = "crates/ghostty-input" }
+ghostty-config = { path = "crates/ghostty-config" }
+ghostty-font = { path = "crates/ghostty-font" }
+ghostty-renderer = { path = "crates/ghostty-renderer" }
+ghostty-termio = { path = "crates/ghostty-termio" }
+ghostty-os = { path = "crates/ghostty-os" }
+ghostty-datastruct = { path = "crates/ghostty-datastruct" }
+ghostty-core = { path = "crates/ghostty-core" }
+ghostty-apprt-gtk = { path = "crates/ghostty-apprt-gtk" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 todo = "warn"
 unwrap_used = "warn"
-
-[lints.rust]
-unsafe_code = "forbid"
+# Porting a low-level terminal emulator involves a lot of intentional
+# numeric casts and long state-machine functions; these pedantic lints are
+# noise for this codebase.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"
 
 [profile.release]
 debug = true

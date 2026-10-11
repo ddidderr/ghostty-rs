@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-apprt-gtk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostty-core.workspace = true
+ghostty-config.workspace = true
+ghostty-input.workspace = true
+
+[lints]
+workspace = true

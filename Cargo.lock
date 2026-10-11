@@ -3,5 +3,101 @@
 version = 4
 
 [[package]]
+name = "ghostty-apprt-gtk"
+version = "0.1.0"
+dependencies = [
+ "ghostty-config",
+ "ghostty-core",
+ "ghostty-input",
+]
+
+[[package]]
+name = "ghostty-config"
+version = "0.1.0"
+dependencies = [
+ "ghostty-input",
+ "ghostty-os",
+ "ghostty-vt",
+]
+
+[[package]]
+name = "ghostty-core"
+version = "0.1.0"
+dependencies = [
+ "ghostty-config",
+ "ghostty-datastruct",
+ "ghostty-font",
+ "ghostty-input",
+ "ghostty-os",
+ "ghostty-renderer",
+ "ghostty-terminal",
+ "ghostty-termio",
+]
+
+[[package]]
+name = "ghostty-datastruct"
+version = "0.1.0"
+
+[[package]]
+name = "ghostty-font"
+version = "0.1.0"
+dependencies = [
+ "ghostty-config",
+ "ghostty-terminal",
+ "ghostty-unicode",
+]
+
+[[package]]
+name = "ghostty-input"
+version = "0.1.0"
+dependencies = [
+ "ghostty-vt",
+]
+
+[[package]]
+name = "ghostty-os"
+version = "0.1.0"
+
+[[package]]
+name = "ghostty-renderer"
+version = "0.1.0"
+dependencies = [
+ "ghostty-config",
+ "ghostty-font",
+ "ghostty-terminal",
+]
+
+[[package]]
 name = "ghostty-rs"
+version = "0.1.0"
+dependencies = [
+ "ghostty-apprt-gtk",
+ "ghostty-config",
+ "ghostty-core",
+]
+
+[[package]]
+name = "ghostty-terminal"
+version = "0.1.0"
+dependencies = [
+ "ghostty-datastruct",
+ "ghostty-unicode",
+ "ghostty-vt",
+]
+
+[[package]]
+name = "ghostty-termio"
+version = "0.1.0"
+dependencies = [
+ "ghostty-config",
+ "ghostty-os",
+ "ghostty-terminal",
+]
+
+[[package]]
+name = "ghostty-unicode"
+version = "0.1.0"
+
+[[package]]
+name = "ghostty-vt"
 version = "0.1.0"

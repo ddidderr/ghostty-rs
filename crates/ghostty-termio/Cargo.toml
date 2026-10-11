@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-termio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostty-config.workspace = true
+ghostty-terminal.workspace = true
+ghostty-os.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostty-vt.workspace = true
+ghostty-unicode.workspace = true
+ghostty-datastruct.workspace = true
+
+[lints]
+workspace = true

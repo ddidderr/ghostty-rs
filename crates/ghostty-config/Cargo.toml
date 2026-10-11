@@ -1,0 +1,13 @@
+[package]
+name = "ghostty-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ghostty-input.workspace = true
+ghostty-os.workspace = true
+ghostty-vt.workspace = true
+
+[lints]
+workspace = true
