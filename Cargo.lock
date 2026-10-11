@@ -522,6 +522,7 @@ dependencies = [
  "ghostty-vt",
  "log",
  "onig",
+ "thiserror",
 ]
 
 [[package]]
@@ -600,8 +601,6 @@ dependencies = [
 name = "ghostty-terminal"
 version = "0.1.0"
 dependencies = [
- "ghostty-datastruct",
- "ghostty-unicode",
  "ghostty-vt",
 ]
 
