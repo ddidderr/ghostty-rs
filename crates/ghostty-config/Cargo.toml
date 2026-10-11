@@ -5,9 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+const_format = "0.2.36"
 ghostty-input.workspace = true
 ghostty-os.workspace = true
 ghostty-vt.workspace = true
+log = "0.4.34"
+thiserror = "2.0.21"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+onig = "6.5.3"
