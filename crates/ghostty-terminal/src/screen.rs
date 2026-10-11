@@ -20,6 +20,7 @@
 )]
 use crate::{
     cursor::Style as CursorStyle,
+    formatter::{Content as FormatContent, Options as FormatOptions, ScreenFormatter},
     hyperlink::{self, Hyperlink, HyperlinkId},
     page::{Cell, ContentTag, Page, Row, SemanticContent, SemanticPrompt as RowPrompt, Wide},
     page_list::{
@@ -2617,19 +2618,23 @@ impl Screen {
         opts: SelectionString,
         pin_map: Option<&mut Vec<Pin>>,
     ) -> String {
-        // TODO(integration): delegate to formatter::ScreenFormatter (plain,
-        // unwrap = true, trim = opts.trim, content = selection).
-        let tl = opts.sel.top_left(&self.pages);
-        let br = opts.sel.bottom_right(&self.pages);
-        plain_format(
-            &self.pages,
-            tl,
-            br,
-            opts.sel.rectangle,
-            true,
-            opts.trim,
-            pin_map,
-        )
+        // Create a formatter and use that to emit our text.
+        let mut formatter = ScreenFormatter::new(
+            self,
+            FormatOptions {
+                unwrap: true,
+                trim: opts.trim,
+                ..FormatOptions::plain()
+            },
+        );
+        formatter.content = FormatContent::Selection(Some(opts.sel));
+
+        // If we have a string map, we need to set that up.
+        formatter.pin_map = pin_map;
+
+        formatter
+            .format_string()
+            .expect("formatting to memory cannot fail")
     }
 
     /// Select the line under the given point. This will select across soft-wrapped
@@ -3224,23 +3229,31 @@ impl Screen {
 
     /// Dump the screen to a string.
     pub fn dump_string(&self, out: &mut String, opts: DumpString) {
-        // TODO(integration): delegate to formatter::ScreenFormatter (plain,
-        // unwrap = opts.unwrap, trim = false, content = selection(tl, br)).
+        // Create a formatter and use that to emit our text.
+        let mut formatter = ScreenFormatter::new(
+            self,
+            FormatOptions {
+                unwrap: opts.unwrap,
+                trim: false,
+                ..FormatOptions::plain()
+            },
+        );
+
+        // Set up the selection based on the pins
+        let tl = opts.tl;
         let br = opts
             .br
             .unwrap_or_else(|| self.pages.get_bottom_right(Tag::Screen).expect("screen"));
-        let sel = Selection::new(opts.tl, br, false);
-        let tl = sel.top_left(&self.pages);
-        let br = sel.bottom_right(&self.pages);
-        out.push_str(&plain_format(
-            &self.pages,
-            tl,
-            br,
-            false,
-            opts.unwrap,
-            false,
-            None,
-        ));
+        formatter.content = FormatContent::Selection(Some(Selection::new(
+            tl, br, false, // not rectangle
+        )));
+
+        // Emit
+        out.push_str(
+            &formatter
+                .format_string()
+                .expect("formatting to memory cannot fail"),
+        );
     }
 
     /// You should use dump_string, this is a restricted version mostly for
@@ -3469,335 +3482,6 @@ impl Iterator for LineIterator<'_> {
         self.current = result.end(&self.screen.pages).down(&self.screen.pages, 1);
         Some(result)
     }
-}
-
-// ---------------------------------------------------------------------------
-// Minimal plain-text formatter.
-//
-// TODO(integration): this is a minimal port of the `emit = .plain` paths of
-// formatter.zig's PageListFormatter/PageFormatter (unwrapping soft-wrapped
-// lines, trimming trailing whitespace, trailing blank lines are dropped).
-// Replace with the real formatter once ported.
-// ---------------------------------------------------------------------------
-
-/// Trailing state carried between pages (formatter.zig `TrailingState`).
-#[derive(Clone, Copy, Default)]
-struct TrailingState {
-    rows: usize,
-    cells: usize,
-}
-
-fn write_codepoint(
-    out: &mut String,
-    cp: u32,
-    map: &mut Option<&mut Vec<(u16, u16)>>,
-    x: u16,
-    y: u16,
-) {
-    let ch = char::from_u32(cp).unwrap_or(char::REPLACEMENT_CHARACTER);
-    let before = out.len();
-    out.push(ch);
-    if let Some(map) = map {
-        for _ in before..out.len() {
-            map.push((x, y));
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn plain_format_page(
-    page: &Page,
-    out: &mut String,
-    start_x: u16,
-    start_y: u16,
-    end_x: Option<u16>,
-    end_y: Option<u16>,
-    rectangle: bool,
-    unwrap: bool,
-    trim: bool,
-    trailing_state: Option<TrailingState>,
-    mut point_map: Option<&mut Vec<(u16, u16)>>,
-) -> TrailingState {
-    let mut blank_rows: usize = 0;
-    let mut blank_cells: usize = 0;
-
-    // Continue our prior trailing state if we have it, but only if we're
-    // starting from the beginning (start_y and start_x are both 0).
-    // If a non-zero start position is specified, ignore trailing state.
-    if let Some(state) = trailing_state
-        && start_y == 0
-        && start_x == 0
-    {
-        blank_rows = state.rows;
-        blank_cells = state.cells;
-    }
-    let ret = |blank_rows, blank_cells| TrailingState {
-        rows: blank_rows,
-        cells: blank_cells,
-    };
-
-    // Setup our starting column and perform some validation for overflows.
-    if start_x >= page.size.cols {
-        return ret(blank_rows, blank_cells);
-    }
-    let end_x_unclamped = end_x.unwrap_or(page.size.cols - 1);
-    let mut end_x = end_x_unclamped.min(page.size.cols - 1);
-
-    // Setup our starting row and perform some validation for overflows.
-    if start_y >= page.size.rows {
-        return ret(blank_rows, blank_cells);
-    }
-    let end_y_unclamped = end_y.unwrap_or(page.size.rows - 1);
-    if start_y > end_y_unclamped {
-        return ret(blank_rows, blank_cells);
-    }
-    let mut end_y = end_y_unclamped.min(page.size.rows - 1);
-
-    // Edge case: if our end x/y falls on a spacer head AND we're unwrapping,
-    // then we move the x/y to the start of the next row (if available).
-    if unwrap && !rectangle {
-        let cells = page.get_cells(usize::from(end_y)).expect("row");
-        if cells[usize::from(end_x)].wide() == Wide::SpacerHead && end_y < page.size.rows - 1 {
-            end_y += 1;
-            end_x = 0;
-        }
-    }
-
-    // If we only have a single row, validate that start_x <= end_x
-    if start_y == end_y && start_x > end_x {
-        return ret(blank_rows, blank_cells);
-    }
-
-    for y in start_y..=end_y {
-        let row = *page.get_row(usize::from(y)).expect("row");
-        let cells = page.get_cells(usize::from(y)).expect("row cells");
-        let base = row.cells();
-
-        // Determine the x range for this row
-        // - First row: start_x to end of row (or end_x if single row)
-        // - Last row: start of row to end_x
-        // - Middle rows: full width
-        let row_end_x: u16 = if rectangle || y == end_y {
-            end_x + 1
-        } else {
-            page.size.cols
-        };
-
-        // The first we have to check if our start X falls on the
-        // tail of a wide character.
-        let row_start_x: u16 = if start_x > 0 && (rectangle || y == start_y) {
-            match cells[usize::from(start_x)].wide() {
-                // Include the prior cell to get the full wide char
-                Wide::SpacerTail => start_x - 1,
-
-                // If we're a spacer head on our first row then we
-                // skip this whole row.
-                Wide::SpacerHead => continue,
-
-                Wide::Narrow | Wide::Wide => start_x,
-            }
-        } else {
-            0
-        };
-
-        let subset = &cells[usize::from(row_start_x)..usize::from(row_end_x)];
-
-        // If this row is blank, accumulate to avoid a bunch of extra
-        // work later. If it isn't blank, make sure we dump all our
-        // blanks.
-        if !Cell::has_text_any(subset) {
-            blank_rows += 1;
-            continue;
-        }
-
-        if blank_rows > 0 {
-            for _ in 0..blank_rows {
-                out.push('\n');
-            }
-
-            // \r and \n map to the row that ends with this newline.
-            // If we're continuing (trailing state) then this will be
-            // in a prior page, so we just map to the first row of this
-            // page.
-            if let Some(map) = point_map.as_deref_mut() {
-                let start = map.last().copied().unwrap_or((0, 0));
-
-                // The first one inherits the x value.
-                map.push(start);
-
-                // All others have x = 0 since they reference their prior
-                // blank line.
-                for y_offset in 1..blank_rows {
-                    map.push((0, start.1 + y_offset as u16));
-                }
-            }
-
-            blank_rows = 0;
-        }
-
-        // If we're not wrapped, we always add a newline so after
-        // the row is printed we can add a newline.
-        if !row.wrap() || !unwrap {
-            blank_rows += 1;
-        }
-
-        // If the row doesn't continue a wrap then we need to reset
-        // our blank cell count.
-        if !row.wrap_continuation() || !unwrap {
-            blank_cells = 0;
-        }
-
-        // Go through each cell and print it
-        for (offset, cell) in subset.iter().enumerate() {
-            let x = row_start_x + offset as u16;
-
-            // Skip spacers. These happen naturally when wide characters
-            // are printed again on the screen (for well-behaved terminals!)
-            match cell.wide() {
-                Wide::Narrow | Wide::Wide => {}
-                Wide::SpacerHead | Wide::SpacerTail => continue,
-            }
-
-            // If we have a zero value, then we accumulate a counter. We
-            // only want to turn zero values into spaces if we have a non-zero
-            // char sometime later.
-            // Cells with no text are blank
-            if !cell.has_text() {
-                blank_cells += 1;
-                continue;
-            }
-
-            // Trailing spaces are blank. We know it is trailing
-            // because if we get a non-empty cell later we'll
-            // fill the blanks.
-            if cell.codepoint() == u32::from(' ') && trim {
-                blank_cells += 1;
-                continue;
-            }
-
-            // This cell is not blank. If we have accumulated blank cells
-            // then we want to emit them now.
-            if blank_cells > 0 {
-                for _ in 0..blank_cells {
-                    out.push(' ');
-                }
-
-                if let Some(map) = point_map.as_deref_mut() {
-                    // Map each blank cell to its coordinate. Blank cells can span
-                    // multiple rows if they carry over from wrap continuation.
-                    let mut remaining_blanks = blank_cells;
-                    let mut blank_x = x;
-                    let mut blank_y = y;
-                    while remaining_blanks > 0 {
-                        if blank_x > 0 {
-                            // We have space in this row
-                            blank_x -= 1;
-                        } else if blank_y > 0 {
-                            // Wrap to previous row
-                            blank_y -= 1;
-                            blank_x = page.size.cols - 1;
-                        } else {
-                            // Can't go back further, just use (0, 0)
-                            blank_x = 0;
-                            blank_y = 0;
-                        }
-
-                        map.push((blank_x, blank_y));
-                        remaining_blanks -= 1;
-                    }
-                }
-
-                blank_cells = 0;
-            }
-
-            write_codepoint(out, cell.codepoint(), &mut point_map, x, y);
-            if cell.content_tag() == ContentTag::CodepointGrapheme
-                && let Some(extra) = page.lookup_grapheme(base + usize::from(x))
-            {
-                for &cp in extra {
-                    write_codepoint(out, cp, &mut point_map, x, y);
-                }
-            }
-        }
-    }
-
-    ret(blank_rows, blank_cells)
-}
-
-/// Plain-text format of the pages between `tl` and `br` (both inclusive,
-/// properly ordered).
-fn plain_format(
-    list: &PageList,
-    tl: Pin,
-    br: Pin,
-    rectangle: bool,
-    unwrap: bool,
-    trim: bool,
-    mut pin_map: Option<&mut Vec<Pin>>,
-) -> String {
-    let mut out = String::new();
-    let mut page_state: Option<TrailingState> = None;
-    let mut point_map: Vec<(u16, u16)> = Vec::new();
-
-    let mut node = Some(tl.node);
-    while let Some(id) = node {
-        let n = list.node(id).expect("live node");
-        let chunk_start = if id == tl.node { tl.y } else { 0 };
-        let chunk_end = if id == br.node {
-            br.y + 1
-        } else {
-            n.data.size.rows
-        };
-        debug_assert!(chunk_start < chunk_end);
-
-        let (start_x, end_x) = if rectangle {
-            // For rectangle selection, apply start_x and end_x to all chunks
-            (tl.x, Some(br.x))
-        } else {
-            // Otherwise only on the first/last, respectively.
-            (
-                if id == tl.node { tl.x } else { 0 },
-                if id == br.node { Some(br.x) } else { None },
-            )
-        };
-
-        point_map.clear();
-        page_state = Some(plain_format_page(
-            &n.data,
-            &mut out,
-            start_x,
-            chunk_start,
-            end_x,
-            Some(chunk_end - 1),
-            rectangle,
-            unwrap,
-            trim,
-            page_state,
-            if pin_map.is_some() {
-                Some(&mut point_map)
-            } else {
-                None
-            },
-        ));
-
-        if let Some(m) = pin_map.as_deref_mut() {
-            for &(x, y) in &point_map {
-                m.push(Pin {
-                    node: id,
-                    x,
-                    y,
-                    garbage: false,
-                });
-            }
-        }
-
-        if id == br.node {
-            break;
-        }
-        node = n.next;
-    }
-
-    out
 }
 
 #[cfg(test)]

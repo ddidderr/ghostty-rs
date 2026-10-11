@@ -5,11 +5,16 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+crossbeam-channel = "0.5.17"
+flate2 = "1.1.10"
 ghostty-datastruct.workspace = true
 ghostty-unicode.workspace = true
 ghostty-vt.workspace = true
 log = "0.4.34"
 onig = "6.5.3"
+png = "0.18.1"
+rustix = { version = "1.1.5", features = ["shm", "fs"] }
+thiserror = "2.0.21"
 
 [dev-dependencies]
 ghostty-config.workspace = true
