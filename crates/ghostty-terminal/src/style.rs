@@ -119,6 +119,51 @@ pub struct Fg<'a> {
     pub bold: Option<BoldColor>,
 }
 impl Style {
+    /// Ghostty's packed-style hash: fold the exact 128-bit representation and
+    /// apply Zig's 64-bit integer hash. This determines page-local probe order.
+    pub(crate) fn zig_hash(&self) -> u64 {
+        const MULTIPLIER: u64 = 0xbea225f9eb34556d;
+        let mut packed = 0u128;
+        for (index, color) in [self.fg_color, self.bg_color, self.underline_color]
+            .into_iter()
+            .enumerate()
+        {
+            let (tag, data) = match color {
+                Color::None => (0, 0),
+                Color::Palette(value) => (1, u32::from(value)),
+                Color::Rgb(rgb) => (
+                    2,
+                    u32::from(rgb.r) | u32::from(rgb.g) << 8 | u32::from(rgb.b) << 16,
+                ),
+            };
+            packed |= (tag as u128) << (index * 8);
+            packed |= u128::from(data) << (24 + index * 24);
+        }
+        let flags = self.flags;
+        let mut bits = 0u16;
+        for (index, value) in [
+            flags.bold,
+            flags.italic,
+            flags.faint,
+            flags.blink,
+            flags.inverse,
+            flags.invisible,
+            flags.strikethrough,
+            flags.overline,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            bits |= u16::from(value) << index;
+        }
+        bits |= (flags.underline as u16) << 8;
+        packed |= u128::from(bits) << 96;
+        let mut hash = packed as u64 ^ (packed >> 64) as u64;
+        hash = (hash ^ (hash >> 32)).wrapping_mul(MULTIPLIER);
+        hash = (hash ^ (hash >> 29)).wrapping_mul(MULTIPLIER);
+        hash = (hash ^ (hash >> 32)).wrapping_mul(MULTIPLIER);
+        hash ^ (hash >> 29)
+    }
     /// True for default styling.
     pub fn is_default(self) -> bool {
         self == Self::default()

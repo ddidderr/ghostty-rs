@@ -444,7 +444,6 @@ fn terminal_resize_with_wraparound_off() {
 }
 
 #[test]
-#[ignore = "pagelist: reflow less cols leaves the active area one row too low (screen has '01\n23' but active/viewport shows '23'); see pagelist-requests"]
 fn terminal_resize_with_wraparound_on() {
     let mut t = init(4, 2);
 

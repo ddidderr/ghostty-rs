@@ -432,7 +432,6 @@ fn terminal_index_bottom_of_scroll_region_with_hyperlinks() {
 }
 
 #[test]
-#[ignore = "pagelist: erase_row_bounded leaves the row hyperlink flag set on the blanked row"]
 fn terminal_index_bottom_of_scroll_region_clear_hyperlinks() {
     let mut t = init_scrollback(5, 5, 0);
     t.set_top_and_bottom_margin(2, 3);

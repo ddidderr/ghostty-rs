@@ -1,12 +1,15 @@
 //! Linked terminal pages, byte-bounded history, and stable tracked coordinates.
 use crate::{
     page::{
-        self, Adjustment, Capacity, Cell, Error, OwnedCell, Page, Row, SemanticContent,
+        self, Adjustment, Capacity, Cell, ContentTag, Error, Page, Row, SemanticContent,
         SemanticPrompt, Wide,
     },
     point::{Coordinate, Point, Tag},
 };
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 /// Slab index and generation; stale references never alias a reused node.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct NodeId {
@@ -175,6 +178,9 @@ pub struct PageList {
     pins: Vec<PinSlot>,
     free_pins: Vec<usize>,
     viewport_pin: Option<TrackedPin>,
+    /// Absolute viewport offset, or usize::MAX when invalidated. Atomic interior
+    /// mutability preserves the read-only coordinate API and Send/Sync traits.
+    viewport_pin_row_offset: AtomicUsize,
     pin_serial: u64,
     pause_checks: usize,
 }
@@ -219,6 +225,7 @@ impl PageList {
             pins: Vec::new(),
             free_pins: Vec::new(),
             viewport_pin: None,
+            viewport_pin_row_offset: AtomicUsize::new(usize::MAX),
             pin_serial: 0,
             pause_checks: 0,
         };
@@ -364,17 +371,40 @@ impl PageList {
         }
         None
     }
-    /// Current viewport's absolute row offset.
+    /// Current viewport's absolute row offset. A pinned viewport caches the
+    /// result; the first lookup counts backwards from the active end.
     pub fn viewport_row_offset(&self) -> usize {
         match self.viewport {
             Viewport::Active => self.active_offset(),
             Viewport::Top => 0,
-            Viewport::Pin => self
-                .viewport_pin
-                .and_then(|h| self.tracked_pin(h))
-                .and_then(|p| self.screen_row(p))
-                .unwrap_or(0),
+            Viewport::Pin => {
+                let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+                if cached != usize::MAX {
+                    return cached;
+                }
+                let Some(pin) = self.viewport_pin.and_then(|h| self.tracked_pin(h)) else {
+                    return 0;
+                };
+                let mut offset = self.total_rows;
+                let mut node = self.last;
+                while let Some(id) = node {
+                    let n = self.node(id).expect("live viewport node");
+                    offset -= usize::from(n.data.size.rows);
+                    if id == pin.node {
+                        offset += usize::from(pin.y);
+                        self.viewport_pin_row_offset
+                            .store(offset, Ordering::Relaxed);
+                        return offset;
+                    }
+                    node = n.prev;
+                }
+                0
+            }
         }
+    }
+    fn invalidate_viewport_offset(&self) {
+        self.viewport_pin_row_offset
+            .store(usize::MAX, Ordering::Relaxed);
     }
     fn bounds(&self, tag: Tag) -> (usize, usize) {
         match tag {
@@ -387,42 +417,86 @@ impl PageList {
             }
         }
     }
-    /// Map a tagged coordinate to an untracked pin.
+    /// Map a tagged coordinate to an untracked pin. Active and viewport
+    /// coordinates start at their anchors, independent of history length.
     pub fn pin(&self, pt: Point) -> Option<Pin> {
-        let (start, end) = self.bounds(pt.tag());
         let c = pt.coord();
-        let y = start.checked_add(c.y as usize)?;
-        if y >= end {
+        if c.x >= self.cols {
             return None;
         }
-        self.pin_at(y, c.x)
+        let mut p = self.get_top_left(pt.tag())?.down(self, c.y as usize)?;
+        p.x = c.x;
+        Some(p)
     }
-    /// Convert a pin to a coordinate in a reference frame, if inside it.
+    /// Convert a pin to a coordinate by traversing only its reference frame.
     pub fn point_from_pin(&self, tag: Tag, p: Pin) -> Option<Point> {
-        let y = self.screen_row(p)?;
-        let (start, end) = self.bounds(tag);
-        if y < start || y >= end {
+        if !self.pin_is_valid(p) {
             return None;
         }
-        Some(Point::new(
-            tag,
-            Coordinate {
-                x: p.x,
-                y: (y - start) as u32,
-            },
-        ))
+        let top = self.get_top_left(tag)?;
+        let mut node = top.node;
+        let mut y = 0;
+        let mut start = top.y;
+        loop {
+            if node == p.node {
+                y += u32::from(p.y.checked_sub(start)?);
+                return Some(Point::new(tag, Coordinate { x: p.x, y }));
+            }
+            let n = self.node(node)?;
+            y += u32::from(n.data.size.rows - start);
+            node = n.next?;
+            start = 0;
+        }
     }
-    /// Top-left coordinate in a reference frame, if the region exists.
+    /// Top-left coordinate in a reference frame. The active area is always
+    /// at the tail, so locating it never walks through scrollback.
     pub fn get_top_left(&self, tag: Tag) -> Option<Pin> {
-        self.pin(Point::new(tag, Coordinate::default()))
+        match tag {
+            Tag::Screen | Tag::History => Some(Pin {
+                node: self.first?,
+                x: 0,
+                y: 0,
+                garbage: false,
+            }),
+            Tag::Active => {
+                let node = self.last?;
+                Pin {
+                    node,
+                    x: 0,
+                    y: self.node(node)?.data.size.rows - 1,
+                    garbage: false,
+                }
+                .up(self, usize::from(self.rows) - 1)
+            }
+            Tag::Viewport => match self.viewport {
+                Viewport::Active => self.get_top_left(Tag::Active),
+                Viewport::Top => self.get_top_left(Tag::Screen),
+                Viewport::Pin => self.viewport_pin.and_then(|h| self.tracked_pin(h)),
+            },
+        }
     }
     /// Bottom-right coordinate in a reference frame, if the region exists.
     pub fn get_bottom_right(&self, tag: Tag) -> Option<Pin> {
-        let (start, end) = self.bounds(tag);
-        if start == end {
-            return None;
-        }
-        self.pin_at(end - 1, self.cols - 1)
+        let mut p = match tag {
+            Tag::Screen | Tag::Active => {
+                let node = self.last?;
+                Pin {
+                    node,
+                    x: 0,
+                    y: self.node(node)?.data.size.rows - 1,
+                    garbage: false,
+                }
+            }
+            Tag::Viewport => self
+                .get_top_left(tag)?
+                .down(self, usize::from(self.rows) - 1)?,
+            Tag::History => self.get_top_left(Tag::Active)?.up(self, 1)?,
+        };
+        p.x = self.cols - 1;
+        Some(p)
+    }
+    fn pin_is_active(&self, p: Pin) -> bool {
+        self.point_from_pin(Tag::Active, p).is_some()
     }
     /// Check the generation and logical coordinates of a pin.
     pub fn pin_is_valid(&self, p: Pin) -> bool {
@@ -467,6 +541,9 @@ impl PageList {
             .filter(|s| s.generation == h.generation && s.pin.is_some())
             .ok_or(Error::InvalidId)?;
         slot.pin = Some(p);
+        if self.viewport_pin == Some(h) {
+            self.invalidate_viewport_offset();
+        }
         Ok(())
     }
     /// Release a tracked handle. The internal viewport handle remains owned.
@@ -524,10 +601,14 @@ impl PageList {
             let removed = usize::from(n.data.size.rows);
             let next = n.next;
             if self.total_rows - removed + 1 >= usize::from(self.rows) {
-                let viewport = self.viewport_row_offset();
+                let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+                let viewport =
+                    (self.viewport == Viewport::Pin && cached != usize::MAX).then_some(cached);
                 let n = self.detach(first).ok_or(Error::InvalidId)?;
                 self.total_rows -= removed;
-                self.page_serial_min = n.serial.wrapping_add(1);
+                if Page::layout(n.data.capacity).total_size <= std_size() {
+                    self.page_serial_min = n.serial.wrapping_add(1);
+                }
                 self.recycle(n);
                 if let Some(next) = next {
                     for slot in &mut self.pins {
@@ -543,8 +624,13 @@ impl PageList {
                         }
                     }
                 }
-                if self.viewport == Viewport::Pin && viewport < removed {
-                    self.viewport = Viewport::Top;
+                if let Some(viewport) = viewport {
+                    if viewport < removed {
+                        self.viewport = Viewport::Top;
+                    } else {
+                        self.viewport_pin_row_offset
+                            .store(viewport - removed, Ordering::Relaxed);
+                    }
                 }
                 if let Some(h) = self.viewport_pin
                     && let Some(p) = self.pins[h.index].pin.as_mut()
@@ -581,61 +667,158 @@ impl PageList {
             self.viewport = Viewport::Active;
             return;
         }
-        let row = match behavior {
-            Scroll::Active => {
-                self.viewport = Viewport::Active;
-                return;
-            }
-            Scroll::Top => {
-                self.viewport = Viewport::Top;
-                return;
-            }
-            Scroll::Row(y) => y,
-            Scroll::DeltaRow(d) => self.viewport_row_offset().saturating_add_signed(d),
+        match behavior {
+            Scroll::Active => self.viewport = Viewport::Active,
+            Scroll::Top => self.viewport = Viewport::Top,
             Scroll::Pin(p) => {
-                let Some(y) = self.screen_row(p) else {
-                    return;
-                };
-                y
+                if self.pin_is_active(p) {
+                    self.viewport = Viewport::Active;
+                } else if Some(p.node) == self.first && p.y == 0 {
+                    self.viewport = Viewport::Top;
+                } else if let Some(h) = self.viewport_pin {
+                    self.pins[h.index].pin = Some(p);
+                    self.viewport = Viewport::Pin;
+                    self.invalidate_viewport_offset();
+                }
             }
-            Scroll::DeltaPrompt(d) => {
-                if d == 0 {
+            Scroll::Row(n) => {
+                if n == 0 {
+                    self.viewport = Viewport::Top;
                     return;
                 }
-                let current = self.viewport_row_offset();
-                let mut prompts: Vec<_> = self
-                    .prompt_iterator(
-                        Direction::RightDown,
-                        Point::Screen(Coordinate::default()),
-                        None,
-                    )
-                    .filter_map(|p| self.screen_row(p))
-                    .filter(|y| if d < 0 { *y < current } else { *y > current })
-                    .collect();
-                if d < 0 {
-                    prompts.reverse();
+                if n >= self.active_offset() {
+                    self.viewport = Viewport::Active;
+                    return;
                 }
-                let Some(&y) = prompts.get(
-                    d.unsigned_abs()
-                        .saturating_sub(1)
-                        .min(prompts.len().saturating_sub(1)),
-                ) else {
+                let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+                if self.viewport == Viewport::Pin && cached != usize::MAX {
+                    self.scroll(Scroll::DeltaRow(n as isize - cached as isize));
+                    return;
+                }
+                let p = if n < self.total_rows / 2 {
+                    self.pin_at(n, 0)
+                } else {
+                    self.get_bottom_right(Tag::Screen)
+                        .and_then(|p| p.up(self, self.total_rows - n - 1))
+                        .map(|p| Pin { x: 0, ..p })
+                };
+                if let (Some(p), Some(h)) = (p, self.viewport_pin) {
+                    self.pins[h.index].pin = Some(p);
+                    self.viewport = Viewport::Pin;
+                    self.viewport_pin_row_offset.store(n, Ordering::Relaxed);
+                }
+            }
+            Scroll::DeltaRow(n) => {
+                if n == 0
+                    || (self.viewport == Viewport::Active && n > 0)
+                    || (self.viewport == Viewport::Top && n < 0)
+                {
+                    return;
+                }
+                let Some(top) = self.get_top_left(Tag::Viewport) else {
                     return;
                 };
-                y
+                let moved = if n < 0 {
+                    top.up(self, n.unsigned_abs())
+                } else {
+                    top.down(self, n as usize)
+                };
+                let was_pin = self.viewport == Viewport::Pin;
+                let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+                let Some(p) = moved else {
+                    self.viewport = if n < 0 {
+                        if self.active_offset() == 0 {
+                            Viewport::Active
+                        } else {
+                            Viewport::Top
+                        }
+                    } else {
+                        Viewport::Active
+                    };
+                    return;
+                };
+                // A pinned upward delta stays pinned even at row zero.
+                if was_pin && (n < 0 || !self.pin_is_active(p)) {
+                    let h = self.viewport_pin.expect("viewport handle");
+                    self.pins[h.index].pin = Some(p);
+                    if cached != usize::MAX {
+                        self.viewport_pin_row_offset
+                            .store(cached.saturating_add_signed(n), Ordering::Relaxed);
+                    }
+                } else {
+                    self.scroll(Scroll::Pin(p));
+                }
             }
-        };
-        if row >= self.active_offset() {
-            self.viewport = Viewport::Active;
-        } else if row == 0 {
-            self.viewport = Viewport::Top;
-        } else if let (Some(p), Some(h)) = (self.pin_at(row, 0), self.viewport_pin) {
-            self.pins[h.index].pin = Some(p);
-            self.viewport = Viewport::Pin;
+            Scroll::DeltaPrompt(delta) => {
+                if delta == 0 {
+                    return;
+                }
+                let Some(top) = self.get_top_left(Tag::Viewport) else {
+                    return;
+                };
+                let start = if delta < 0 {
+                    top.up(self, 1)
+                } else {
+                    let mut next = top.down(self, 1);
+                    if top
+                        .row_and_cell(self)
+                        .is_some_and(|(r, _)| r.semantic_prompt() != SemanticPrompt::None)
+                    {
+                        while let Some(p) = next {
+                            if p.row_and_cell(self).is_none_or(|(r, _)| {
+                                r.semantic_prompt() != SemanticPrompt::PromptContinuation
+                            }) {
+                                break;
+                            }
+                            let following = p.down(self, 1);
+                            if following.is_none() {
+                                break;
+                            }
+                            next = following;
+                        }
+                    }
+                    next
+                };
+                let Some(start) = start else {
+                    return;
+                };
+                let direction = if delta < 0 {
+                    Direction::LeftUp
+                } else {
+                    Direction::RightDown
+                };
+                let mut it = PromptIterator {
+                    list: self,
+                    current: Some(start),
+                    limit: None,
+                    direction,
+                };
+                let mut found = None;
+                for _ in 0..delta.unsigned_abs() {
+                    let Some(p) = it.next() else {
+                        break;
+                    };
+                    found = Some(p);
+                }
+                if let Some(p) = found {
+                    if self.pin_is_active(p) {
+                        self.viewport = Viewport::Active;
+                    } else if let Some(h) = self.viewport_pin {
+                        self.pins[h.index].pin = Some(p);
+                        self.viewport = Viewport::Pin;
+                        self.invalidate_viewport_offset();
+                    }
+                }
+            }
         }
     }
     fn fixup_viewport(&mut self) {
-        if self.viewport == Viewport::Pin && self.viewport_row_offset() >= self.active_offset() {
+        if self.viewport == Viewport::Pin
+            && self
+                .viewport_pin
+                .and_then(|h| self.tracked_pin(h))
+                .is_some_and(|p| self.pin_is_active(p))
+        {
             self.viewport = Viewport::Active;
         }
     }
@@ -686,13 +869,7 @@ impl PageList {
         if p.y >= page.size.rows {
             return Err(Error::InvalidCoordinate);
         }
-        let mut copy = Page::init(page.capacity)?;
-        copy.size = page.size;
-        copy.size.rows -= p.y;
-        copy.clone_from(page, usize::from(p.y), usize::from(page.size.rows))?;
-        copy.dirty = page.dirty;
-        let id = self.create_node(copy.capacity)?;
-        self.node_mut(id).ok_or(Error::InvalidId)?.data = copy;
+        let id = self.clone_node_rows(p.node, p.y, page.size.rows, page.capacity)?;
         self.insert_after(Some(p.node), id);
         let src = &mut self.node_mut(p.node).ok_or(Error::InvalidId)?.data;
         for y in usize::from(p.y)..usize::from(src.size.rows) {
@@ -710,10 +887,39 @@ impl PageList {
         }
         Ok(())
     }
-    fn replace_page(&mut self, old: NodeId, page: Page) -> Result<NodeId, Error> {
+    /// Clone a range directly into a pooled destination, without allocating
+    /// another temporary Page with the same backing storage.
+    fn clone_node_rows(
+        &mut self,
+        source: NodeId,
+        start: u16,
+        end: u16,
+        cap: Capacity,
+    ) -> Result<NodeId, Error> {
+        let src = &self.node(source).ok_or(Error::InvalidId)?.data;
+        let cols = src.size.cols;
+        let dirty = src.dirty;
+        let id = self.create_node(cap)?;
+        let page = &mut self.node_mut(id).ok_or(Error::InvalidId)?.data;
+        page.size.cols = cols;
+        page.size.rows = end - start;
+        page.dirty = dirty;
+        for y in start..end {
+            if let Err(error) = self.copy_row(source, y, id, y - start) {
+                self.destroy_unlinked(id);
+                return Err(error);
+            }
+        }
+        Ok(id)
+    }
+    fn destroy_unlinked(&mut self, id: NodeId) {
+        let node = self.nodes[id.index].take().expect("unlinked live node");
+        self.page_size -= allocated_size(node.data.capacity);
+        self.free_nodes.push(id.index);
+        self.recycle(node);
+    }
+    fn replace_page(&mut self, old: NodeId, id: NodeId) -> Result<NodeId, Error> {
         let prev = self.node(old).ok_or(Error::InvalidId)?.prev;
-        let id = self.create_node(page.capacity)?;
-        self.node_mut(id).ok_or(Error::InvalidId)?.data = page;
         self.insert_after(prev, id);
         let n = self.detach(old).ok_or(Error::InvalidId)?;
         self.recycle(n);
@@ -749,11 +955,8 @@ impl PageList {
         if Page::layout(cap).total_size > u32::MAX as usize {
             return Err(Error::OutOfSpace);
         }
-        let mut page = Page::init(cap)?;
-        page.size = old.size;
-        page.clone_from(old, 0, usize::from(old.size.rows))?;
-        page.dirty = old.dirty;
-        self.replace_page(id, page)
+        let new = self.clone_node_rows(id, 0, old.size.rows, cap)?;
+        self.replace_page(id, new)
     }
     /// Alias for capacity adjustment used by higher-level screen code.
     pub fn adjust_capacity(
@@ -773,13 +976,12 @@ impl PageList {
         if Page::layout(cap).total_size >= Page::layout(old.capacity).total_size {
             return Ok(None);
         }
-        let mut page = Page::init(cap)?;
-        page.size = old.size;
-        if page.clone_from(old, 0, usize::from(old.size.rows)).is_err() {
-            return Ok(None);
-        }
-        page.dirty = old.dirty;
-        self.replace_page(id, page).map(Some)
+        let new = match self.clone_node_rows(id, 0, old.size.rows, cap) {
+            Ok(new) => new,
+            Err(Error::OutOfMemory) => return Err(Error::OutOfMemory),
+            Err(_) => return Ok(None),
+        };
+        self.replace_page(id, new).map(Some)
     }
     fn erase_range(&mut self, start: usize, end: usize) -> Result<(), Error> {
         if start > end || end > self.total_rows {
@@ -788,57 +990,66 @@ impl PageList {
         if start == end {
             return Ok(());
         }
-        let coords: Vec<_> = self
-            .tracked_pins()
-            .filter_map(|(h, p)| self.screen_row(p).map(|y| (h, p, y)))
-            .collect();
-        let mut id = self.first;
+        self.invalidate_viewport_offset();
+        let mut node = self.first;
         let mut offset = 0;
-        while let Some(i) = id {
-            let n = self.node(i).ok_or(Error::InvalidId)?;
-            id = n.next;
-            let count = usize::from(n.data.size.rows);
-            let a = start.saturating_sub(offset).min(count);
-            let b = end.saturating_sub(offset).min(count);
-            offset += count;
+        while let Some(id) = node {
+            let current = self.node(id).ok_or(Error::InvalidId)?;
+            node = current.next;
+            let rows = usize::from(current.data.size.rows);
+            let a = start.saturating_sub(offset).min(rows);
+            let b = end.saturating_sub(offset).min(rows);
+            offset += rows;
             if a == b {
                 continue;
             }
-            if a == 0 && b == count && self.first != self.last {
-                let n = self.detach(i).ok_or(Error::InvalidId)?;
-                self.recycle(n);
+            if a == 0 && b == rows && (current.prev.is_some() || current.next.is_some()) {
+                let dest = current.prev.or(current.next).ok_or(Error::InvalidId)?;
+                for slot in &mut self.pins {
+                    if let Some(p) = &mut slot.pin
+                        && p.node == id
+                    {
+                        p.node = dest;
+                        p.x = 0;
+                        p.y = 0;
+                    }
+                }
+                let old = self.detach(id).ok_or(Error::InvalidId)?;
+                self.recycle(old);
+            } else if a == 0 && b == rows {
+                let page = &mut self.node_mut(id).ok_or(Error::InvalidId)?.data;
+                let cols = page.size.cols;
+                page.reinit()?;
+                page.size.cols = cols;
+                page.size.rows = 0;
             } else {
-                let p = &mut self.node_mut(i).ok_or(Error::InvalidId)?.data;
+                let page = &mut self.node_mut(id).ok_or(Error::InvalidId)?.data;
                 for y in a..b {
-                    p.clear_cells(y, 0, usize::from(p.size.cols), false)?;
+                    page.clear_cells(y, 0, usize::from(page.size.cols), false)?;
                 }
-                p.rows[a..count].rotate_left(b - a);
-                p.size.rows -= (b - a) as u16;
-                for r in &mut p.rows[a..usize::from(p.size.rows)] {
-                    r.set_dirty(true);
+                page.rows[a..rows].rotate_left(b - a);
+                page.size.rows -= (b - a) as u16;
+                for row in &mut page.rows[a..usize::from(page.size.rows)] {
+                    row.set_dirty(true);
                 }
+                for slot in &mut self.pins {
+                    if let Some(p) = &mut slot.pin
+                        && p.node == id
+                    {
+                        if usize::from(p.y) >= b {
+                            p.y -= (b - a) as u16;
+                        } else if usize::from(p.y) >= a {
+                            p.y = 0;
+                            p.x = 0;
+                        }
+                    }
+                }
+            }
+            if offset >= end {
+                break;
             }
         }
         self.total_rows -= end - start;
-        if self.total_rows == 0 {
-            self.grow()?;
-        }
-        for (h, old, y) in coords {
-            let erased = y >= start && y < end;
-            let mapped_y = if y < start {
-                y
-            } else if y >= end {
-                y - (end - start)
-            } else {
-                start.min(self.total_rows - 1)
-            };
-            let mut p = self
-                .pin_at(mapped_y, if erased { 0 } else { old.x })
-                .ok_or(Error::InvalidCoordinate)?;
-            p.garbage = old.garbage;
-            self.pins[h.index].pin = Some(p);
-        }
-        self.fixup_viewport();
         Ok(())
     }
     /// Remove an inclusive row range, regrowing erased active rows.
@@ -855,84 +1066,114 @@ impl PageList {
         } else {
             self.bounds(start.tag()).1
         };
+        let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
         self.erase_range(a, b)?;
-        while self.total_rows < usize::from(self.rows) {
+        let regrow = if start.tag() == Tag::Active {
+            b - a
+        } else {
+            usize::from(self.rows).saturating_sub(self.total_rows)
+        };
+        for _ in 0..regrow {
             self.grow()?;
+        }
+        self.fixup_viewport();
+        if a == 0 && self.viewport == Viewport::Pin && cached != usize::MAX {
+            if cached < b - a {
+                self.viewport = Viewport::Top;
+            } else {
+                self.viewport_pin_row_offset
+                    .store(cached - (b - a), Ordering::Relaxed);
+            }
+        }
+        if self.viewport == Viewport::Top && self.active_offset() == 0 {
+            self.viewport = Viewport::Active;
         }
         Ok(())
     }
     /// Remove one row, shifting following rows without changing page dimensions.
     pub fn erase_row(&mut self, pt: Point) -> Result<(), Error> {
-        let p = self.pin(pt).ok_or(Error::InvalidCoordinate)?;
-        let y = self.screen_row(p).ok_or(Error::InvalidCoordinate)?;
-        let stationary: Vec<_> = self
-            .tracked_pins()
-            .filter(|(_, q)| q.node == p.node && q.y == p.y)
-            .collect();
-        self.erase_row_bounded(pt, self.total_rows - y - 1)?;
-        for (h, p) in stationary {
-            self.pins[h.index].pin = Some(p);
-        }
+        self.erase_row_bounded_impl(pt, usize::MAX, true)?;
+        self.invalidate_viewport_offset();
+        self.fixup_viewport();
         Ok(())
     }
     /// Remove a row and shift at most `limit` following rows, blanking the last.
     pub fn erase_row_bounded(&mut self, pt: Point, limit: usize) -> Result<(), Error> {
+        self.erase_row_bounded_impl(pt, limit, false)
+    }
+    fn erase_row_bounded_impl(
+        &mut self,
+        pt: Point,
+        limit: usize,
+        keep_erased_pin: bool,
+    ) -> Result<(), Error> {
         let first = self.pin(pt).ok_or(Error::InvalidCoordinate)?;
-        let start = self.screen_row(first).ok_or(Error::InvalidCoordinate)?;
-        let end = start.saturating_add(limit).min(self.total_rows - 1);
-        let old_pins: Vec<_> = self
-            .tracked_pins()
-            .filter_map(|(h, p)| self.screen_row(p).map(|y| (h, p, y)))
-            .collect();
-        let mut current = first;
+        let mut node = first.node;
+        let mut start = first.y;
+        let mut remaining = limit;
         loop {
-            let node = self.node(current.node).ok_or(Error::InvalidId)?;
-            let offset = self
-                .screen_row(Pin { y: 0, ..current })
-                .ok_or(Error::InvalidCoordinate)?;
-            let stop = (end - offset + 1).min(usize::from(node.data.size.rows));
-            let next = node.next;
-            let has_next = offset + stop <= end;
-            // Rotation moves only compact row metadata and keeps cell indices stable.
-            let page = &mut self.node_mut(current.node).ok_or(Error::InvalidId)?.data;
-            page.rows[usize::from(current.y)..stop].rotate_left(1);
+            let current = self.node(node).ok_or(Error::InvalidId)?;
+            let rows = current.data.size.rows;
+            let next = current.next;
+            let previous = current.prev;
+            let previous_rows = previous
+                .and_then(|p| self.node(p))
+                .map(|n| n.data.size.rows);
+            let count = (remaining.saturating_add(1)).min(usize::from(rows - start));
+            let end = start + count as u16;
+            let stop = usize::from(rows - start) > remaining;
+            let page = &mut self.node_mut(node).ok_or(Error::InvalidId)?.data;
+            if stop {
+                page.clear_cells(usize::from(start), 0, usize::from(page.size.cols), false)?;
+            }
+            page.rows[usize::from(start)..usize::from(end)].rotate_left(1);
             page.dirty = true;
-            if !has_next {
-                page.clear_cells(stop - 1, 0, usize::from(page.size.cols), false)?;
-                break;
+            if self.viewport == Viewport::Pin
+                && let Some(p) = self.viewport_pin.and_then(|h| self.tracked_pin(h))
+                && p.node == node
+                && p.y >= start
+                && p.y < end
+                && (node != first.node || p.y > 0)
+            {
+                let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+                if cached != usize::MAX {
+                    self.viewport_pin_row_offset
+                        .store(cached - 1, Ordering::Relaxed);
+                }
             }
-            let next = next.ok_or(Error::InvalidId)?;
-            let source = &self.node(next).ok_or(Error::InvalidId)?.data;
-            let row = source.rows[0];
-            let values: Vec<_> = (row.cells()..row.cells() + usize::from(source.size.cols))
-                .map(|i| source.export_cell(i))
-                .collect();
-            let dest = &mut self.node_mut(current.node).ok_or(Error::InvalidId)?.data;
-            dest.clear_cells(stop - 1, 0, usize::from(dest.size.cols), false)?;
-            for (x, value) in values.iter().enumerate() {
-                dest.import_cell(x, stop - 1, value)?;
+            for slot in &mut self.pins {
+                if let Some(p) = &mut slot.pin
+                    && p.node == node
+                    && p.y >= start
+                    && p.y < end
+                {
+                    if keep_erased_pin && node == first.node && p.y == first.y {
+                        continue;
+                    }
+                    if p.y > 0 {
+                        p.y -= 1;
+                    } else if node == first.node {
+                        p.x = 0;
+                    } else {
+                        p.node = previous.ok_or(Error::InvalidId)?;
+                        p.y = previous_rows.ok_or(Error::InvalidId)? - 1;
+                    }
+                }
             }
-            let cells = dest.rows[stop - 1].cells();
-            dest.rows[stop - 1] = row;
-            dest.rows[stop - 1].set_cells(cells);
-            current = Pin {
-                node: next,
-                y: 0,
-                x: 0,
-                garbage: false,
-            };
+            if stop {
+                return Ok(());
+            }
+            if let Some(next) = next {
+                self.copy_row(next, 0, node, rows - 1)?;
+                remaining -= usize::from(rows - start);
+                node = next;
+                start = 0;
+            } else {
+                let page = &mut self.node_mut(node).ok_or(Error::InvalidId)?.data;
+                page.clear_cells(usize::from(rows - 1), 0, usize::from(page.size.cols), false)?;
+                return Ok(());
+            }
         }
-        for (h, old, y) in old_pins {
-            if y >= start && y <= end {
-                let mut p = self
-                    .pin_at(y.saturating_sub(1), if y == 0 { 0 } else { old.x })
-                    .ok_or(Error::InvalidCoordinate)?;
-                p.garbage = old.garbage;
-                self.pins[h.index].pin = Some(p);
-            }
-        }
-        self.fixup_viewport();
-        Ok(())
     }
     /// Remove cells within a rectangular row region, shifting rows upward.
     pub fn erase_cells_bounded(
@@ -950,19 +1191,28 @@ impl PageList {
         for y in a..b {
             let src = self.pin_at(y + 1, left).ok_or(Error::InvalidCoordinate)?;
             let dst = self.pin_at(y, left).ok_or(Error::InvalidCoordinate)?;
-            let data: Vec<_> = {
-                let page = &self.node(src.node).ok_or(Error::InvalidId)?.data;
-                (left..=right)
-                    .map(|x| {
-                        page.export_cell(page.rows[usize::from(src.y)].cells() + usize::from(x))
-                    })
-                    .collect()
-            };
-            for (x, v) in data.iter().enumerate() {
-                self.node_mut(dst.node)
+            if src.node == dst.node {
+                self.node_mut(src.node)
                     .ok_or(Error::InvalidId)?
                     .data
-                    .import_cell(usize::from(left) + x, usize::from(dst.y), v)?;
+                    .clone_cells_within(
+                        usize::from(src.y),
+                        usize::from(dst.y),
+                        usize::from(left),
+                        usize::from(left),
+                        usize::from(right - left + 1),
+                    )?;
+            } else {
+                let (source, dest) = self.pages_for_copy(src.node, dst.node)?;
+                let base = source.rows[usize::from(src.y)].cells();
+                for x in left..=right {
+                    dest.clone_cell_from(
+                        source,
+                        base + usize::from(x),
+                        usize::from(x),
+                        usize::from(dst.y),
+                    )?;
+                }
             }
         }
         let p = self.pin_at(b, left).ok_or(Error::InvalidCoordinate)?;
@@ -1002,6 +1252,14 @@ impl PageList {
             let n = self.detach(i).ok_or(Error::InvalidId)?;
             self.recycle(n);
         }
+        let cap = initial_capacity(self.cols);
+        let pages = usize::from(self.rows).div_ceil(usize::from(cap.rows));
+        self.page_pool.retain(|page| page.capacity == cap);
+        self.page_pool.truncate(pages);
+        self.nodes.clear();
+        self.free_nodes.clear();
+        self.nodes.shrink_to(pages);
+        self.free_nodes.shrink_to(pages);
         self.total_rows = 0;
         self.viewport = Viewport::Active;
         while self.total_rows < usize::from(self.rows) {
@@ -1089,27 +1347,42 @@ impl Pin {
     }
     /// Move upward, returning the edge and unconsumed distance on overflow.
     pub fn up_overflow(self, list: &PageList, n: usize) -> Option<Overflow> {
-        let y = list.screen_row(self)?;
-        if n <= y {
-            Some(Overflow::Offset(self.up(list, n)?))
-        } else {
-            Some(Overflow::Overflow {
-                end: list.pin_at(0, self.x)?,
-                remaining: n - y,
-            })
+        let mut p = self;
+        let mut remaining = n;
+        loop {
+            if remaining <= usize::from(p.y) {
+                p.y -= remaining as u16;
+                return Some(Overflow::Offset(p));
+            }
+            remaining -= usize::from(p.y);
+            let Some(prev) = list.node(p.node)?.prev else {
+                p.y = 0;
+                return Some(Overflow::Overflow { end: p, remaining });
+            };
+            remaining -= 1;
+            p.node = prev;
+            p.y = list.node(prev)?.data.size.rows - 1;
         }
     }
     /// Move downward, returning the edge and unconsumed distance on overflow.
     pub fn down_overflow(self, list: &PageList, n: usize) -> Option<Overflow> {
-        let y = list.screen_row(self)?;
-        let available = list.total_rows - y - 1;
-        if n <= available {
-            Some(Overflow::Offset(self.down(list, n)?))
-        } else {
-            Some(Overflow::Overflow {
-                end: list.pin_at(list.total_rows - 1, self.x)?,
-                remaining: n - available,
-            })
+        let mut p = self;
+        let mut remaining = n;
+        loop {
+            let node = list.node(p.node)?;
+            let available = usize::from(node.data.size.rows - p.y - 1);
+            if remaining <= available {
+                p.y += remaining as u16;
+                return Some(Overflow::Offset(p));
+            }
+            remaining -= available;
+            let Some(next) = node.next else {
+                p.y = node.data.size.rows - 1;
+                return Some(Overflow::Overflow { end: p, remaining });
+            };
+            remaining -= 1;
+            p.node = next;
+            p.y = 0;
         }
     }
     /// Compare page and coordinates, ignoring garbage state.
@@ -1242,10 +1515,17 @@ impl Pin {
     }
     /// Whether this pin precedes another pin in row-major screen order.
     pub fn before(self, list: &PageList, other: Self) -> bool {
-        match (list.screen_row(self), list.screen_row(other)) {
-            (Some(a), Some(b)) => (a, self.x) < (b, other.x),
-            _ => false,
+        if self.node == other.node {
+            return (self.y, self.x) < (other.y, other.x);
         }
+        let mut node = list.node(self.node).and_then(|n| n.next);
+        while let Some(id) = node {
+            if id == other.node {
+                return true;
+            }
+            node = list.node(id).and_then(|n| n.next);
+        }
+        false
     }
     /// Whether this pin lies between inclusive endpoints.
     pub fn is_between(self, list: &PageList, top: Self, bottom: Self) -> bool {
@@ -1709,449 +1989,665 @@ impl Iterator for PromptIterator<'_> {
     }
 }
 
-#[derive(Clone)]
-struct SavedRow {
-    row: Row,
-    cells: Vec<OwnedCell>,
-}
-impl PageList {
-    fn snapshot(&self) -> Vec<SavedRow> {
-        self.row_iterator(
-            Direction::RightDown,
-            Point::Screen(Coordinate::default()),
-            None,
-        )
-        .filter_map(|p| {
-            let page = &self.node(p.node)?.data;
-            let mut row = *page.get_row(usize::from(p.y))?;
-            row.set_dirty(row.dirty() || page.dirty);
-            let cells = (row.cells()..row.cells() + usize::from(page.size.cols))
-                .map(|i| page.export_cell(i))
-                .collect();
-            Some(SavedRow { row, cells })
+/// Capacity inherited by a rewritten page. Oversized source pages cap their
+/// inherited row count on reflow to avoid propagating massive empty grids.
+fn resized_capacity(page: &Page, cols: u16, reflow: bool) -> Capacity {
+    page.capacity
+        .adjust(Adjustment { cols: Some(cols) })
+        .unwrap_or(Capacity {
+            cols,
+            rows: page.size.rows.min(if reflow {
+                page::STD_CAPACITY.rows
+            } else {
+                page.capacity.rows
+            }),
+            ..page.capacity
         })
-        .collect()
+}
+
+/// Streaming source-to-destination cursor used exclusively during reflow.
+/// Unlike a Screen cursor it owns no rendering or terminal state.
+struct ReflowCursor {
+    node: NodeId,
+    x: u16,
+    y: u16,
+    pending_wrap: bool,
+    new_rows: usize,
+    total_rows: usize,
+}
+#[derive(Copy, Clone)]
+enum WriteResult {
+    Success,
+    Repeat,
+    SkipNext,
+}
+impl ReflowCursor {
+    fn new(node: NodeId) -> Self {
+        Self {
+            node,
+            x: 0,
+            y: 0,
+            pending_wrap: false,
+            new_rows: 0,
+            total_rows: 1,
+        }
     }
-    fn build_pages(cols: u16, rows: &[SavedRow], mark_dirty: bool) -> Result<Vec<Page>, Error> {
-        let mut pages = Vec::new();
-        let mut offset = 0;
-        while offset < rows.len() {
-            let mut cap = initial_capacity(cols);
-            let count = usize::from(cap.rows).min(rows.len() - offset);
-            // Count required values before allocating, so cloning is monotonic.
-            let mut styles = std::collections::HashSet::new();
-            let mut links = std::collections::HashSet::new();
-            let mut gb = 0usize;
-            let mut sb = 0usize;
-            let mut hc = 0usize;
-            for r in &rows[offset..offset + count] {
-                for c in &r.cells {
-                    if let Some(s) = c.style {
-                        styles.insert(s);
-                    }
-                    if let Some(g) = &c.grapheme {
-                        gb += (g.len() * 4).next_multiple_of(16);
-                    }
-                    if let Some(h) = &c.hyperlink {
-                        hc += 1;
-                        if links.insert(h.clone()) {
-                            sb += h.string_bytes();
-                        }
-                    }
-                }
-            }
-            let sc = crate::style::Set::capacity_for_count(styles.len());
-            let lc = crate::hyperlink::Set::capacity_for_count(links.len()).max(hc.div_ceil(16));
-            cap.styles = cap
-                .styles
-                .max(u16::try_from(sc).map_err(|_| Error::OutOfSpace)?);
-            cap.hyperlink_bytes = cap
-                .hyperlink_bytes
-                .max(u16::try_from(lc * 48).map_err(|_| Error::OutOfSpace)?);
-            cap.grapheme_bytes = cap
-                .grapheme_bytes
-                .max(u32::try_from(gb).map_err(|_| Error::OutOfSpace)?);
-            cap.string_bytes = cap
-                .string_bytes
-                .max(u32::try_from(sb).map_err(|_| Error::OutOfSpace)?);
-            let mut page = Page::init(cap)?;
-            page.size.rows = count as u16;
-            for (y, row) in rows[offset..offset + count].iter().enumerate() {
-                for (x, c) in row.cells.iter().take(usize::from(cols)).enumerate() {
-                    page.import_cell(x, y, c)?;
-                }
-                let start = page.rows[y].cells();
-                page.rows[y] = row.row;
-                page.rows[y].set_cells(start);
-                page.rows[y].set_dirty(mark_dirty || row.row.dirty());
-                page.update_row_grapheme_flag(y);
-                page.update_row_styled_flag(y);
-                page.update_row_hyperlink_flag(y);
-                page.rows[y].set_kitty_virtual_placeholder(
-                    row.cells.iter().any(|c| c.cell.codepoint() == 0x10eeee),
-                );
-            }
-            pages.push(page);
-            offset += count;
-        }
-        Ok(pages)
+    fn page<'a>(&self, list: &'a PageList) -> &'a Page {
+        &list.node(self.node).expect("reflow destination").data
     }
-    fn install_pages(
-        &mut self,
-        pages: Vec<Page>,
-        cols: u16,
-        coords: &[(TrackedPin, usize, u16, bool)],
-    ) -> Result<(), Error> {
-        let old: Vec<_> = self
-            .page_iterator(
-                Direction::RightDown,
-                Point::Screen(Coordinate::default()),
-                None,
-            )
-            .map(|c| c.node)
-            .collect();
-        let mut added = Vec::new();
-        for page in pages {
-            let id = match self.create_node(page.capacity) {
-                Ok(id) => id,
-                Err(e) => {
-                    for id in added {
-                        if let Some(n) = self.detach(id) {
-                            self.recycle(n);
-                        }
-                    }
-                    return Err(e);
-                }
-            };
-            self.node_mut(id).ok_or(Error::InvalidId)?.data = page;
-            self.insert_after(self.last, id);
-            added.push(id);
+    fn page_mut<'a>(&self, list: &'a mut PageList) -> &'a mut Page {
+        &mut list.node_mut(self.node).expect("reflow destination").data
+    }
+    fn forward(&mut self, list: &PageList) {
+        if self.x == self.page(list).size.cols - 1 {
+            self.pending_wrap = true;
+        } else {
+            self.x += 1;
         }
-        for id in old {
-            if let Some(n) = self.detach(id) {
-                self.recycle(n);
-            }
+    }
+    fn scroll(&mut self, list: &mut PageList, cap: Capacity) -> Result<(), Error> {
+        if self.y == self.page(list).capacity.rows - 1 {
+            let node = list.create_node(cap)?;
+            list.node_mut(node).ok_or(Error::InvalidId)?.data.size.rows = 1;
+            list.insert_after(Some(self.node), node);
+            self.node = node;
+            self.y = 0;
+        } else {
+            self.page_mut(list).size.rows += 1;
+            self.y += 1;
         }
-        self.cols = cols;
-        self.total_rows = self
-            .nodes
-            .iter()
-            .flatten()
-            .map(|n| usize::from(n.data.size.rows))
-            .sum();
-        for &(h, y, x, garbage) in coords {
-            if let Some(mut p) =
-                self.pin_at(y.min(self.total_rows.saturating_sub(1)), x.min(cols - 1))
-            {
-                p.garbage = garbage;
-                self.pins[h.index].pin = Some(p);
-            }
-        }
-        self.fixup_viewport();
+        self.x = 0;
+        self.pending_wrap = false;
+        self.total_rows += 1;
         Ok(())
     }
+    fn increase_capacity(
+        &mut self,
+        list: &mut PageList,
+        adjustment: Option<IncreaseCapacity>,
+    ) -> Result<(), Error> {
+        self.node = list.increase_capacity(self.node, adjustment)?;
+        self.pending_wrap = false;
+        // Zig reinitializes the cursor after replacing the page.
+        self.new_rows = 0;
+        Ok(())
+    }
+    fn remap_cell(&self, list: &mut PageList, source: NodeId, y: u16, x: u16) {
+        for slot in &mut list.pins {
+            if let Some(p) = &mut slot.pin
+                && p.node == source
+                && p.y == y
+                && p.x == x
+            {
+                p.node = self.node;
+                p.x = self.x;
+                p.y = self.y;
+            }
+        }
+    }
+    fn reflow_row(
+        &mut self,
+        list: &mut PageList,
+        source: NodeId,
+        src: &Page,
+        y: u16,
+    ) -> Result<(), Error> {
+        let row = src.rows[usize::from(y)];
+        let cells = src
+            .get_cells(usize::from(y))
+            .ok_or(Error::InvalidCoordinate)?;
+        let mut len = src.size.cols;
+        if !row.wrap() {
+            while len > 0 && cells[usize::from(len - 1)].is_empty() {
+                len -= 1;
+            }
+            if len == 0 && row.semantic_prompt() != SemanticPrompt::None {
+                len = 1;
+            }
+        }
+        let remaining = self.page(list).size.cols - 1 - self.x;
+        for slot in &mut list.pins {
+            if let Some(p) = &mut slot.pin
+                && p.node == source
+                && p.y == y
+            {
+                if p.x >= len {
+                    p.x = p.x.min(remaining);
+                }
+                len = len.max(p.x + 1);
+            }
+        }
+        if len == 0 {
+            if !row.wrap_continuation() {
+                self.new_rows += 1;
+            }
+            return Ok(());
+        }
+        let cap = resized_capacity(src, self.page(list).size.cols, true);
+        while self.new_rows > 0 {
+            self.scroll(list, cap)?;
+            self.new_rows -= 1;
+        }
+        self.page_mut(list).rows[usize::from(self.y)].set_semantic_prompt(row.semantic_prompt());
+        let mut x = 0;
+        while x < len {
+            if self.pending_wrap {
+                self.page_mut(list).rows[usize::from(self.y)].set_wrap(true);
+                self.scroll(list, cap)?;
+                let dst = &mut self.page_mut(list).rows[usize::from(self.y)];
+                dst.set_semantic_prompt(row.semantic_prompt());
+                dst.set_wrap_continuation(true);
+            }
+            self.remap_cell(list, source, y, x);
+            let index = row.cells() + usize::from(x);
+            match self.write_cell(list, src, index) {
+                Ok(WriteResult::Success) => x += 1,
+                Ok(WriteResult::Repeat) => {}
+                Ok(WriteResult::SkipNext) => {
+                    self.remap_cell(list, source, y, x + 1);
+                    x += 2;
+                }
+                Err(Error::OutOfSpace) if self.y == 0 => {
+                    x += 1;
+                    self.forward(list);
+                }
+                Err(Error::OutOfSpace) => self.move_last_row(list, cap)?,
+                Err(error) => return Err(error),
+            }
+        }
+        if !row.wrap() {
+            self.new_rows += 1;
+        }
+        Ok(())
+    }
+    /// Install unmanaged content first. A capacity failure leaves a valid cell
+    /// whose managed parts can be copied to a new page before retrying.
+    fn write_cell(
+        &mut self,
+        list: &mut PageList,
+        src: &Page,
+        index: usize,
+    ) -> Result<WriteResult, Error> {
+        let cell = src.cells[index];
+        let cols = self.page(list).size.cols;
+        let x = usize::from(self.x);
+        let y = usize::from(self.y);
+        let dst = self.page(list).cell_index(x, y)?;
+        if matches!(
+            cell.content_tag(),
+            ContentTag::BgColorPalette | ContentTag::BgColorRgb
+        ) {
+            self.page_mut(list).cells[dst] = cell;
+            self.forward(list);
+            return Ok(WriteResult::Success);
+        }
+        match cell.wide() {
+            Wide::Wide if cols == 1 => {
+                let c = &mut self.page_mut(list).cells[dst];
+                c.set_codepoint(0);
+                c.set_wide(Wide::Narrow);
+                self.forward(list);
+                return Ok(WriteResult::SkipNext);
+            }
+            Wide::Wide if self.x == cols - 1 => {
+                let mut spacer = Cell::default();
+                spacer.set_wide(Wide::SpacerHead);
+                self.page_mut(list).cells[dst] = spacer;
+                self.forward(list);
+                return Ok(WriteResult::Repeat);
+            }
+            Wide::SpacerHead => return Ok(WriteResult::Success),
+            Wide::SpacerTail if cols == 1 => return Ok(WriteResult::Success),
+            _ => {}
+        }
+        // Only a retry can overwrite owned data. Ordinary reflow writes into
+        // fresh cells, avoiding both cleanup and whole-row metadata scans.
+        let previous = self.page(list).cells[dst];
+        if previous.has_grapheme() || previous.hyperlink() || previous.has_styling() {
+            let dirty = self.page(list).rows[y].dirty();
+            self.page_mut(list).clear_cells(y, x, x + 1, false)?;
+            self.page_mut(list).rows[y].set_dirty(dirty);
+        }
+        let target = &mut self.page_mut(list).cells[dst];
+        *target = cell;
+        target.set_content_tag(ContentTag::Codepoint);
+        target.set_hyperlink(false);
+        target.set_style_id(0);
+        if cell.codepoint() == 0x10eeee {
+            self.page_mut(list).rows[y].set_kitty_virtual_placeholder(true);
+        }
+        if cell.has_grapheme() {
+            let cps = src.lookup_grapheme(index).ok_or(Error::InvalidId)?;
+            if self.page(list).grapheme_count() >= self.page(list).grapheme_capacity() {
+                self.increase_capacity(list, Some(IncreaseCapacity::GraphemeBytes))?;
+            }
+            while !self.page_mut(list).can_allocate_grapheme(cps.len() * 4) {
+                self.increase_capacity(list, Some(IncreaseCapacity::GraphemeBytes))?;
+            }
+            loop {
+                let dirty = self.page(list).rows[y].dirty();
+                let result = self.page_mut(list).set_graphemes(x, y, cps);
+                self.page_mut(list).rows[y].set_dirty(dirty);
+                match result {
+                    Ok(()) => break,
+                    Err(Error::GraphemeMapOutOfMemory | Error::GraphemeAllocOutOfMemory) => {
+                        self.increase_capacity(list, Some(IncreaseCapacity::GraphemeBytes))?;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if cell.hyperlink() {
+            loop {
+                match self.page_mut(list).clone_hyperlink_from(src, index, x, y) {
+                    Ok(()) => break,
+                    Err(Error::HyperlinkMapOutOfMemory | Error::SetOutOfMemory) => {
+                        self.increase_capacity(list, Some(IncreaseCapacity::HyperlinkBytes))?;
+                    }
+                    Err(Error::StringsOutOfMemory) => {
+                        self.increase_capacity(list, Some(IncreaseCapacity::StringBytes))?;
+                    }
+                    Err(Error::SetNeedsRehash) => self.increase_capacity(list, None)?,
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        if cell.has_styling() {
+            let style = *src.styles.get(cell.style_id()).ok_or(Error::InvalidId)?;
+            let id = loop {
+                match self
+                    .page_mut(list)
+                    .styles
+                    .add_with_id(style, cell.style_id())
+                {
+                    Ok(id) => break id.unwrap_or(cell.style_id()),
+                    Err(crate::ref_counted_set::AddError::OutOfMemory) => {
+                        self.increase_capacity(list, Some(IncreaseCapacity::Styles))?;
+                    }
+                    Err(crate::ref_counted_set::AddError::NeedsRehash) => {
+                        self.increase_capacity(list, None)?;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            let page = self.page_mut(list);
+            let dst = page.cell_index(x, y)?;
+            page.cells[dst].set_style_id(id);
+            page.rows[y].set_styled(true);
+        }
+        self.forward(list);
+        Ok(WriteResult::Success)
+    }
+    /// Split off the current final row and resume at its previous column.
+    fn move_last_row(&mut self, list: &mut PageList, cap: Capacity) -> Result<(), Error> {
+        let old_node = self.node;
+        let old_y = self.y;
+        let node = list.create_node(cap)?;
+        list.node_mut(node).ok_or(Error::InvalidId)?.data.size.rows = 1;
+        list.insert_after(Some(old_node), node);
+        list.copy_row(old_node, old_y, node, 0)?;
+        list.remap_rows(old_node, old_y, old_y + 1, node, 0);
+        let old = &mut list.node_mut(old_node).ok_or(Error::InvalidId)?.data;
+        old.clear_cells(usize::from(old_y), 0, usize::from(old.size.cols), false)?;
+        old.size.rows -= 1;
+        if old.size.rows == 0 {
+            let old = list.detach(old_node).ok_or(Error::InvalidId)?;
+            list.recycle(old);
+        }
+        self.node = node;
+        self.y = 0;
+        self.pending_wrap = false;
+        Ok(())
+    }
+}
+
+impl PageList {
+    /// Trim trailing rows without text, stopping at any tracked location.
     fn trim_blank_rows(&mut self, limit: usize) -> Result<(), Error> {
         for _ in 0..limit {
-            if self.total_rows <= 1 {
+            let Some(node) = self.last else {
                 break;
-            }
-            let last = self
-                .pin_at(self.total_rows - 1, 0)
-                .ok_or(Error::InvalidCoordinate)?;
-            let page = &self.node(last.node).ok_or(Error::InvalidId)?.data;
-            if page
-                .get_cells(usize::from(last.y))
-                .is_some_and(|c| c.iter().any(|c| !c.is_empty()))
-                || self
-                    .tracked_pins()
-                    .any(|(_, p)| p.node == last.node && p.y == last.y)
+            };
+            let page = &self.node(node).ok_or(Error::InvalidId)?.data;
+            let y = page.size.rows - 1;
+            if Cell::has_text_any(
+                page.get_cells(usize::from(y))
+                    .ok_or(Error::InvalidCoordinate)?,
+            ) || self.tracked_pins().any(|(_, p)| p.node == node && p.y == y)
             {
                 break;
             }
-            self.erase_range(self.total_rows - 1, self.total_rows)?;
+            let page = &mut self.node_mut(node).ok_or(Error::InvalidId)?.data;
+            page.size.rows -= 1;
+            self.total_rows -= 1;
+            if y == 0 {
+                let old = self.detach(node).ok_or(Error::InvalidId)?;
+                self.recycle(old);
+            }
         }
         Ok(())
     }
     /// Resize the active area and optionally reflow wrapped logical lines.
+    /// Column growth unwraps before resizing rows; column shrink resizes rows
+    /// first so wrapping has the correct active height available.
     pub fn resize(&mut self, opts: Resize) -> Result<(), Error> {
         let cols = opts.cols.unwrap_or(self.cols);
         let rows = opts.rows.unwrap_or(self.rows);
         if cols == 0 || rows == 0 {
             return Err(Error::InvalidDimensions);
         }
-        let cursor = opts.cursor.and_then(|c| {
-            self.pin(Point::Active(Coordinate {
-                x: c.x,
-                y: u32::from(c.y),
-            }))
-        });
-        let cursor_handle = cursor.map(|p| self.track_pin(p)).transpose()?;
-        let result = self.resize_inner(opts, cols, rows, cursor_handle);
-        if let Some(h) = cursor_handle {
-            self.untrack_pin(h);
-        }
-        result
-    }
-    fn resize_inner(
-        &mut self,
-        opts: Resize,
-        cols: u16,
-        rows: u16,
-        cursor_handle: Option<TrackedPin>,
-    ) -> Result<(), Error> {
-        let old_rows = self.rows;
+        self.invalidate_viewport_offset();
         self.min_max_size = min_max_size(cols, rows);
-        if cols != self.cols {
-            if !opts.reflow && cols < self.cols {
-                for n in self.nodes.iter_mut().flatten() {
-                    let p = &mut n.data;
-                    for y in 0..usize::from(p.size.rows) {
-                        p.clear_cells(y, usize::from(cols), usize::from(p.size.cols), false)?;
+        if !opts.reflow || cols == self.cols {
+            self.resize_without_reflow(opts)?;
+        } else if cols > self.cols {
+            self.resize_cols(cols, opts.cursor)?;
+            self.resize_without_reflow(opts)?;
+        } else {
+            self.resize_without_reflow(Resize {
+                cols: Some(self.cols),
+                ..opts
+            })?;
+            self.resize_cols(cols, opts.cursor)?;
+        }
+        self.fixup_viewport();
+        Ok(())
+    }
+    fn resize_without_reflow(&mut self, opts: Resize) -> Result<(), Error> {
+        if let Some(cols) = opts.cols {
+            if cols < self.cols {
+                let mut node = self.first;
+                while let Some(id) = node {
+                    let n = self.node_mut(id).ok_or(Error::InvalidId)?;
+                    node = n.next;
+                    for y in 0..usize::from(n.data.size.rows) {
+                        n.data.clear_cells(
+                            y,
+                            usize::from(cols),
+                            usize::from(n.data.size.cols),
+                            false,
+                        )?;
                     }
-                    p.size.cols = cols;
+                    n.data.size.cols = cols;
                 }
-                self.cols = cols;
                 for slot in &mut self.pins {
                     if let Some(p) = &mut slot.pin {
                         p.x = p.x.min(cols - 1);
                     }
                 }
-            } else {
-                let old = self.snapshot();
-                let tracked: Vec<_> = self
-                    .tracked_pins()
-                    .filter_map(|(h, p)| self.screen_row(p).map(|y| (h, y, p.x, p.garbage)))
-                    .collect();
-                let mut remapped = tracked.clone();
-                let mut output = Vec::<SavedRow>::new();
-                if opts.reflow {
-                    let mut current = SavedRow {
-                        row: Row::default(),
-                        cells: Vec::new(),
-                    };
-                    for (y, row) in old.iter().enumerate() {
-                        if current.cells.is_empty() {
-                            current.row = row.row;
-                            current.row.set_wrap(false);
-                            current
-                                .row
-                                .set_wrap_continuation(y > 0 && old[y - 1].row.wrap());
-                        }
-                        let mut len = if row.row.wrap() {
-                            row.cells.len()
-                        } else {
-                            row.cells
-                                .iter()
-                                .rposition(|c| !c.cell.is_empty())
-                                .map_or(0, |x| x + 1)
-                        };
-                        if let Some(h) = cursor_handle
-                            && let Some((_, _, x, _)) =
-                                tracked.iter().find(|(th, ty, _, _)| *th == h && *ty == y)
-                        {
-                            len = len.max(usize::from(*x) + 1);
-                        }
-                        let mut x = 0;
-                        while x < len {
-                            let c = &row.cells[x];
-                            if c.cell.wide() == Wide::SpacerHead {
-                                x += 1;
-                                continue;
-                            }
-                            let wide = c.cell.wide() == Wide::Wide;
-                            let width = if wide && cols > 1 { 2 } else { 1 };
-                            if current.cells.len() + width > usize::from(cols) {
-                                if wide && current.cells.len() < usize::from(cols) {
-                                    let mut spacer = Cell::default();
-                                    spacer.set_wide(Wide::SpacerHead);
-                                    current.cells.push(OwnedCell {
-                                        cell: spacer,
-                                        style: None,
-                                        grapheme: None,
-                                        hyperlink: None,
-                                    });
-                                }
-                                current.row.set_wrap(true);
-                                output.push(current);
-                                let mut meta = row.row;
-                                meta.set_wrap(false);
-                                meta.set_wrap_continuation(true);
-                                current = SavedRow {
-                                    row: meta,
-                                    cells: Vec::new(),
-                                };
-                            }
-                            let newx = current.cells.len() as u16;
-                            let newy = output.len();
-                            for (index, (_, ty, tx, _)) in tracked.iter().enumerate() {
-                                if *ty == y && usize::from(*tx) >= x && usize::from(*tx) < x + width
-                                {
-                                    remapped[index].1 = newy;
-                                    remapped[index].2 = newx + (*tx - x as u16);
-                                }
-                            }
-                            let mut value = c.clone();
-                            if wide && cols == 1 {
-                                value.cell = Cell::default();
-                                value.style = None;
-                                value.grapheme = None;
-                                value.hyperlink = None;
-                            }
-                            current.cells.push(value);
-                            if wide && cols > 1 {
-                                let tail = row
-                                    .cells
-                                    .get(x + 1)
-                                    .filter(|v| v.cell.wide() == Wide::SpacerTail)
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        let mut cell = Cell::default();
-                                        cell.set_wide(Wide::SpacerTail);
-                                        OwnedCell {
-                                            cell,
-                                            style: None,
-                                            grapheme: None,
-                                            hyperlink: None,
-                                        }
-                                    });
-                                current.cells.push(tail);
-                            }
-                            x += if wide { 2 } else { 1 };
-                        }
-                        for (index, (_, ty, tx, _)) in tracked.iter().enumerate() {
-                            if *ty == y && usize::from(*tx) >= len {
-                                remapped[index].1 = output.len();
-                                remapped[index].2 = (current.cells.len() + usize::from(*tx) - len)
-                                    .min(usize::from(cols - 1))
-                                    as u16;
-                            }
-                        }
-                        if !row.row.wrap() {
-                            current.row.set_wrap(false);
-                            output.push(current);
-                            current = SavedRow {
-                                row: Row::default(),
-                                cells: Vec::new(),
-                            };
-                        }
-                    }
-                    if !current.cells.is_empty() {
-                        output.push(current);
+                self.cols = cols;
+            } else if cols > self.cols {
+                let mut node = self.first;
+                self.cols = cols;
+                while let Some(id) = node {
+                    node = self.node(id).ok_or(Error::InvalidId)?.next;
+                    self.resize_without_reflow_grow_cols(id, cols)?;
+                }
+            }
+        }
+        if let Some(rows) = opts.rows {
+            if rows < self.rows {
+                self.trim_blank_rows(usize::from(self.rows - rows))?;
+                self.rows = rows;
+            } else if rows > self.rows {
+                let old_rows = self.rows;
+                self.rows = rows;
+                if opts.cursor.is_some_and(|c| c.y < old_rows - 1) {
+                    for _ in old_rows..rows {
+                        self.grow()?;
                     }
                 } else {
-                    for row in &old {
-                        let mut r = row.clone();
-                        r.cells.truncate(usize::from(cols));
-                        for c in &mut r.cells {
-                            if c.cell.wide() == Wide::SpacerHead {
-                                c.cell.set_wide(Wide::Narrow);
-                                c.cell.set_codepoint(0);
-                                c.grapheme = None;
-                            }
-                        }
-                        output.push(r);
+                    while self.total_rows < usize::from(rows) {
+                        self.grow()?;
                     }
+                    self.fixup_viewport();
                 }
-                if opts.reflow {
-                    let mut minimum = usize::from(rows);
-                    for (h, y, _, _) in &remapped {
-                        minimum = minimum.max(y + 1);
-                        if Some(*h) == cursor_handle {
-                            minimum = minimum.max(
-                                y + 1
-                                    + opts.cursor.map_or(0, |c| {
-                                        usize::from(old_rows.saturating_sub(c.y + 1))
-                                    }),
-                            );
-                        }
-                    }
-                    while output.len() > minimum
-                        && output.last().is_some_and(|r| {
-                            r.row.semantic_prompt() == SemanticPrompt::None
-                                && r.cells.iter().all(|c| c.cell.is_empty())
-                        })
-                    {
-                        output.pop();
-                    }
-                }
-                while output.len() < usize::from(rows) {
-                    output.push(SavedRow {
-                        row: Row::default(),
-                        cells: Vec::new(),
-                    });
-                }
-                let pages = Self::build_pages(cols, &output, true)?;
-                self.install_pages(pages, cols, &remapped)?;
             }
         }
-        if rows < old_rows {
-            self.trim_blank_rows(usize::from(old_rows - rows))?;
-        }
-        self.rows = rows;
-        if rows > old_rows && opts.cursor.is_some_and(|c| c.y < old_rows - 1) {
-            for _ in 0..rows - old_rows {
-                self.grow()?;
-            }
-        }
-        while self.total_rows < usize::from(rows) {
-            self.grow()?;
-        }
-        self.fixup_viewport();
         Ok(())
     }
-    /// Clone an inclusive cell range into an independent list and remap tracked pins.
+    /// Borrow distinct source and destination pages without snapshots or unsafe
+    /// pointers. Their slab slots remain stable for the duration of the copy.
+    fn copy_row(&mut self, src: NodeId, src_y: u16, dst: NodeId, dst_y: u16) -> Result<(), Error> {
+        let (source, dest) = self.pages_for_copy(src, dst)?;
+        dest.clone_row_from(source, usize::from(src_y), usize::from(dst_y))
+    }
+    fn pages_for_copy(&mut self, src: NodeId, dst: NodeId) -> Result<(&Page, &mut Page), Error> {
+        assert_ne!(src.index, dst.index);
+        let (source, dest) = if src.index < dst.index {
+            let (left, right) = self.nodes.split_at_mut(dst.index);
+            (left[src.index].as_ref(), right[0].as_mut())
+        } else {
+            let (left, right) = self.nodes.split_at_mut(src.index);
+            (right[0].as_ref(), left[dst.index].as_mut())
+        };
+        Ok((
+            &source.ok_or(Error::InvalidId)?.data,
+            &mut dest.ok_or(Error::InvalidId)?.data,
+        ))
+    }
+    /// Widen one page, first backfilling the previously rewritten page to avoid
+    /// permanently stranding row capacity between page boundaries.
+    fn resize_without_reflow_grow_cols(&mut self, source: NodeId, cols: u16) -> Result<(), Error> {
+        let src = &self.node(source).ok_or(Error::InvalidId)?.data;
+        if src.capacity.cols >= cols
+            && (0..usize::from(src.size.rows)).all(|y| {
+                src.get_cells(y).expect("source row")[usize::from(src.size.cols - 1)].wide()
+                    != Wide::SpacerHead
+            })
+        {
+            self.node_mut(source)
+                .ok_or(Error::InvalidId)?
+                .data
+                .size
+                .cols = cols;
+            return Ok(());
+        }
+        let cap = resized_capacity(src, cols, false);
+        let rows = src.size.rows;
+        let previous = self.node(source).ok_or(Error::InvalidId)?.prev;
+        let mut copied = 0;
+        if let Some(prev) = previous {
+            let page = &self.node(prev).ok_or(Error::InvalidId)?.data;
+            let start = page.size.rows;
+            let len = (page.capacity.rows - start).min(rows);
+            for y in 0..len {
+                self.node_mut(prev).ok_or(Error::InvalidId)?.data.size.rows += 1;
+                if self.copy_row(source, y, prev, start + y).is_err() {
+                    let page = &mut self.node_mut(prev).ok_or(Error::InvalidId)?.data;
+                    page.clear_cells(usize::from(start + y), 0, usize::from(cols), false)?;
+                    page.size.rows -= 1;
+                    break;
+                }
+                copied += 1;
+            }
+            self.remap_rows(source, 0, copied, prev, start);
+        }
+        while copied < rows {
+            let id = self.create_node(cap)?;
+            let start = copied;
+            let len = cap.rows.min(rows - copied);
+            self.insert_after(self.node(source).ok_or(Error::InvalidId)?.prev, id);
+            for y in 0..len {
+                self.node_mut(id).ok_or(Error::InvalidId)?.data.size.rows += 1;
+                self.copy_row(source, copied, id, y)?;
+                copied += 1;
+            }
+            self.remap_rows(source, start, copied, id, 0);
+        }
+        let old = self.detach(source).ok_or(Error::InvalidId)?;
+        self.recycle(old);
+        Ok(())
+    }
+    fn remap_rows(&mut self, source: NodeId, start: u16, end: u16, dest: NodeId, dest_y: u16) {
+        for slot in &mut self.pins {
+            if let Some(p) = &mut slot.pin
+                && p.node == source
+                && p.y >= start
+                && p.y < end
+            {
+                p.node = dest;
+                p.y = p.y - start + dest_y;
+            }
+        }
+    }
+    fn wrapped_rows_above(&self, pin: Pin) -> usize {
+        let Some(top) = self.get_top_left(Tag::Active) else {
+            return 0;
+        };
+        let mut current = Some(pin);
+        let mut count = 0;
+        while let Some(p) = current {
+            if p.row_and_cell(self)
+                .is_some_and(|(r, _)| r.wrap_continuation())
+            {
+                count += 1;
+            }
+            if p.node == top.node && p.y == top.y {
+                break;
+            }
+            current = p.up(self, 1);
+        }
+        count
+    }
+    /// Rewrite incrementally, releasing each source page as soon as it has been
+    /// consumed. Pending blank rows are only materialized before later content.
+    fn resize_cols(&mut self, cols: u16, cursor: Option<Cursor>) -> Result<(), Error> {
+        self.cols = cols;
+        let preserved = if let Some(c) = cursor {
+            if let Some(p) = self.pin(Point::Active(Coordinate {
+                x: c.x,
+                y: u32::from(c.y),
+            })) {
+                let wrapped = self.wrapped_rows_above(p);
+                Some((
+                    self.track_pin(p)?,
+                    usize::from(self.rows - c.y - 1),
+                    wrapped,
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let result = self.reflow_pages(cols);
+        if let Err(error) = result {
+            if let Some((handle, _, _)) = preserved {
+                self.untrack_pin(handle);
+            }
+            return Err(error);
+        }
+        while self.total_rows < usize::from(self.rows) {
+            self.grow()?;
+        }
+        if let Some((handle, remaining, old_wrapped)) = preserved {
+            let p = self.tracked_pin(handle).ok_or(Error::InvalidId)?;
+            if let Some(point) = self.point_from_pin(Tag::Active, p) {
+                let wrapped = self.wrapped_rows_above(p);
+                let current = usize::from(self.rows) - point.coord().y as usize - 1;
+                let required = remaining
+                    .saturating_sub(wrapped.saturating_sub(old_wrapped))
+                    .saturating_sub(current);
+                for _ in 0..required {
+                    self.grow()?;
+                }
+            }
+            self.untrack_pin(handle);
+        }
+        Ok(())
+    }
+    fn reflow_pages(&mut self, cols: u16) -> Result<(), Error> {
+        let mut old = self.first;
+        let first = old.ok_or(Error::InvalidId)?;
+        let cap = resized_capacity(&self.node(first).ok_or(Error::InvalidId)?.data, cols, false);
+        let rewritten = self.create_node(cap)?;
+        self.node_mut(rewritten)
+            .ok_or(Error::InvalidId)?
+            .data
+            .size
+            .rows = 1;
+        self.first = Some(rewritten);
+        self.last = Some(rewritten);
+        let mut cursor = ReflowCursor::new(rewritten);
+        while let Some(id) = old {
+            // Taking a source node out of the slab permits borrowing its page
+            // while allocating or replacing destination pages in the list.
+            let source = self.nodes[id.index].take().ok_or(Error::InvalidId)?;
+            old = source.next;
+            let result = (0..source.data.size.rows)
+                .try_for_each(|y| cursor.reflow_row(self, id, &source.data, y));
+            self.page_size -= allocated_size(source.data.capacity);
+            self.free_nodes.push(id.index);
+            self.recycle(source);
+            if let Err(error) = result {
+                while let Some(id) = old {
+                    let source = self.nodes[id.index].take().ok_or(Error::InvalidId)?;
+                    old = source.next;
+                    self.page_size -= allocated_size(source.data.capacity);
+                    self.free_nodes.push(id.index);
+                    self.recycle(source);
+                }
+                return Err(error);
+            }
+        }
+        self.total_rows = cursor.total_rows;
+        Ok(())
+    }
+    /// Clone inclusive whole rows, preserving source page capacities and
+    /// boundaries. Pins in copied rows receive independent tracked handles.
     pub fn clone_range(
         &self,
         start: Point,
         end: Option<Point>,
     ) -> Result<(Self, HashMap<TrackedPin, TrackedPin>), Error> {
-        let (a, b) = self.iter_bounds(start, end);
-        let a = Pin {
-            x: 0,
-            ..a.ok_or(Error::InvalidCoordinate)?
-        };
-        let b = Pin {
-            x: self.cols - 1,
-            ..b.ok_or(Error::InvalidCoordinate)?
-        };
-        let ay = self.screen_row(a).ok_or(Error::InvalidCoordinate)?;
-        let by = self.screen_row(b).ok_or(Error::InvalidCoordinate)?;
-        let mut saved = self.snapshot()[ay..=by].to_vec();
-        let blank = || OwnedCell {
-            cell: Cell::default(),
-            style: None,
-            grapheme: None,
-            hyperlink: None,
-        };
-        for c in &mut saved[0].cells[..usize::from(a.x)] {
-            *c = blank();
-        }
-        if let Some(last) = saved.last_mut() {
-            for c in &mut last.cells[usize::from(b.x) + 1..] {
-                *c = blank();
-            }
-        }
-        while saved.len() < usize::from(self.rows) {
-            saved.push(SavedRow {
-                row: Row::default(),
-                cells: Vec::new(),
-            });
-        }
         let mut result = Self::init(self.cols, self.rows, Some(self.explicit_max_size))?;
-        let pages = Self::build_pages(self.cols, &saved, false)?;
-        let vh = result.viewport_pin.ok_or(Error::InvalidId)?;
-        result.install_pages(pages, self.cols, &[(vh, 0, 0, false)])?;
+        while let Some(id) = result.first {
+            let node = result.detach(id).ok_or(Error::InvalidId)?;
+            result.recycle(node);
+        }
+        result.page_serial = 0;
+        result.total_rows = 0;
+        result.min_max_size = self.min_max_size;
         let mut remap = HashMap::new();
-        for (h, p) in self.tracked_pins() {
-            if Some(h) == self.viewport_pin {
-                continue;
+        for chunk in self.page_iterator(Direction::RightDown, start, end) {
+            let source = &self.node(chunk.node).ok_or(Error::InvalidId)?.data;
+            let node = result.create_node(source.capacity)?;
+            let dest = &mut result.node_mut(node).ok_or(Error::InvalidId)?.data;
+            dest.size.cols = source.size.cols;
+            dest.size.rows = chunk.end - chunk.start;
+            dest.clone_from(source, usize::from(chunk.start), usize::from(chunk.end))?;
+            dest.dirty = source.dirty;
+            result.insert_after(result.last, node);
+            result.total_rows += usize::from(chunk.end - chunk.start);
+            for (handle, p) in self.tracked_pins() {
+                if Some(handle) == self.viewport_pin
+                    || p.node != chunk.node
+                    || p.y < chunk.start
+                    || p.y >= chunk.end
+                {
+                    continue;
+                }
+                remap.insert(
+                    handle,
+                    result.track_pin(Pin {
+                        node,
+                        y: p.y - chunk.start,
+                        ..p
+                    })?,
+                );
             }
-            if p.is_between(self, a, b) {
-                let y = self.screen_row(p).ok_or(Error::InvalidCoordinate)?;
-                let mut q = result.pin_at(y - ay, p.x).ok_or(Error::InvalidCoordinate)?;
-                q.garbage = p.garbage;
-                remap.insert(h, result.track_pin(q)?);
-            }
+        }
+        let first = result.first.ok_or(Error::InvalidCoordinate)?;
+        let viewport = result.viewport_pin.ok_or(Error::InvalidId)?;
+        result.pins[viewport.index].pin = Some(Pin {
+            node: first,
+            x: 0,
+            y: 0,
+            garbage: false,
+        });
+        while result.total_rows < usize::from(result.rows) {
+            result.grow()?;
         }
         Ok((result, remap))
     }
@@ -2234,6 +2730,16 @@ impl PageList {
                 return Err("invalid tracked pin".into());
             }
         }
+        let cached = self.viewport_pin_row_offset.load(Ordering::Relaxed);
+        if self.viewport == Viewport::Pin && cached != usize::MAX {
+            let pin = self
+                .viewport_pin
+                .and_then(|h| self.tracked_pin(h))
+                .ok_or("missing viewport pin")?;
+            if self.screen_row(pin) != Some(cached) {
+                return Err("stale viewport row offset".into());
+            }
+        }
         Ok(())
     }
     /// Assert all list invariants in debug/test builds.
@@ -2246,14 +2752,14 @@ fn double16(v: u16) -> Result<u16, Error> {
     if v == u16::MAX {
         return Err(Error::OutOfSpace);
     }
-    Ok(v.saturating_mul(2).max(1))
+    Ok(v.saturating_mul(2))
 }
 
 fn double32(v: u32) -> Result<u32, Error> {
     if v == u32::MAX {
         return Err(Error::OutOfSpace);
     }
-    Ok(v.saturating_mul(2).max(1))
+    Ok(v.saturating_mul(2))
 }
 #[cfg(test)]
 mod tests {
@@ -2269,29 +2775,9 @@ mod tests {
             s.grow().unwrap();
         }
     }
-    fn fill(s: &mut PageList) {
-        for y in 0..s.total_rows {
-            for x in 0..s.cols {
-                *s.get_cell_mut(screen(x, y as u32)).unwrap() = Cell::init(u32::from(b'A'));
-            }
-        }
-    }
     fn write_rows(s: &mut PageList) {
         for y in 0..s.total_rows {
             *s.get_cell_mut(screen(0, y as u32)).unwrap() = Cell::init(y as u32);
-        }
-    }
-    fn wraps(s: &mut PageList) {
-        for y in 0..s.total_rows {
-            let p = s.pin(screen(0, y as u32)).unwrap();
-            let r = s
-                .node_mut(p.node)
-                .unwrap()
-                .data
-                .get_row_mut(usize::from(p.y))
-                .unwrap();
-            r.set_wrap(y % 2 == 0);
-            r.set_wrap_continuation(y % 2 != 0);
         }
     }
     fn finish(s: &PageList) {
@@ -2306,23 +2792,26 @@ mod tests {
     }
     #[test]
     fn page_list() {
-        let s = PageList::init(80, 24, None).unwrap();
+        let mut s = PageList::init(80, 24, None).unwrap();
         assert_eq!(s.viewport, Viewport::Active);
-        assert_eq!(s.total_rows, 24);
-        assert_eq!(s.get_top_left(Tag::Active).unwrap().node, s.first.unwrap());
-        assert_eq!(
-            s.scrollbar(),
-            Scrollbar {
-                total: 24,
-                offset: 0,
-                len: 24
-            }
-        );
+        assert!(s.first.is_some());
+        assert_eq!(s.total_rows, usize::from(s.rows));
         assert_eq!(
             s.tracked_pin(s.viewport_pin.unwrap()).unwrap().node,
             s.first.unwrap()
         );
-        finish(&s);
+        assert_eq!(
+            s.get_top_left(Tag::Active),
+            Some(Pin {
+                node: s.first.unwrap(),
+                x: 0,
+                y: 0,
+                garbage: false
+            })
+        );
+        assert_scrollbar(&s, 0);
+        // Keep a mutable binding to mirror construction/destruction ownership.
+        s.clear_dirty();
     }
     #[test]
     fn page_list_init_rows_across_two_pages() {
@@ -2331,26 +2820,21 @@ mod tests {
             cols += 50;
         }
         let s = PageList::init(cols, 100, None).unwrap();
-        assert_eq!(s.total_pages(), 2);
-        assert_eq!(s.total_rows, 100);
-        assert_eq!(
-            s.scrollbar(),
-            Scrollbar {
-                total: 100,
-                offset: 0,
-                len: 100
-            }
-        );
-        finish(&s);
+        assert_eq!(s.viewport, Viewport::Active);
+        assert!(s.first.is_some());
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_init_more_than_max_cols() {
-        let cols = page::STD_CAPACITY.max_cols().unwrap() + 1;
-        let s = PageList::init(cols, 24, None).unwrap();
-        assert_eq!(s.cols, cols);
-        assert_eq!(s.total_rows, 24);
-        assert!(s.page_size > std_size());
-        finish(&s);
+        let s = PageList::init(page::STD_CAPACITY.max_cols().unwrap() + 1, 80, None).unwrap();
+        assert_eq!(s.viewport, Viewport::Active);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        assert!(s.first.is_some());
+        assert!(
+            Page::layout(s.node(s.first.unwrap()).unwrap().data.capacity).total_size > std_size()
+        );
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_point_from_pin_active_no_history() {
@@ -2413,13 +2897,17 @@ mod tests {
     #[test]
     fn page_list_active_after_grow() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        assert_eq!(
-            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
-            Some(screen(0, 10))
-        );
-        assert_eq!(s.get_bottom_right(Tag::Active).unwrap().y, 33);
-        finish(&s);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 10);
+        assert_eq!(s.total_rows, usize::from(s.rows) + 10);
+        assert_viewport_point(&s, 10);
+        for (tag, y) in [(Tag::Screen, 0), (Tag::Active, 10)] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, s.get_top_left(tag).unwrap()),
+                Some(screen_point(0, y))
+            );
+        }
+        assert_scrollbar(&s, 10);
     }
     #[test]
     fn page_list_scrollbar_with_max_size_0_after_grow() {
@@ -2447,171 +2935,218 @@ mod tests {
     #[test]
     fn page_list_scroll_top() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        assert_eq!(s.viewport_row_offset(), 10);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 10);
         s.scroll(Scroll::Top);
-        assert_eq!(s.viewport_row_offset(), 0);
-        grow(&mut s, 10);
-        assert_eq!(
-            s.scrollbar(),
-            Scrollbar {
-                total: 44,
-                offset: 0,
-                len: 24
-            }
-        );
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
         s.scroll(Scroll::Active);
-        assert_eq!(s.viewport_row_offset(), 20);
+        assert_viewport_point(&s, 20);
+        assert_scrollbar(&s, 20);
     }
     #[test]
     fn page_list_scroll_delta_row_back() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        s.scroll(Scroll::DeltaRow(-5));
-        assert_eq!(s.viewport_row_offset(), 5);
-        assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 10);
+        s.scroll(Scroll::DeltaRow(-1));
+        assert_viewport_point(&s, 9);
+        assert_scrollbar(&s, 9);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 9);
+        assert_scrollbar(&s, 9);
+        s.scroll(Scroll::DeltaRow(-1));
+        assert_scrollbar(&s, 8);
     }
     #[test]
     fn page_list_scroll_delta_row_back_overflow() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 10);
         s.scroll(Scroll::DeltaRow(-100));
-        assert_eq!(s.viewport_row_offset(), 0);
-        assert_eq!(s.viewport, Viewport::Top);
-        finish(&s);
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_scroll_delta_row_forward() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 10);
         s.scroll(Scroll::Top);
-        s.scroll(Scroll::DeltaRow(5));
-        assert_eq!(s.viewport_row_offset(), 5);
-        assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        s.scroll(Scroll::DeltaRow(2));
+        assert_viewport_point(&s, 2);
+        assert_scrollbar(&s, 2);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 2);
+        assert_scrollbar(&s, 2);
     }
     #[test]
     fn page_list_scroll_delta_row_forward_into_active() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        s.scroll(Scroll::Top);
-        s.scroll(Scroll::DeltaRow(100));
-        assert_eq!(s.viewport_row_offset(), 10);
-        assert_eq!(s.viewport, Viewport::Active);
-        finish(&s);
+        s.scroll(Scroll::DeltaRow(2));
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_scroll_to_pin() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        s.scroll(Scroll::Pin(s.pin(screen(5, 3)).unwrap()));
-        assert_eq!(s.viewport_row_offset(), 3);
-        assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        grow_rows(&mut s, 10);
+        for y in [4, 5] {
+            s.scroll(Scroll::Pin(s.pin(screen_point(2, y)).unwrap()));
+            assert_scrollbar(&s, y);
+            assert_viewport_point(&s, y);
+        }
     }
     #[test]
     fn page_list_scroll_to_pin_in_active() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        s.scroll(Scroll::Pin(s.pin(active(5, 3)).unwrap()));
-        assert_eq!(s.viewport_row_offset(), 10);
-        assert_eq!(s.viewport, Viewport::Active);
-        finish(&s);
+        grow_rows(&mut s, 10);
+        s.scroll(Scroll::Pin(s.pin(screen_point(2, 30)).unwrap()));
+        assert_viewport_point(&s, 10);
+        assert_scrollbar(&s, 10);
     }
     #[test]
     fn page_list_scroll_to_pin_at_top() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 10);
-        s.scroll(Scroll::Pin(s.pin(screen(0, 0)).unwrap()));
-        assert_eq!(s.viewport_row_offset(), 0);
+        grow_rows(&mut s, 10);
+        s.scroll(Scroll::Pin(s.pin(screen_point(2, 0)).unwrap()));
         assert_eq!(s.viewport, Viewport::Top);
-        finish(&s);
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_scroll_to_row_0() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 30);
-        s.scroll(Scroll::Row(0));
-        assert_eq!(s.viewport_row_offset(), 0);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 10);
+        let target = 0;
+        s.scroll(Scroll::Row(target));
         assert_eq!(s.viewport, Viewport::Top);
-        finish(&s);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
     }
     #[test]
     fn page_list_scroll_to_row_in_scrollback() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 30);
-        s.scroll(Scroll::Row(10));
-        assert_eq!(s.viewport_row_offset(), 10);
+        grow_rows(&mut s, 20);
+        assert_viewport_point(&s, 20);
+        let target = 5;
+        s.scroll(Scroll::Row(target));
         assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
     }
     #[test]
     fn page_list_scroll_to_row_in_middle() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 50);
-        s.scroll(Scroll::Row(25));
-        assert_eq!(s.viewport_row_offset(), 25);
+        grow_rows(&mut s, 50);
+        let target = s.total_rows / 2;
+        s.scroll(Scroll::Row(target));
         assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, target);
+        assert_scrollbar(&s, target);
     }
     #[test]
     fn page_list_scroll_to_row_at_active_boundary() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 30);
-        s.scroll(Scroll::Row(30));
-        assert_eq!(s.viewport_row_offset(), 30);
+        grow_rows(&mut s, 20);
+        s.scroll(Scroll::Row(s.total_rows - usize::from(s.rows)));
         assert_eq!(s.viewport, Viewport::Active);
-        finish(&s);
+        assert_viewport_point(&s, 20);
+        assert_scrollbar(&s, 20);
+        grow_rows(&mut s, 10);
+        assert_eq!(s.viewport, Viewport::Active);
+        assert_scrollbar(&s, s.total_rows - usize::from(s.rows));
     }
     #[test]
     fn page_list_scroll_to_row_beyond_active() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 30);
-        s.scroll(Scroll::Row(999));
-        assert_eq!(s.viewport_row_offset(), 30);
+        grow_rows(&mut s, 10);
+        s.scroll(Scroll::Row(1000));
         assert_eq!(s.viewport, Viewport::Active);
-        finish(&s);
+        assert_viewport_point(&s, 10);
+        assert_scrollbar(&s, 10);
     }
     #[test]
     fn page_list_scroll_to_row_without_scrollback() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        s.scroll(Scroll::Row(10));
-        assert_eq!(s.viewport_row_offset(), 0);
+        grow_rows(&mut s, 0);
+        s.scroll(Scroll::Row(5));
         assert_eq!(s.viewport, Viewport::Active);
-        finish(&s);
+        assert_viewport_point(&s, 0);
+        assert_scrollbar(&s, 0);
     }
     #[test]
     fn page_list_scroll_to_row_then_delta() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 30);
-        s.scroll(Scroll::Row(10));
-        s.scroll(Scroll::DeltaRow(5));
-        assert_eq!(s.viewport_row_offset(), 15);
-        assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        grow_rows(&mut s, 30);
+        for (scroll, offset) in [
+            (Scroll::Row(10), 10),
+            (Scroll::DeltaRow(5), 15),
+            (Scroll::DeltaRow(-3), 12),
+        ] {
+            s.scroll(scroll);
+            assert_eq!(s.viewport, Viewport::Pin);
+            assert_viewport_point(&s, offset);
+            assert_scrollbar(&s, offset);
+        }
     }
     #[test]
     fn page_list_scroll_to_row_with_cache_fast_path_down() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 60);
+        grow_rows(&mut s, 50);
         s.scroll(Scroll::Row(10));
-        assert_eq!(s.scrollbar().offset, 10);
-        s.scroll(Scroll::Row(20));
-        assert_eq!(s.viewport_row_offset(), 20);
         assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        assert_viewport_point(&s, 10);
+        assert_scrollbar(&s, 10);
+        assert_ne!(
+            s.viewport_pin_row_offset.load(Ordering::Relaxed),
+            usize::MAX
+        );
+        assert_eq!(s.viewport_pin_row_offset.load(Ordering::Relaxed), 10);
+        s.scroll(Scroll::Row(20));
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert_viewport_point(&s, 20);
+        assert_scrollbar(&s, 20);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 20);
+        assert_scrollbar(&s, 20);
     }
     #[test]
     fn page_list_scroll_to_row_with_cache_fast_path_up() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 60);
-        s.scroll(Scroll::Row(20));
-        assert_eq!(s.scrollbar().offset, 20);
-        s.scroll(Scroll::Row(10));
-        assert_eq!(s.viewport_row_offset(), 10);
+        grow_rows(&mut s, 50);
+        s.scroll(Scroll::Row(30));
         assert_eq!(s.viewport, Viewport::Pin);
-        finish(&s);
+        assert_viewport_point(&s, 30);
+        assert_scrollbar(&s, 30);
+        assert_ne!(
+            s.viewport_pin_row_offset.load(Ordering::Relaxed),
+            usize::MAX
+        );
+        assert_eq!(s.viewport_pin_row_offset.load(Ordering::Relaxed), 30);
+        s.scroll(Scroll::Row(15));
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert_viewport_point(&s, 15);
+        assert_scrollbar(&s, 15);
+        grow_rows(&mut s, 10);
+        assert_viewport_point(&s, 15);
+        assert_scrollbar(&s, 15);
     }
     #[test]
     fn page_list_grow_fit_in_capacity() {
@@ -2627,13 +3162,19 @@ mod tests {
     fn page_list_grow_allocate() {
         let mut s = PageList::init(80, 24, None).unwrap();
         let old = s.last.unwrap();
-        let cap = first_cap(&s);
-        grow(&mut s, cap - 24);
+        let capacity = s.node(old).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
         let new = s.grow().unwrap().unwrap();
         assert_eq!(s.last, Some(new));
         assert_eq!(s.node(old).unwrap().next, Some(new));
-        assert_eq!(s.pin(active(0, 23)).unwrap().node, new);
-        finish(&s);
+        let p = s.pin(active_point(0, usize::from(s.rows - 1))).unwrap();
+        assert_eq!(p.node, new);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, p),
+            Some(screen_point(0, usize::from(capacity)))
+        );
     }
     #[test]
     fn page_list_grow_prune_scrollback() {
@@ -2646,8 +3187,12 @@ mod tests {
         let h = s.track_pin(s.pin(screen(0, 0)).unwrap()).unwrap();
         let y = cap / 2;
         s.scroll(Scroll::Row(y));
+        assert_eq!(s.viewport, Viewport::Pin);
         assert_eq!(s.scrollbar().offset, y);
+        let viewport_node = s.tracked_pin(s.viewport_pin.unwrap()).unwrap().node;
+        assert_eq!(viewport_node, old);
         let new = s.grow().unwrap().unwrap();
+        assert_eq!(s.last, Some(new));
         assert_eq!(new.index(), old.index());
         assert_ne!(new.generation(), old.generation());
         assert_eq!(s.page_size, bytes);
@@ -2672,8 +3217,12 @@ mod tests {
         let h = s.track_pin(s.pin(screen(0, 0)).unwrap()).unwrap();
         let y = cap + 5;
         s.scroll(Scroll::Row(y));
+        assert_eq!(s.viewport, Viewport::Pin);
         assert_eq!(s.scrollbar().offset, y);
+        let viewport_node = s.tracked_pin(s.viewport_pin.unwrap()).unwrap().node;
+        assert_eq!(viewport_node, second);
         let new = s.grow().unwrap().unwrap();
+        assert_eq!(s.last, Some(new));
         assert_eq!(new.index(), old.index());
         assert_ne!(new.generation(), old.generation());
         assert_eq!(s.page_size, bytes);
@@ -2684,77 +3233,144 @@ mod tests {
         assert_eq!(p.x, 0);
         assert_eq!(p.y, 0);
         assert_eq!(s.scrollbar().offset, y.saturating_sub(cap));
+        assert_eq!(s.tracked_pin(s.viewport_pin.unwrap()).unwrap().node, second);
         assert!(s.node(old).is_none());
         finish(&s);
     }
     #[test]
     fn page_list_increase_capacity_to_increase_styles() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let old = s.first.unwrap();
-        let before = s.node(old).unwrap().data.capacity.styles;
-        let id = s
-            .increase_capacity(old, Some(IncreaseCapacity::Styles))
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        let original = s.node(s.first.unwrap()).unwrap().data.capacity.styles;
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
             .unwrap();
-        assert_eq!(s.first, Some(id));
-        assert_eq!(s.node(id).unwrap().data.capacity.styles, before * 2);
-        assert_eq!(s.total_rows, 24);
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_eq!(
+            s.node(s.first.unwrap()).unwrap().data.capacity.styles,
+            original * 2
+        );
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    s.get_cell(active_point(x, y)).unwrap().codepoint(),
+                    u32::from(x)
+                );
+            }
+        }
     }
     #[test]
     fn page_list_increase_capacity_to_increase_graphemes() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let old = s.first.unwrap();
-        let before = s.node(old).unwrap().data.capacity.grapheme_bytes;
-        let id = s
-            .increase_capacity(old, Some(IncreaseCapacity::GraphemeBytes))
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        let original = s
+            .node(s.first.unwrap())
+            .unwrap()
+            .data
+            .capacity
+            .grapheme_bytes;
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::GraphemeBytes))
             .unwrap();
-        assert_eq!(s.first, Some(id));
-        assert_eq!(s.node(id).unwrap().data.capacity.grapheme_bytes, before * 2);
-        assert_eq!(s.total_rows, 24);
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_eq!(
+            s.node(s.first.unwrap())
+                .unwrap()
+                .data
+                .capacity
+                .grapheme_bytes,
+            original * 2
+        );
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    s.get_cell(active_point(x, y)).unwrap().codepoint(),
+                    u32::from(x)
+                );
+            }
+        }
     }
     #[test]
     fn page_list_increase_capacity_to_increase_hyperlinks() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let old = s.first.unwrap();
-        let before = s.node(old).unwrap().data.capacity.hyperlink_bytes;
-        let id = s
-            .increase_capacity(old, Some(IncreaseCapacity::HyperlinkBytes))
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        let original = s
+            .node(s.first.unwrap())
+            .unwrap()
+            .data
+            .capacity
+            .hyperlink_bytes;
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::HyperlinkBytes))
             .unwrap();
-        assert_eq!(s.first, Some(id));
+        assert_eq!(s.first, s.last);
         assert_eq!(
-            s.node(id).unwrap().data.capacity.hyperlink_bytes,
-            before * 2
+            s.node(s.first.unwrap())
+                .unwrap()
+                .data
+                .capacity
+                .hyperlink_bytes,
+            original * 2
         );
-        assert_eq!(s.total_rows, 24);
-        finish(&s);
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    s.get_cell(active_point(x, y)).unwrap().codepoint(),
+                    u32::from(x)
+                );
+            }
+        }
     }
     #[test]
     fn page_list_increase_capacity_to_increase_string_bytes() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let old = s.first.unwrap();
-        let before = s.node(old).unwrap().data.capacity.string_bytes;
-        let id = s
-            .increase_capacity(old, Some(IncreaseCapacity::StringBytes))
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        let original = s.node(s.first.unwrap()).unwrap().data.capacity.string_bytes;
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::StringBytes))
             .unwrap();
-        assert_eq!(s.first, Some(id));
-        assert_eq!(s.node(id).unwrap().data.capacity.string_bytes, before * 2);
-        assert_eq!(s.total_rows, 24);
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_eq!(
+            s.node(s.first.unwrap()).unwrap().data.capacity.string_bytes,
+            original * 2
+        );
+        for y in 0..2 {
+            for x in 0..2 {
+                assert_eq!(
+                    s.get_cell(active_point(x, y)).unwrap().codepoint(),
+                    u32::from(x)
+                );
+            }
+        }
     }
     #[test]
     fn page_list_increase_capacity_tracked_pins() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let h = s.track_pin(s.pin(active(3, 12)).unwrap()).unwrap();
-        let id = s
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        let tracked = s.track_pin(s.pin(active_point(1, 1)).unwrap()).unwrap();
+        assert_eq!(s.tracked_pin(tracked).unwrap().node, s.first.unwrap());
+        let new = s
             .increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
             .unwrap();
-        assert_eq!(s.tracked_pin(h).unwrap().node, id);
-        assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(3, 12))
-        );
-        finish(&s);
+        let p = s.tracked_pin(tracked).unwrap();
+        assert_eq!(p.node, new);
+        assert_eq!(p.x, 1);
+        assert_eq!(p.y, 1);
     }
     #[test]
     fn page_list_increase_capacity_returns_out_of_space_at_max_capacity() {
@@ -2768,102 +3384,153 @@ mod tests {
     }
     #[test]
     fn page_list_increase_capacity_preserves_dirty_flag() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        s.node_mut(s.first.unwrap()).unwrap().data.dirty = true;
-        let id = s
+        let mut s = PageList::init(2, 4, Some(0)).unwrap();
+        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        page.dirty = true;
+        for y in 0..4 {
+            page.rows[y].set_dirty(y % 2 == 0);
+        }
+        let new = s
             .increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
             .unwrap();
-        assert!(s.node(id).unwrap().data.dirty);
-        finish(&s);
+        let page = &s.node(new).unwrap().data;
+        assert!(page.dirty);
+        for y in 0..4 {
+            assert_eq!(page.rows[y].dirty(), y % 2 == 0);
+        }
     }
     #[test]
     fn page_list_page_iterator_single_page() {
         let s = PageList::init(80, 24, None).unwrap();
-        let chunks: Vec<_> = s
-            .page_iterator(Direction::RightDown, active(0, 0), None)
-            .collect();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(
-            chunks[0],
-            Chunk {
-                node: s.first.unwrap(),
-                start: 0,
-                end: 24
-            }
-        );
-        assert!(chunks[0].full_page(&s));
+        assert!(s.node(s.first.unwrap()).unwrap().next.is_none());
+        let mut it = s.page_iterator(Direction::RightDown, active_point(0, 0), None);
+        let chunk = it.next().unwrap();
+        assert_eq!(chunk.node, s.first.unwrap());
+        assert_eq!(chunk.start, 0);
+        assert_eq!(chunk.end, s.rows);
+        assert!(it.next().is_none());
     }
     #[test]
     fn page_list_page_iterator_two_pages() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let cap = first_cap(&s);
-        grow(&mut s, cap - 12);
-        let chunks: Vec<_> = s
-            .page_iterator(Direction::RightDown, active(0, 0), None)
-            .collect();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].start, cap as u16 - 12);
-        assert_eq!(chunks[0].end, cap as u16);
-        assert_eq!(chunks[1].start, 0);
-        assert_eq!(chunks[1].end, 12);
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
+        assert!(s.grow().unwrap().is_some());
+        let expected = [
+            Chunk {
+                node: s.first.unwrap(),
+                start: capacity - s.rows + 1,
+                end: capacity,
+            },
+            Chunk {
+                node: s.last.unwrap(),
+                start: 0,
+                end: 1,
+            },
+        ];
+        let mut it = s.page_iterator(Direction::RightDown, active_point(0, 0), None);
+        let mut count = 0;
+        for index in [0, 1] {
+            let chunk = it.next().unwrap();
+            assert_eq!(chunk.node, expected[index].node);
+            assert_eq!(chunk.start, expected[index].start);
+            assert_eq!(chunk.end, expected[index].end);
+            count += chunk.end - chunk.start;
+        }
+        assert!(it.next().is_none());
+        assert_eq!(count, s.rows);
     }
     #[test]
     fn page_list_cell_iterator() {
-        let s = PageList::init(5, 3, None).unwrap();
-        let cells: Vec<_> = s
-            .cell_iterator(Direction::RightDown, screen(1, 0), Some(screen(3, 2)))
-            .collect();
-        assert_eq!(cells.len(), 13);
-        assert_eq!(cells.first().unwrap().x, 1);
-        assert_eq!(cells.last().unwrap().x, 3);
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        let mut it = s.cell_iterator(Direction::RightDown, screen_point(0, 0), None);
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, it.next().unwrap()),
+                Some(screen_point(x, y))
+            );
+        }
+        assert!(it.next().is_none());
     }
     #[test]
     fn page_list_page_iterator_reverse_single_page() {
         let s = PageList::init(80, 24, None).unwrap();
-        let chunks: Vec<_> = s
-            .page_iterator(Direction::LeftUp, active(0, 0), None)
-            .collect();
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(
-            chunks[0],
-            Chunk {
-                node: s.first.unwrap(),
-                start: 0,
-                end: 24
-            }
-        );
-        assert!(chunks[0].full_page(&s));
+        assert!(s.node(s.first.unwrap()).unwrap().next.is_none());
+        let mut it = s.page_iterator(Direction::LeftUp, active_point(0, 0), None);
+        let chunk = it.next().unwrap();
+        assert_eq!(chunk.node, s.first.unwrap());
+        assert_eq!(chunk.start, 0);
+        assert_eq!(chunk.end, s.rows);
+        assert!(it.next().is_none());
     }
     #[test]
     fn page_list_page_iterator_reverse_two_pages() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let cap = first_cap(&s);
-        grow(&mut s, cap - 12);
-        let mut chunks: Vec<_> = s
-            .page_iterator(Direction::LeftUp, active(0, 0), None)
-            .collect();
-        chunks.reverse();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!(chunks[0].start, cap as u16 - 12);
-        assert_eq!(chunks[0].end, cap as u16);
-        assert_eq!(chunks[1].start, 0);
-        assert_eq!(chunks[1].end, 12);
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
+        assert!(s.grow().unwrap().is_some());
+        let expected = [
+            Chunk {
+                node: s.first.unwrap(),
+                start: capacity - s.rows + 1,
+                end: capacity,
+            },
+            Chunk {
+                node: s.last.unwrap(),
+                start: 0,
+                end: 1,
+            },
+        ];
+        let mut it = s.page_iterator(Direction::LeftUp, active_point(0, 0), None);
+        let mut count = 0;
+        for index in [1, 0] {
+            let chunk = it.next().unwrap();
+            assert_eq!(chunk.node, expected[index].node);
+            assert_eq!(chunk.start, expected[index].start);
+            assert_eq!(chunk.end, expected[index].end);
+            count += chunk.end - chunk.start;
+        }
+        assert!(it.next().is_none());
+        assert_eq!(count, s.rows);
     }
     #[test]
     fn page_list_cell_iterator_reverse() {
-        let s = PageList::init(5, 3, None).unwrap();
-        let cells: Vec<_> = s
-            .cell_iterator(Direction::LeftUp, screen(1, 0), Some(screen(3, 2)))
-            .collect();
-        assert_eq!(cells.len(), 13);
-        assert_eq!(cells.first().unwrap().x, 3);
-        assert_eq!(cells.last().unwrap().x, 1);
+        let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..2 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        let mut it = s.cell_iterator(Direction::LeftUp, screen_point(0, 0), None);
+        for (x, y) in [(1, 1), (0, 1), (1, 0), (0, 0)] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, it.next().unwrap()),
+                Some(screen_point(x, y))
+            );
+        }
+        assert!(it.next().is_none());
     }
     #[test]
     fn page_list_resize_no_reflow_more_rows() {
-        let mut s = PageList::init(10, 3, None).unwrap();
-        grow(&mut s, 0);
-        let h = s.track_pin(s.pin(active(0, 2)).unwrap()).unwrap();
+        let mut s = PageList::init(10, 3, Some(0)).unwrap();
+        assert_eq!(s.total_rows, 3);
+        grow_rows(&mut s, 0);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 0))
+        );
+        let p = s.track_pin(s.pin(active_point(0, 2)).unwrap()).unwrap();
         s.resize(Resize {
             rows: Some(10),
             reflow: false,
@@ -2873,16 +3540,24 @@ mod tests {
         assert_eq!(s.rows, 10);
         assert_eq!(s.total_rows, 10);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 2))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 2))
         );
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 0))
+        );
     }
     #[test]
     fn page_list_resize_no_reflow_more_rows_with_history() {
         let mut s = PageList::init(10, 3, None).unwrap();
-        grow(&mut s, 50);
-        let h = s.track_pin(s.pin(active(0, 2)).unwrap()).unwrap();
+        assert_eq!(s.total_rows, 3);
+        grow_rows(&mut s, 50);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 50))
+        );
+        let p = s.track_pin(s.pin(active_point(0, 2)).unwrap()).unwrap();
         s.resize(Resize {
             rows: Some(5),
             reflow: false,
@@ -2892,15 +3567,22 @@ mod tests {
         assert_eq!(s.rows, 5);
         assert_eq!(s.total_rows, 53);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 4))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 4))
         );
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 48))
+        );
     }
     #[test]
     fn page_list_resize_no_reflow_less_rows() {
         let mut s = PageList::init(10, 10, Some(0)).unwrap();
-        fill(&mut s);
+        assert_eq!(s.total_rows, 10);
+        assert_eq!(s.first, s.last);
+        for y in 0..10 {
+            set_raw(&mut s, 0, y, 'A' as u32, Wide::Narrow);
+        }
         s.resize(Resize {
             rows: Some(5),
             reflow: false,
@@ -2909,13 +3591,19 @@ mod tests {
         .unwrap();
         assert_eq!(s.rows, 5);
         assert_eq!(s.total_rows, 10);
-        assert_eq!(s.active_offset(), 10 - 5);
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 5))
+        );
     }
     #[test]
     fn page_list_resize_no_reflow_one_rows() {
         let mut s = PageList::init(10, 10, Some(0)).unwrap();
-        fill(&mut s);
+        assert_eq!(s.total_rows, 10);
+        assert_eq!(s.first, s.last);
+        for y in 0..10 {
+            set_raw(&mut s, 0, y, 'A' as u32, Wide::Narrow);
+        }
         s.resize(Resize {
             rows: Some(1),
             reflow: false,
@@ -2924,13 +3612,75 @@ mod tests {
         .unwrap();
         assert_eq!(s.rows, 1);
         assert_eq!(s.total_rows, 10);
-        assert_eq!(s.active_offset(), 10 - 1);
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 9))
+        );
     }
     #[test]
     fn page_list_resize_no_reflow_less_cols() {
-        let mut s = PageList::init(10, 3, None).unwrap();
-        fill(&mut s);
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        s.resize(Resize {
+            cols: Some(5),
+            rows: Some(10),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 5);
+        assert_eq!(s.rows, 10);
+        assert_eq!(s.total_rows, 10);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 5);
+        }
+    }
+    #[test]
+    fn page_list_resize_no_reflow_less_cols_pin_in_trimmed_cols() {
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        let p = s.track_pin(s.pin(active_point(8, 2)).unwrap()).unwrap();
+        s.resize(Resize {
+            cols: Some(5),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 5);
+        assert_eq!(s.total_rows, 10);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 5);
+        }
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(4, 2))
+        );
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_cols() {
+        let mut s = PageList::init(5, 3, Some(0)).unwrap();
+        s.resize(Resize {
+            cols: Some(10),
+            rows: Some(3),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 10);
+        assert_eq!(s.rows, 3);
+        assert_eq!(s.total_rows, 3);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 10);
+        }
+    }
+    #[test]
+    fn page_list_resize_no_reflow_less_cols_then_more_cols() {
+        let mut s = PageList::init(5, 3, Some(0)).unwrap();
+        s.resize(Resize {
+            cols: Some(2),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 2);
         s.resize(Resize {
             cols: Some(5),
             reflow: false,
@@ -2939,80 +3689,19 @@ mod tests {
         .unwrap();
         assert_eq!(s.cols, 5);
         assert_eq!(s.total_rows, 3);
-        for n in s.nodes.iter().flatten() {
-            for y in 0..usize::from(n.data.size.rows) {
-                assert_eq!(n.data.get_cells(y).unwrap().len(), 5);
-            }
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 5);
         }
-        finish(&s);
-    }
-    #[test]
-    fn page_list_resize_no_reflow_less_cols_pin_in_trimmed_cols() {
-        let mut s = PageList::init(10, 3, None).unwrap();
-        let h = s.track_pin(s.pin(active(9, 1)).unwrap()).unwrap();
-        s.resize(Resize {
-            cols: Some(5),
-            reflow: false,
-            ..Resize::default()
-        })
-        .unwrap();
-        assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(4, 1))
-        );
-        finish(&s);
-    }
-    #[test]
-    fn page_list_resize_no_reflow_more_cols() {
-        let mut s = PageList::init(5, 3, None).unwrap();
-        fill(&mut s);
-        s.resize(Resize {
-            cols: Some(10),
-            reflow: false,
-            ..Resize::default()
-        })
-        .unwrap();
-        assert_eq!(s.total_rows, 3);
-        for y in 0..3 {
-            for x in 0..10 {
-                assert_eq!(
-                    s.get_cell(screen(x, y)).unwrap().codepoint(),
-                    if x < 5 { 65 } else { 0 }
-                );
-            }
-        }
-        finish(&s);
-    }
-    #[test]
-    fn page_list_resize_no_reflow_less_cols_then_more_cols() {
-        let mut s = PageList::init(10, 3, None).unwrap();
-        fill(&mut s);
-        s.resize(Resize {
-            cols: Some(5),
-            reflow: false,
-            ..Resize::default()
-        })
-        .unwrap();
-        s.resize(Resize {
-            cols: Some(10),
-            reflow: false,
-            ..Resize::default()
-        })
-        .unwrap();
-        for y in 0..3 {
-            for x in 0..10 {
-                assert_eq!(
-                    s.get_cell(screen(x, y)).unwrap().codepoint(),
-                    if x < 5 { 65 } else { 0 }
-                );
-            }
-        }
-        finish(&s);
     }
     #[test]
     fn page_list_resize_reflow_more_cols_no_wrapped_rows() {
         let mut s = PageList::init(5, 3, Some(0)).unwrap();
-        fill(&mut s);
+        assert_eq!(s.first, s.last);
+        for y in 0..3 {
+            for x in 0..5 {
+                set_raw(&mut s, x, y, 'A' as u32, Wide::Narrow);
+            }
+        }
         s.resize(Resize {
             cols: Some(10),
             ..Resize::default()
@@ -3020,40 +3709,50 @@ mod tests {
         .unwrap();
         assert_eq!(s.cols, 10);
         assert_eq!(s.total_rows, 3);
-        for p in s.row_iterator(Direction::RightDown, screen(0, 0), None) {
-            assert_eq!(p.row_and_cell(&s).unwrap().1.codepoint(), 65);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), 10);
+            assert_eq!(cells[0].codepoint(), 'A' as u32);
         }
-        finish(&s);
     }
     #[test]
     fn page_list_resize_reflow_more_cols_wrapped_rows() {
         let mut s = PageList::init(2, 4, Some(0)).unwrap();
-        fill(&mut s);
-        wraps(&mut s);
+        assert_eq!(s.first, s.last);
+        for y in 0..4 {
+            set_wrap(&mut s, y, y % 2 == 0, y % 2 != 0);
+            for x in 0..2 {
+                set_raw(&mut s, x, y, 'A' as u32, Wide::Narrow);
+            }
+        }
         s.resize(Resize {
             cols: Some(4),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 4);
         assert_eq!(s.total_rows, 4);
-        assert_eq!(s.active_offset(), 0);
-        assert_eq!(s.diagram(), "AAAA\nAAAA\n    \n    \n");
-        assert!(
-            !s.get_top_left(Tag::Screen)
-                .unwrap()
-                .row_and_cell(&s)
-                .unwrap()
-                .0
-                .wrap()
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 0))
         );
-        finish(&s);
+        let p = s
+            .row_iterator(Direction::RightDown, screen_point(0, 0), None)
+            .next()
+            .unwrap();
+        assert!(!p.row_and_cell(&s).unwrap().0.wrap());
+        let cells = p.cells(&s, CellSubset::All).unwrap();
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0].codepoint(), 'A' as u32);
+        assert_eq!(cells[2].codepoint(), 'A' as u32);
     }
     #[test]
     fn page_list_resize_reflow_less_cols_no_wrapped_rows() {
         let mut s = PageList::init(10, 3, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..3 {
             for x in 0..4 {
-                *s.get_cell_mut(screen(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
         s.resize(Resize {
@@ -3061,20 +3760,23 @@ mod tests {
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 5);
         assert_eq!(s.total_rows, 3);
-        for y in 0..3 {
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            let cells = p.cells(&s, CellSubset::All).unwrap();
             for x in 0..4 {
-                assert_eq!(s.get_cell(screen(x, y)).unwrap().codepoint(), u32::from(x));
+                assert_eq!(cells.len(), 5);
+                assert_eq!(cells[x].codepoint(), x as u32);
             }
         }
-        finish(&s);
     }
     #[test]
     fn page_list_resize_reflow_less_cols_wrapped_rows() {
         let mut s = PageList::init(4, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..4 {
-                *s.get_cell_mut(screen(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
         s.resize(Resize {
@@ -3082,35 +3784,54 @@ mod tests {
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
-        assert_eq!(s.active_offset(), 2);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 2))
+        );
+        assert_eq!(s.first, s.last);
+        let mut it = s.row_iterator(Direction::RightDown, screen_point(0, 0), None);
         for y in 0..4 {
-            let p = s.pin(screen(0, y)).unwrap();
+            let p = it.next().unwrap();
             assert_eq!(p.row_and_cell(&s).unwrap().0.wrap(), y % 2 == 0);
-            assert_eq!(p.row_and_cell(&s).unwrap().1.codepoint(), (y % 2) * 2);
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(cells[0].codepoint(), if y % 2 == 0 { 0 } else { 2 });
         }
-        finish(&s);
     }
     #[test]
     fn page_list_reset() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        grow(&mut s, 0);
         s.reset().unwrap();
         assert_eq!(s.viewport, Viewport::Active);
         assert_eq!(s.total_rows, 24);
-        assert_eq!(s.get_top_left(Tag::Active).unwrap().node, s.first.unwrap());
+        assert_eq!(
+            s.get_top_left(Tag::Active),
+            Some(Pin {
+                node: s.first.unwrap(),
+                y: 0,
+                x: 0,
+                garbage: false
+            })
+        );
         finish(&s);
     }
     #[test]
     fn page_list_reset_across_two_pages() {
-        let mut s = PageList::init(1000, 100, None).unwrap();
-        grow(&mut s, 0);
+        let rows = 100;
+        let mut cols = 50;
+        while initial_capacity(cols).rows >= rows {
+            cols += 50;
+        }
+        let mut s = PageList::init(cols, rows, None).unwrap();
         s.reset().unwrap();
         assert_eq!(s.viewport, Viewport::Active);
-        assert_eq!(s.total_rows, 100);
-        assert_eq!(s.get_top_left(Tag::Active).unwrap().node, s.first.unwrap());
+        assert!(s.first.is_some());
+        assert_eq!(s.total_rows, usize::from(s.rows));
         finish(&s);
     }
+
     #[test]
     fn page_list_clears_history() {
         let mut s = PageList::init(80, 24, None).unwrap();
@@ -3118,7 +3839,15 @@ mod tests {
         s.reset().unwrap();
         assert_eq!(s.viewport, Viewport::Active);
         assert_eq!(s.total_rows, 24);
-        assert_eq!(s.get_top_left(Tag::Active).unwrap().node, s.first.unwrap());
+        assert_eq!(
+            s.get_top_left(Tag::Active),
+            Some(Pin {
+                node: s.first.unwrap(),
+                y: 0,
+                x: 0,
+                garbage: false
+            })
+        );
         finish(&s);
     }
     #[test]
@@ -3141,6 +3870,7 @@ mod tests {
         for y in 0..10 {
             assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
         }
+        assert_eq!(s.node(s.last.unwrap()).unwrap().data.size.rows, 5);
         finish(&s);
     }
     #[test]
@@ -3167,6 +3897,7 @@ mod tests {
         for y in 0..10 {
             assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
         }
+        assert_eq!(s.node(s.last.unwrap()).unwrap().data.size.rows, 1);
         finish(&s);
     }
     #[test]
@@ -3202,27 +3933,22 @@ mod tests {
     #[test]
     fn page_list_split_tracked_pin_at_split_point_moves_to_new_page() {
         let mut s = PageList::init(10, 10, Some(0)).unwrap();
-        let h = s.track_pin(s.pin(screen(0, 5)).unwrap()).unwrap();
+        let h = s.track_pin(s.pin(screen(4, 5)).unwrap()).unwrap();
         s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
         let p = s.tracked_pin(h).unwrap();
         assert_eq!(p.node, s.last.unwrap());
         assert_eq!(p.y, 0);
-        assert_eq!(p.x, 0);
+        assert_eq!(p.x, 4);
         finish(&s);
     }
     #[test]
     fn page_list_split_multiple_tracked_pins_across_regions() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        let handles: Vec<_> = (0..10)
-            .map(|y| s.track_pin(s.pin(screen(y, y as u32)).unwrap()).unwrap())
-            .collect();
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        let coords = [(0, 1), (2, 5), (3, 7), (8, 9)];
+        let pins = coords.map(|(x, y)| s.track_pin(s.pin(screen(x, y)).unwrap()).unwrap());
         s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        for (y, h) in handles.iter().enumerate() {
-            let p = s.tracked_pin(*h).unwrap();
-            assert_eq!(
-                s.point_from_pin(Tag::Screen, p),
-                Some(screen(y as u16, y as u32))
-            );
+        for ((x, y), handle) in coords.into_iter().zip(pins) {
+            let p = s.tracked_pin(handle).unwrap();
             assert_eq!(
                 p.node,
                 if y < 5 {
@@ -3231,173 +3957,266 @@ mod tests {
                     s.last.unwrap()
                 }
             );
+            assert_eq!(p.y, if y < 5 { y as u16 } else { y as u16 - 5 });
+            assert_eq!(p.x, x);
         }
         finish(&s);
     }
+
     #[test]
     fn page_list_split_tracked_viewport_pin_in_split_region_moves_correctly() {
-        let mut s = PageList::init(10, 3, None).unwrap();
-        grow(&mut s, 7);
-        s.scroll(Scroll::Row(6));
-        let before = s.scrollbar();
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        s.set_tracked_pin(s.viewport_pin.unwrap(), s.pin(screen(6, 7)).unwrap())
+            .unwrap();
         s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        assert_eq!(s.scrollbar(), before);
+        let p = s.tracked_pin(s.viewport_pin.unwrap()).unwrap();
+        assert_eq!(p.node, s.last.unwrap());
+        assert_eq!(p.y, 2);
+        assert_eq!(p.x, 6);
+        finish(&s);
+    }
+
+    #[test]
+    fn page_list_split_preserves_styled_cells() {
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        let style = crate::style::Style {
+            flags: crate::style::Flags {
+                bold: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let id = page.styles.add(style).unwrap();
+        for y in 5..8 {
+            let i = page.cell_index(0, y).unwrap();
+            page.cells[i] = Cell::init('S' as u32);
+            page.cells[i].set_style_id(id);
+            page.rows[y].set_styled(true);
+            page.styles.r#use(id).unwrap();
+        }
+        page.styles.release(id).unwrap();
+        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
+        assert_eq!(s.node(s.first.unwrap()).unwrap().data.styles.count(), 0);
+        let page = &s.node(s.last.unwrap()).unwrap().data;
+        assert_eq!(page.styles.count(), 1);
+        for y in 0..3 {
+            let (row, cell) = page.get_row_and_cell(0, y).unwrap();
+            assert_eq!(cell.codepoint(), 'S' as u32);
+            assert_ne!(cell.style_id(), 0);
+            assert!(page.styles.get(cell.style_id()).unwrap().flags.bold);
+            assert!(row.styled());
+        }
+        finish(&s);
+    }
+
+    #[test]
+    fn page_list_split_preserves_grapheme_clusters() {
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        set_raw(&mut s, 0, 6, 0x1f468, Wide::Narrow);
+        s.node_mut(s.first.unwrap())
+            .unwrap()
+            .data
+            .set_graphemes(0, 6, &[0x200d, 0x1f469])
+            .unwrap();
+        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
+        assert_eq!(s.node(s.first.unwrap()).unwrap().data.grapheme_count(), 0);
+        let page = &s.node(s.last.unwrap()).unwrap().data;
+        assert_eq!(page.grapheme_count(), 1);
+        let (row, cell) = page.get_row_and_cell(0, 1).unwrap();
+        assert_eq!(cell.codepoint(), 0x1f468);
+        assert!(row.grapheme());
         assert_eq!(
-            s.tracked_pin(s.viewport_pin.unwrap()).unwrap().node,
-            s.last.unwrap()
+            page.lookup_grapheme(page.cell_index(0, 1).unwrap())
+                .unwrap(),
+            [0x200d, 0x1f469]
         );
         finish(&s);
     }
-    #[test]
-    fn page_list_split_preserves_styled_cells() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
-        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        for y in 0..10 {
-            page.set_style(
-                0,
-                y,
-                crate::style::Style {
-                    flags: crate::style::Flags {
-                        bold: true,
-                        ..crate::style::Flags::default()
-                    },
-                    ..crate::style::Style::default()
-                },
-            )
-            .unwrap();
-        }
-        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        for y in 0..10 {
-            let p = s.pin(screen(0, y)).unwrap();
-            assert!(p.style(&s).unwrap().flags.bold);
-        }
-        finish(&s);
-    }
-    #[test]
-    fn page_list_split_preserves_grapheme_clusters() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
-        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        for y in 1..10 {
-            page.append_grapheme(0, y, 0x301).unwrap();
-        }
-        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        for y in 0..10 {
-            let p = s.pin(screen(0, y)).unwrap();
-            if y > 0 {
-                assert_eq!(p.grapheme(&s).unwrap(), [0x301]);
-            }
-        }
-        finish(&s);
-    }
+
     #[test]
     fn page_list_split_preserves_hyperlinks() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
         let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
         let id = page
             .insert_hyperlink(crate::hyperlink::Hyperlink {
-                id: crate::hyperlink::HyperlinkId::Implicit(1),
+                id: crate::hyperlink::HyperlinkId::Implicit(0),
                 uri: b"https://example.com".to_vec(),
             })
             .unwrap();
-        for y in 0..10 {
-            if y > 0 {
-                page.hyperlink_set.r#use(id).unwrap();
-            }
-            page.set_hyperlink(0, y, id).unwrap();
-        }
+        let i = page.cell_index(0, 7).unwrap();
+        page.cells[i] = Cell::init('L' as u32);
+        page.set_hyperlink(0, 7, id).unwrap();
         s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        for y in 0..10 {
-            let p = s.pin(screen(0, y)).unwrap();
-            assert!(p.row_and_cell(&s).unwrap().1.hyperlink());
-        }
+        assert_eq!(
+            s.node(s.first.unwrap()).unwrap().data.hyperlink_set.count(),
+            0
+        );
+        let page = &s.node(s.last.unwrap()).unwrap().data;
+        assert_eq!(page.hyperlink_set.count(), 1);
+        let (_, cell) = page.get_row_and_cell(0, 2).unwrap();
+        assert_eq!(cell.codepoint(), 'L' as u32);
+        assert!(cell.hyperlink());
+        let id = page
+            .lookup_hyperlink(page.cell_index(0, 2).unwrap())
+            .unwrap();
+        assert_eq!(
+            page.hyperlink_set.get(id).unwrap().uri,
+            b"https://example.com"
+        );
         finish(&s);
     }
+
     #[test]
     fn page_list_split_preserves_wrap_flags() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
         let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        for y in 0..10 {
-            page.rows[y].set_wrap(y % 2 == 0);
-            page.rows[y].set_wrap_continuation(y % 2 != 0);
-        }
+        page.rows[5].set_wrap(true);
+        page.rows[6].set_wrap_continuation(true);
+        page.rows[7].set_wrap(true);
+        page.rows[7].set_wrap_continuation(true);
         s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        for y in 0..10 {
-            let p = s.pin(screen(0, y)).unwrap();
-            assert_eq!(p.row_and_cell(&s).unwrap().0.wrap(), y % 2 == 0);
-            assert_eq!(
-                p.row_and_cell(&s).unwrap().0.wrap_continuation(),
-                y % 2 != 0
-            );
+        let page = &s.node(s.last.unwrap()).unwrap().data;
+        for (y, (wrap, continuation)) in [(true, false), (false, true), (true, true)]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(page.rows[y].wrap(), wrap);
+            assert_eq!(page.rows[y].wrap_continuation(), continuation);
         }
         finish(&s);
     }
+
     #[test]
     fn page_list_split_middle_page_preserves_linked_list_order() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
-        let original = s.first;
-        s.split(s.pin(screen(0, 3)).unwrap()).unwrap();
-        s.split(s.pin(screen(0, 7)).unwrap()).unwrap();
-        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
-        assert_eq!(s.total_pages(), 4);
-        assert_eq!(s.first, original);
-        for y in 0..10 {
-            assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
+        let mut s = PageList::init(10, 12, Some(0)).unwrap();
+        s.split(s.pin(screen(0, 4)).unwrap()).unwrap();
+        let first = s.first.unwrap();
+        let middle = s.last.unwrap();
+        assert_eq!(s.node(first).unwrap().data.size.rows, 4);
+        assert_eq!(s.node(middle).unwrap().data.size.rows, 8);
+        s.split(Pin {
+            node: middle,
+            x: 0,
+            y: 4,
+            garbage: false,
+        })
+        .unwrap();
+        let last = s.node(middle).unwrap().next.unwrap();
+        assert_eq!(s.first, Some(first));
+        assert_eq!(s.node(first).unwrap().next, Some(middle));
+        assert_eq!(s.last, Some(last));
+        assert_eq!(s.node(first).unwrap().prev, None);
+        assert_eq!(s.node(middle).unwrap().prev, Some(first));
+        assert_eq!(s.node(last).unwrap().prev, Some(middle));
+        assert_eq!(s.node(middle).unwrap().next, Some(last));
+        assert_eq!(s.node(last).unwrap().next, None);
+        for id in [first, middle, last] {
+            assert_eq!(s.node(id).unwrap().data.size.rows, 4);
         }
         finish(&s);
     }
+
     #[test]
     fn page_list_split_last_page_makes_new_page_the_last() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
-        let original = s.first;
-        s.split(s.pin(screen(0, 3)).unwrap()).unwrap();
-        s.split(s.pin(screen(0, 7)).unwrap()).unwrap();
-        assert_eq!(s.total_pages(), 3);
-        assert_eq!(s.first, original);
-        for y in 0..10 {
-            assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
-        }
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
+        let old = s.last.unwrap();
+        assert_eq!(s.node(old).unwrap().data.size.rows, 5);
+        s.split(Pin {
+            node: old,
+            x: 0,
+            y: 2,
+            garbage: false,
+        })
+        .unwrap();
+        let new = s.last.unwrap();
+        assert_ne!(new, old);
+        assert_eq!(s.node(new).unwrap().prev, Some(old));
+        assert_eq!(s.node(new).unwrap().next, None);
+        assert_eq!(s.node(old).unwrap().data.size.rows, 2);
+        assert_eq!(s.node(new).unwrap().data.size.rows, 3);
         finish(&s);
     }
+
     #[test]
     fn page_list_split_first_page_keeps_original_as_first() {
-        let mut s = PageList::init(10, 10, None).unwrap();
-        write_rows(&mut s);
-        let original = s.first;
-        s.split(s.pin(screen(0, 7)).unwrap()).unwrap();
-        s.split(s.pin(screen(0, 3)).unwrap()).unwrap();
-        assert_eq!(s.total_pages(), 3);
-        assert_eq!(s.first, original);
-        for y in 0..10 {
-            assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
-        }
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        let first = s.first.unwrap();
+        s.split(s.pin(screen(0, 5)).unwrap()).unwrap();
+        let second = s.last.unwrap();
+        s.split(s.pin(screen(0, 2)).unwrap()).unwrap();
+        assert_eq!(s.first, Some(first));
+        assert_eq!(s.node(first).unwrap().prev, None);
+        let inserted = s.node(first).unwrap().next.unwrap();
+        assert_ne!(inserted, second);
+        assert_eq!(s.node(inserted).unwrap().next, Some(second));
+        assert_eq!(s.node(first).unwrap().data.size.rows, 2);
+        assert_eq!(s.node(inserted).unwrap().data.size.rows, 3);
+        assert_eq!(s.node(second).unwrap().data.size.rows, 5);
         finish(&s);
     }
+
     #[test]
     fn page_list_compact_std_size_page_returns_null() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        assert_eq!(s.compact(s.first.unwrap()).unwrap(), None);
+        let mut s = PageList::init(80, 24, Some(0)).unwrap();
+        let node = s.first.unwrap();
+        assert!(Page::layout(s.node(node).unwrap().data.capacity).total_size <= std_size());
+        assert_eq!(s.compact(node).unwrap(), None);
+        assert_eq!(s.first, Some(node));
         finish(&s);
     }
+
     #[test]
     fn page_list_compact_oversized_page() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        write_rows(&mut s);
-        let h = s.track_pin(s.pin(screen(2, 10)).unwrap()).unwrap();
-        let id = s
-            .increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::StringBytes))
+        let additional = first_cap(&s) - s.total_rows;
+        grow(&mut s, additional + 1);
+        assert_ne!(s.first, s.last);
+        let mut node = s.first.unwrap();
+        let page = &mut s.node_mut(node).unwrap().data;
+        for y in 0..usize::from(page.size.rows) {
+            for x in 0..80 {
+                let i = page.cell_index(x, y).unwrap();
+                page.cells[i] = Cell::init((x + y * 80) as u32);
+            }
+        }
+        let tracked = s
+            .track_pin(Pin {
+                node,
+                x: 5,
+                y: 10,
+                garbage: false,
+            })
             .unwrap();
-        let bytes = s.page_size;
-        let compact = s.compact(id).unwrap().unwrap();
-        assert!(s.page_size < bytes);
-        assert_eq!(s.tracked_pin(h).unwrap().node, compact);
-        for y in 0..24 {
-            assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), y);
+        while Page::layout(s.node(node).unwrap().data.capacity).total_size <= std_size() {
+            node = s
+                .increase_capacity(node, Some(IncreaseCapacity::GraphemeBytes))
+                .unwrap();
+        }
+        let oversized_len = Page::layout(s.node(node).unwrap().data.capacity).total_size;
+        assert!(oversized_len > std_size());
+        let original_size = s.node(node).unwrap().data.size;
+        let second = s.node(node).unwrap().next.unwrap();
+        s.node_mut(node).unwrap().data.dirty = true;
+        let new = s.compact(node).unwrap().unwrap();
+        let page = &s.node(new).unwrap().data;
+        assert!(Page::layout(page.capacity).total_size < oversized_len);
+        assert_eq!(page.size, original_size);
+        assert!(page.dirty);
+        assert_eq!(s.first, Some(new));
+        assert_eq!(s.node(new).unwrap().prev, None);
+        assert_eq!(s.node(new).unwrap().next, Some(second));
+        assert_eq!(s.node(second).unwrap().prev, Some(new));
+        let pin = s.tracked_pin(tracked).unwrap();
+        assert_eq!((pin.node, pin.x, pin.y), (new, 5, 10));
+        for y in 0..usize::from(page.size.rows) {
+            for x in 0..80 {
+                assert_eq!(
+                    page.get_row_and_cell(x, y).unwrap().1.codepoint(),
+                    (x + y * 80) as u32
+                );
+            }
         }
         finish(&s);
     }
@@ -3405,49 +4224,56 @@ mod tests {
     #[test]
     fn page_list_clone_partial_trimmed_right() {
         let mut s = PageList::init(80, 20, None).unwrap();
-        grow(&mut s, 30);
-        let (q, _) = s.clone_range(screen(0, 0), Some(screen(0, 39))).unwrap();
-        assert_eq!(q.total_rows, 40);
-        finish(&q);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 30);
+        let (s2, _) = s
+            .clone_range(screen_point(0, 0), Some(screen_point(0, 39)))
+            .unwrap();
+        assert_eq!(s2.total_rows, 40);
     }
 
     #[test]
     fn page_list_clone_partial_trimmed_left() {
         let mut s = PageList::init(80, 20, None).unwrap();
-        grow(&mut s, 30);
-        let (q, _) = s.clone_range(screen(0, 10), None).unwrap();
-        assert_eq!(q.total_rows, 40);
-        finish(&q);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 30);
+        let (s2, _) = s.clone_range(screen_point(0, 10), None).unwrap();
+        assert_eq!(s2.total_rows, 40);
     }
 
     #[test]
     fn page_list_clone_partial_trimmed_both() {
         let mut s = PageList::init(80, 20, None).unwrap();
-        grow(&mut s, 30);
-        let (q, _) = s.clone_range(screen(0, 10), Some(screen(0, 35))).unwrap();
-        assert_eq!(q.total_rows, 26);
-        finish(&q);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 30);
+        let (s2, _) = s
+            .clone_range(screen_point(0, 10), Some(screen_point(0, 35)))
+            .unwrap();
+        assert_eq!(s2.total_rows, 26);
     }
 
     #[test]
     fn page_list_clone() {
-        let s = PageList::init(80, 24, None).unwrap();
-        let q = s.try_clone().unwrap();
-        assert_eq!(q.total_rows, 24);
-        finish(&q);
+        let mut s = PageList::init(80, 24, None).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 0);
+        let (s2, _) = s.clone_range(screen_point(0, 0), None).unwrap();
+        assert_eq!(s2.total_rows, 24);
     }
 
     #[test]
     fn page_list_clone_less_than_active() {
-        let s = PageList::init(80, 24, None).unwrap();
-        let (q, _) = s.clone_range(active(0, 5), None).unwrap();
-        assert_eq!(q.total_rows, 24);
-        finish(&q);
+        let mut s = PageList::init(80, 24, None).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 0);
+        let (s2, _) = s.clone_range(active_point(0, 5), None).unwrap();
+        assert_eq!(s2.total_rows, 24);
     }
 
     #[test]
     fn page_list_clone_remap_tracked_pin() {
         let mut s = PageList::init(80, 24, None).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         let h = s.track_pin(s.pin(active(0, 6)).unwrap()).unwrap();
         let (q, map) = s.clone_range(active(0, 5), None).unwrap();
         assert_eq!(
@@ -3460,6 +4286,7 @@ mod tests {
     #[test]
     fn page_list_clone_remap_tracked_pin_not_in_cloned_area() {
         let mut s = PageList::init(80, 24, None).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         let h = s.track_pin(s.pin(active(0, 3)).unwrap()).unwrap();
         let (q, map) = s.clone_range(active(0, 5), None).unwrap();
         assert!(!map.contains_key(&h));
@@ -3469,39 +4296,46 @@ mod tests {
     #[test]
     fn page_list_clone_full_dirty() {
         let mut s = PageList::init(80, 24, None).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         for y in [0, 12, 23] {
-            s.pin(active(0, y)).unwrap().mark_dirty(&mut s);
+            s.pin(active_point(0, y)).unwrap().mark_dirty(&mut s);
         }
-        let q = s.try_clone().unwrap();
-        for y in 0..24 {
-            assert_eq!(q.is_dirty(active(0, y)), [0, 12, 23].contains(&y));
+        let (s2, _) = s.clone_range(screen_point(0, 0), None).unwrap();
+        assert_eq!(s2.total_rows, usize::from(s.rows));
+        for (y, dirty) in [(0, true), (1, false), (12, true), (14, false), (23, true)] {
+            assert_eq!(s2.is_dirty(active_point(0, y)), dirty);
         }
-        finish(&q);
     }
 
     #[test]
     fn page_list_clone_partial_trimmed_left_reclaims_styles() {
+        use crate::style::{Flags, Style};
         let mut s = PageList::init(80, 20, None).unwrap();
-        grow(&mut s, 30);
-        let p = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        for y in 0..10 {
-            p.set_style(
-                0,
-                y,
-                crate::style::Style {
-                    flags: crate::style::Flags {
-                        bold: true,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        grow_rows(&mut s, 30);
+        assert_eq!(s.first, s.last);
+        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        let style = Style {
+            flags: Flags {
+                bold: true,
+                ..Flags::default()
+            },
+            ..Style::default()
+        };
+        let id = page.styles.add(style).unwrap();
+        for y in (0..10).rev() {
+            let i = page.cell_index(0, y).unwrap();
+            page.cells[i] = Cell::init('A' as u32);
+            page.cells[i].set_style_id(id);
+            page.rows[y].set_styled(true);
+            page.styles.r#use(id).unwrap();
         }
-        let (q, _) = s.clone_range(screen(0, 10), None).unwrap();
-        assert_eq!(q.total_rows, 40);
-        assert_eq!(q.node(q.first.unwrap()).unwrap().data.styles.count(), 0);
-        finish(&q);
+        page.styles.release(id).unwrap();
+        assert_eq!(page.styles.count(), 1);
+        let (s2, _) = s.clone_range(screen_point(0, 10), None).unwrap();
+        assert_eq!(s2.total_rows, 40);
+        assert_eq!(s2.first, s2.last);
+        assert_eq!(s2.node(s2.first.unwrap()).unwrap().data.styles.count(), 0);
     }
 
     #[test]
@@ -3564,39 +4398,47 @@ mod tests {
     #[test]
     fn page_list_erase_row_with_tracked_pin_shifts() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let h = s.track_pin(s.pin(active(2, 4)).unwrap()).unwrap();
-        s.erase_rows(active(0, 0), Some(active(0, 3))).unwrap();
-        assert_eq!(s.total_rows, 24);
-        let p = s.tracked_pin(h).unwrap();
-        assert_eq!((p.x, p.y), (2, 0));
-        finish(&s);
+        let handle = s.track_pin(s.pin(active_point(2, 4)).unwrap()).unwrap();
+        s.erase_rows(active_point(0, 0), Some(active_point(0, 3)))
+            .unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        let p = s.tracked_pin(handle).unwrap();
+        assert_eq!(p.node, s.first.unwrap());
+        assert_eq!(p.y, 0);
+        assert_eq!(p.x, 2);
     }
 
     #[test]
     fn page_list_erase_row_with_tracked_pin_is_erased() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let h = s.track_pin(s.pin(active(2, 2)).unwrap()).unwrap();
-        s.erase_rows(active(0, 0), Some(active(0, 3))).unwrap();
-        assert_eq!(s.total_rows, 24);
-        let p = s.tracked_pin(h).unwrap();
-        assert_eq!((p.x, p.y), (0, 0));
-        finish(&s);
+        let handle = s.track_pin(s.pin(active_point(2, 2)).unwrap()).unwrap();
+        s.erase_rows(active_point(0, 0), Some(active_point(0, 3)))
+            .unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        let p = s.tracked_pin(handle).unwrap();
+        assert_eq!(p.node, s.first.unwrap());
+        assert_eq!(p.y, 0);
+        assert_eq!(p.x, 0);
     }
 
     #[test]
     fn page_list_erase_active_regrows_automatically() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        s.erase_rows(active(0, 0), None).unwrap();
-        assert_eq!(s.total_rows, 24);
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        s.erase_rows(active(0, 0), Some(active(0, 10))).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         finish(&s);
     }
 
     #[test]
     fn page_list_erase_a_one_row_active() {
-        let mut s = PageList::init(80, 1, None).unwrap();
-        s.erase_rows(active(0, 0), None).unwrap();
-        assert_eq!(s.total_rows, 1);
-        finish(&s);
+        let mut s = PageList::init(10, 1, None).unwrap();
+        assert_eq!(s.total_pages(), 1);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
+        s.erase_rows(active_point(0, 0), Some(active_point(0, 0)))
+            .unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        assert_eq!(s.get_cell(active_point(0, 0)).unwrap().codepoint(), 0);
     }
 
     #[test]
@@ -3604,159 +4446,178 @@ mod tests {
         let mut s = PageList::init(80, 10, None).unwrap();
         let handles: Vec<_> = [5, 8, 9]
             .into_iter()
-            .map(|y| s.track_pin(s.pin(active(0, y)).unwrap()).unwrap())
+            .map(|y| s.track_pin(s.pin(active_point(0, y)).unwrap()).unwrap())
             .collect();
-        s.erase_row_bounded(active(0, 5), 3).unwrap();
-        for (h, expected) in handles.iter().zip([4, 7, 9]) {
-            assert_eq!(s.tracked_pin(*h).unwrap().y, expected);
-        }
+        s.erase_row_bounded(active_point(0, 5), 3).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         for y in 5..8 {
-            assert!(s.is_dirty(active(0, y)));
+            assert!(s.is_dirty(active_point(0, y)));
         }
-        finish(&s);
+        for (h, y) in handles.into_iter().zip([4, 7, 9]) {
+            let p = s.tracked_pin(h).unwrap();
+            assert_eq!(p.node, s.first.unwrap());
+            assert_eq!(p.y, y);
+            assert_eq!(p.x, 0);
+        }
     }
 
     #[test]
     fn page_list_erase_row_bounded_with_pin_at_top() {
         let mut s = PageList::init(80, 10, None).unwrap();
-        let h = s.track_pin(s.pin(active(5, 0)).unwrap()).unwrap();
-        s.erase_row_bounded(active(0, 0), 3).unwrap();
+        let h = s.track_pin(s.pin(active_point(5, 0)).unwrap()).unwrap();
+        s.erase_row_bounded(active_point(0, 0), 3).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
+        for y in 0..3 {
+            assert!(s.is_dirty(active_point(0, y)));
+        }
         let p = s.tracked_pin(h).unwrap();
-        assert_eq!((p.x, p.y), (0, 0));
-        assert_eq!(s.total_rows, 10);
-        finish(&s);
+        assert_eq!(p.node, s.first.unwrap());
+        assert_eq!(p.y, 0);
+        assert_eq!(p.x, 0);
     }
 
     #[test]
     fn page_list_erase_row_bounded_full_rows_single_page() {
         let mut s = PageList::init(80, 10, None).unwrap();
-        let a = s.track_pin(s.pin(active(0, 7)).unwrap()).unwrap();
-        let b = s.track_pin(s.pin(active(0, 9)).unwrap()).unwrap();
-        s.erase_row_bounded(active(0, 5), 10).unwrap();
-        assert_eq!(s.tracked_pin(a).unwrap().y, 6);
-        assert_eq!(s.tracked_pin(b).unwrap().y, 8);
+        let handles: Vec<_> = [7, 9]
+            .into_iter()
+            .map(|y| s.track_pin(s.pin(active_point(0, y)).unwrap()).unwrap())
+            .collect();
+        s.erase_row_bounded(active_point(0, 5), 10).unwrap();
+        assert_eq!(s.total_rows, usize::from(s.rows));
         for y in 5..10 {
-            assert!(s.is_dirty(active(0, y)));
+            assert!(s.is_dirty(active_point(0, y)));
         }
-        finish(&s);
+        for (h, y) in handles.into_iter().zip([6, 8]) {
+            let p = s.tracked_pin(h).unwrap();
+            assert_eq!(p.node, s.first.unwrap());
+            assert_eq!(p.y, y);
+            assert_eq!(p.x, 0);
+        }
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_in_unchanged_row() {
         let mut s = PageList::init(4, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..2 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        let h = s.track_pin(s.pin(active(1, 0)).unwrap()).unwrap();
+        let p = s.track_pin(s.pin(active_point(1, 0)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 2);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(1, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(1, 0))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_in_blank_cell() {
         let mut s = PageList::init(6, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..2 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        let h = s.track_pin(s.pin(active(2, 0)).unwrap()).unwrap();
+        let p = s.track_pin(s.pin(active_point(2, 0)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(4),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 4);
         assert_eq!(s.total_rows, 2);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(2, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(2, 0))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_in_final_blank_cell() {
         let mut s = PageList::init(6, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..2 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        let h = s.track_pin(s.pin(active(3, 0)).unwrap()).unwrap();
+        let p = s.track_pin(s.pin(active_point(3, 0)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(4),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 4);
         assert_eq!(s.total_rows, 2);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(3, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(3, 0))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_in_wrapped_blank_cell() {
         let mut s = PageList::init(6, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..2 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        let h = s.track_pin(s.pin(active(5, 0)).unwrap()).unwrap();
+        let p = s.track_pin(s.pin(active_point(5, 0)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(4),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 4);
         assert_eq!(s.total_rows, 2);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(3, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(3, 0))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_in_wrapped_row() {
         let mut s = PageList::init(4, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..4 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        let h = s.track_pin(s.pin(active(2, 1)).unwrap()).unwrap();
+        let p = s.track_pin(s.pin(active_point(2, 1)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 1))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 1))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_blank_lines() {
         let mut s = PageList::init(4, 3, Some(0)).unwrap();
-        for y in [0, 0] {
+        assert_eq!(s.first, s.last);
+        for y in [0] {
             for x in 0..4 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
         s.resize(Resize {
@@ -3764,17 +4625,25 @@ mod tests {
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 3);
-        assert_eq!(s.get_cell(active(0, 1)).unwrap().codepoint(), 2);
-        finish(&s);
+        let mut it = s.row_iterator(Direction::RightDown, active_point(0, 0), None);
+        for (wrap, cp) in [(true, 0), (false, 2)] {
+            let p = it.next().unwrap();
+            assert_eq!(p.row_and_cell(&s).unwrap().0.wrap(), wrap);
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(cells[0].codepoint(), cp);
+        }
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_blank_lines_between() {
         let mut s = PageList::init(4, 3, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
         for y in [0, 2] {
             for x in 0..4 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
         s.resize(Resize {
@@ -3782,65 +4651,85 @@ mod tests {
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 5);
-        assert_eq!(s.get_cell(active(0, 1)).unwrap().codepoint(), 0);
-        finish(&s);
+        let mut it = s.row_iterator(Direction::RightDown, active_point(0, 0), None);
+        assert!(!it.next().unwrap().row_and_cell(&s).unwrap().0.wrap());
+        for (wrap, cp) in [(true, 0), (false, 2)] {
+            let p = it.next().unwrap();
+            assert_eq!(p.row_and_cell(&s).unwrap().0.wrap(), wrap);
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(cells[0].codepoint(), cp);
+        }
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_blank_lines_between_no_scrollback() {
         let mut s = PageList::init(5, 3, Some(0)).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
-        *s.get_cell_mut(active(0, 2)).unwrap() = Cell::init(67);
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
+        set_raw(&mut s, 0, 2, 'C' as u32, Wide::Narrow);
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 3);
-        assert_eq!(s.get_cell(active(0, 0)).unwrap().codepoint(), 65);
-        assert_eq!(s.get_cell(active(0, 1)).unwrap().codepoint(), 0);
-        assert_eq!(s.get_cell(active(0, 2)).unwrap().codepoint(), 67);
-        finish(&s);
+        let mut it = s.row_iterator(Direction::RightDown, active_point(0, 0), None);
+        for cp in ['A' as u32, 0, 'C' as u32] {
+            let p = it.next().unwrap();
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells[0].codepoint(), cp);
+            if cp != 0 {
+                assert!(!p.row_and_cell(&s).unwrap().0.wrap());
+                assert_eq!(cells.len(), 2);
+            }
+        }
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_cursor_not_on_last_line_preserves_location() {
         let mut s = PageList::init(5, 5, Some(1)).unwrap();
+        assert_eq!(s.first, s.last);
         for y in 0..5 {
             for x in 0..2 {
-                *s.get_cell_mut(active(x, y)).unwrap() = Cell::init(u32::from(x));
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
         }
-        grow(&mut s, 5);
-        let h = s.track_pin(s.pin(active(0, 0)).unwrap()).unwrap();
+        grow_rows(&mut s, 5);
+        assert_eq!(s.total_rows, 10);
+        let p = s.track_pin(s.pin(active_point(0, 0)).unwrap()).unwrap();
         s.resize(Resize {
             cols: Some(4),
             cursor: Some(Cursor { x: 1, y: 1 }),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 4);
         assert_eq!(s.total_rows, 10);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 0))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_no_reflow_preserves_semantic_prompt_on_first_line() {
         let mut s = PageList::init(4, 4, Some(0)).unwrap();
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[0]
-            .set_semantic_prompt(SemanticPrompt::Prompt);
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 0, SemanticPrompt::Prompt);
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
+        assert_eq!(s.first, s.last);
         assert_eq!(
-            s.get_top_left(Tag::Active)
+            s.pin(active_point(0, 0))
                 .unwrap()
                 .row_and_cell(&s)
                 .unwrap()
@@ -3848,22 +4737,23 @@ mod tests {
                 .semantic_prompt(),
             SemanticPrompt::Prompt
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_wrap_preserves_semantic_prompt() {
         let mut s = PageList::init(4, 4, Some(0)).unwrap();
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[0]
-            .set_semantic_prompt(SemanticPrompt::Prompt);
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 0, SemanticPrompt::Prompt);
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
+        assert_eq!(s.first, s.last);
         assert_eq!(
-            s.get_top_left(Tag::Active)
+            s.pin(active_point(0, 0))
                 .unwrap()
                 .row_and_cell(&s)
                 .unwrap()
@@ -3871,141 +4761,196 @@ mod tests {
                 .semantic_prompt(),
             SemanticPrompt::Prompt
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_no_reflow_preserves_semantic_prompt() {
         let mut s = PageList::init(4, 4, Some(0)).unwrap();
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[1]
-            .set_semantic_prompt(SemanticPrompt::Prompt);
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 1, SemanticPrompt::Prompt);
         for x in 0..4 {
-            *s.get_cell_mut(active(x, 1)).unwrap() = Cell::init(u32::from(x));
+            set_raw(&mut s, x, 1, u32::from(x), Wide::Narrow);
         }
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
-        for y in [1, 2] {
-            assert_eq!(
-                s.pin(active(0, y))
-                    .unwrap()
-                    .row_and_cell(&s)
-                    .unwrap()
-                    .0
-                    .semantic_prompt(),
-                SemanticPrompt::Prompt
-            );
-        }
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_eq!(
+            s.pin(active_point(0, 1))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .semantic_prompt(),
+            SemanticPrompt::Prompt
+        );
+        assert!(
+            s.pin(active_point(0, 1))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        assert_eq!(
+            s.pin(active_point(0, 2))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .semantic_prompt(),
+            SemanticPrompt::Prompt
+        );
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_to_wrap_a_wide_char() {
         let mut s = PageList::init(3, 1, Some(0)).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(120);
-        let c = s.get_cell_mut(active(1, 0)).unwrap();
-        *c = Cell::init(0x1f600);
-        c.set_wide(Wide::Wide);
-        s.get_cell_mut(active(2, 0))
-            .unwrap()
-            .set_wide(Wide::SpacerTail);
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'x' as u32, Wide::Narrow);
+        set_raw(&mut s, 1, 0, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 2, 0, 0, Wide::SpacerTail);
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 2);
-        assert_eq!(s.get_cell(screen(1, 0)).unwrap().wide(), Wide::SpacerHead);
-        assert_eq!(s.get_cell(screen(0, 1)).unwrap().codepoint(), 0x1f600);
-        assert_eq!(s.get_cell(screen(1, 1)).unwrap().wide(), Wide::SpacerTail);
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_cell(&s, 0, 0, 'x' as u32, Wide::Narrow);
+        assert!(
+            s.pin(screen_point(0, 0))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        assert_cell(&s, 1, 0, 0, Wide::SpacerHead);
+        assert_cell(&s, 0, 1, '😀' as u32, Wide::Wide);
+        assert_cell(&s, 1, 1, 0, Wide::SpacerTail);
     }
 
     #[test]
     fn page_list_resize_reflow_more_cols_unwrap_still_requires_wide_spacer_head() {
         let mut s = PageList::init(2, 2, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
         for x in 0..2 {
-            *s.get_cell_mut(active(x, 0)).unwrap() = Cell::init(120);
+            set_raw(&mut s, x, 0, 'x' as u32, Wide::Narrow);
         }
-        wraps(&mut s);
-        let c = s.get_cell_mut(active(0, 1)).unwrap();
-        *c = Cell::init(0x1f600);
-        c.set_wide(Wide::Wide);
-        s.get_cell_mut(active(1, 1))
-            .unwrap()
-            .set_wide(Wide::SpacerTail);
+        set_wrap(&mut s, 0, true, false);
+        set_raw(&mut s, 0, 1, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 1, 1, 0, Wide::SpacerTail);
+        set_wrap(&mut s, 1, false, true);
         s.resize(Resize {
             cols: Some(3),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 3);
         assert_eq!(s.total_rows, 2);
-        assert_eq!(s.get_cell(screen(2, 0)).unwrap().wide(), Wide::SpacerHead);
-        assert_eq!(s.get_cell(screen(0, 1)).unwrap().codepoint(), 0x1f600);
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert!(
+            s.pin(screen_point(0, 0))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        for x in 0..2 {
+            assert_cell(&s, x, 0, 'x' as u32, Wide::Narrow);
+        }
+        assert_cell(&s, 2, 0, 0, Wide::SpacerHead);
+        assert_cell(&s, 0, 1, '😀' as u32, Wide::Wide);
+        assert_cell(&s, 1, 1, 0, Wide::SpacerTail);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_to_wrap_a_multi_codepoint_grapheme_with_a_spacer_head() {
         let mut s = PageList::init(4, 2, Some(0)).unwrap();
-        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        let cps = [0x200d, 0x1f468, 0x200d, 0x1f466, 0x200d, 0x1f466];
+        assert_eq!(s.first, s.last);
+        let cps = [0x200D, 0x1F468, 0x200D, 0x1F466, 0x200D, 0x1F466];
         for x in [0, 2] {
-            page.cells[x] = Cell::init(0x1f468);
-            page.cells[x].set_wide(Wide::Wide);
-            page.cells[x + 1].set_wide(Wide::SpacerTail);
-            page.set_graphemes(x, 0, &cps).unwrap();
+            set_raw(&mut s, x, 0, 0x1F468, Wide::Wide);
+            s.node_mut(s.first.unwrap())
+                .unwrap()
+                .data
+                .set_graphemes(usize::from(x), 0, &cps)
+                .unwrap();
+            set_raw(&mut s, x + 1, 0, 0, Wide::SpacerTail);
         }
         s.resize(Resize {
             cols: Some(3),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 3);
         assert_eq!(s.total_rows, 2);
-        for y in 0..2 {
-            let p = s.pin(screen(0, y)).unwrap();
-            assert_eq!(p.row_and_cell(&s).unwrap().1.wide(), Wide::Wide);
+        assert_eq!(s.first, s.last);
+        // Zig checks the first cluster twice; also check the moved second one.
+        for y in [0, 0, 1] {
+            assert_cell(&s, 0, y, 0x1F468, Wide::Wide);
+            let p = s.pin(screen_point(0, y)).unwrap();
+            assert_eq!(p.grapheme(&s).unwrap().len(), 6);
             assert_eq!(p.grapheme(&s).unwrap(), cps);
         }
-        assert_eq!(s.get_cell(screen(2, 0)).unwrap().wide(), Wide::SpacerHead);
-        finish(&s);
+        assert!(
+            s.pin(screen_point(0, 0))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        assert_cell(&s, 1, 0, 0, Wide::SpacerTail);
+        assert_cell(&s, 2, 0, 0, Wide::SpacerHead);
+        assert_cell(&s, 1, 1, 0, Wide::SpacerTail);
     }
 
     #[test]
     fn page_list_prompt_iterator_left_up() {
         let mut s = PageList::init(2, 20, Some(0)).unwrap();
-        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        assert_eq!(s.first, s.last);
         for y in [3, 6] {
-            page.rows[y].set_semantic_prompt(SemanticPrompt::Prompt);
+            mark_prompt(&mut s, y, SemanticPrompt::Prompt);
         }
         for y in [7, 8, 12] {
-            page.rows[y].set_semantic_prompt(SemanticPrompt::PromptContinuation);
+            mark_prompt(&mut s, y, SemanticPrompt::PromptContinuation);
         }
-        let ys: Vec<_> = s
-            .prompt_iterator(Direction::LeftUp, screen(0, 0), None)
-            .map(|p| s.screen_row(p).unwrap())
-            .collect();
-        assert_eq!(ys, [12, 6, 3]);
+        let mut it = s.prompt_iterator(Direction::LeftUp, screen_point(0, 0), None);
+        for y in [12, 6, 3] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, it.next().unwrap()),
+                Some(screen_point(0, y))
+            );
+        }
+        assert!(it.next().is_none());
     }
 
     #[test]
     fn page_list_prompt_iterator_right_down() {
         let mut s = PageList::init(2, 20, Some(0)).unwrap();
-        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        assert_eq!(s.first, s.last);
         for y in [3, 6] {
-            page.rows[y].set_semantic_prompt(SemanticPrompt::Prompt);
+            mark_prompt(&mut s, y, SemanticPrompt::Prompt);
         }
         for y in [7, 8, 12] {
-            page.rows[y].set_semantic_prompt(SemanticPrompt::PromptContinuation);
+            mark_prompt(&mut s, y, SemanticPrompt::PromptContinuation);
         }
-        let ys: Vec<_> = s
-            .prompt_iterator(Direction::RightDown, screen(0, 0), None)
-            .map(|p| s.screen_row(p).unwrap())
-            .collect();
-        assert_eq!(ys, [3, 6, 12]);
+        let mut it = s.prompt_iterator(Direction::RightDown, screen_point(0, 0), None);
+        for y in [3, 6, 12] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, it.next().unwrap()),
+                Some(screen_point(0, y))
+            );
+        }
+        assert!(it.next().is_none());
     }
 
     #[test]
@@ -4700,45 +5645,66 @@ mod tests {
     #[test]
     fn page_list_resize_no_reflow_less_rows_trims_blank_lines() {
         let mut s = PageList::init(10, 5, Some(0)).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
-        let h = s.track_pin(s.pin(active(0, 0)).unwrap()).unwrap();
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
+        for y in 1..usize::from(s.rows) {
+            let c = s.get_cell_mut(active_point(0, y)).unwrap();
+            c.set_content_tag(ContentTag::BgColorRgb);
+            c.set_color_rgb(ghostty_vt::color::Rgb { r: 255, g: 0, b: 0 });
+        }
+        let p = s.track_pin(s.pin(active_point(0, 0)).unwrap()).unwrap();
+        let pt = s
+            .point_from_pin(Tag::Active, s.tracked_pin(p).unwrap())
+            .unwrap();
+        assert_eq!(s.get_cell(pt).unwrap().codepoint(), 'A' as u32);
         s.resize(Resize {
             rows: Some(2),
             reflow: false,
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.rows, 2);
         assert_eq!(s.total_rows, 2);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 0))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 0))
         );
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 0))
+        );
     }
 
     #[test]
     fn page_list_resize_no_reflow_less_rows_trims_blank_lines_cursor_in_blank_line() {
         let mut s = PageList::init(10, 5, Some(0)).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
-        let h = s.track_pin(s.pin(active(0, 3)).unwrap()).unwrap();
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
+        for y in 1..usize::from(s.rows) {
+            let c = s.get_cell_mut(active_point(0, y)).unwrap();
+            c.set_content_tag(ContentTag::BgColorRgb);
+            c.set_color_rgb(ghostty_vt::color::Rgb { r: 255, g: 0, b: 0 });
+        }
+        let p = s.track_pin(s.pin(active_point(0, 3)).unwrap()).unwrap();
         s.resize(Resize {
             rows: Some(2),
             reflow: false,
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.rows, 2);
         assert_eq!(s.total_rows, 4);
         assert_eq!(
-            s.point_from_pin(Tag::Active, s.tracked_pin(h).unwrap()),
-            Some(active(0, 1))
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 1))
         );
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_no_reflow_less_rows_trims_blank_lines_erases_pages() {
         let mut s = PageList::init(100, 5, Some(0)).unwrap();
-        let rows = first_cap(&s) as u16 + 5;
+        assert_eq!(s.first, s.last);
+        let rows = s.node(s.first.unwrap()).unwrap().data.capacity.rows + 10;
         s.resize(Resize {
             rows: Some(rows),
             reflow: false,
@@ -4746,40 +5712,48 @@ mod tests {
         })
         .unwrap();
         assert_eq!(s.total_pages(), 2);
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
         s.resize(Resize {
             rows: Some(5),
             reflow: false,
             ..Resize::default()
         })
         .unwrap();
-        assert_eq!(s.total_pages(), 1);
+        assert_eq!(s.rows, 5);
         assert_eq!(s.total_rows, 5);
-        finish(&s);
+        assert_eq!(s.total_pages(), 1);
     }
 
     #[test]
     fn page_list_resize_no_reflow_more_rows_extends_blank_lines() {
         let mut s = PageList::init(10, 3, Some(0)).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'A' as u32, Wide::Narrow);
+        for y in 1..usize::from(s.rows) {
+            let c = s.get_cell_mut(active_point(0, y)).unwrap();
+            c.set_content_tag(ContentTag::BgColorRgb);
+            c.set_color_rgb(ghostty_vt::color::Rgb { r: 255, g: 0, b: 0 });
+        }
         s.resize(Resize {
             rows: Some(7),
             reflow: false,
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.rows, 7);
         assert_eq!(s.total_rows, 7);
-        assert_eq!(s.active_offset(), 0);
-        assert_eq!(s.get_cell(active(0, 0)).unwrap().codepoint(), 65);
-        finish(&s);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 0))
+        );
     }
 
     #[test]
     fn page_list_resize_no_reflow_less_cols_clears_graphemes() {
         let mut s = PageList::init(10, 10, Some(0)).unwrap();
         let p = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        p.cells[9] = Cell::init(9);
-        p.append_grapheme(9, 0, 10).unwrap();
+        p.cells[9] = Cell::init('A' as u32);
+        p.append_grapheme(9, 0, 'A' as u32).unwrap();
         assert_eq!(p.grapheme_count(), 1);
         s.resize(Resize {
             cols: Some(5),
@@ -4787,6 +5761,7 @@ mod tests {
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 5);
         assert_eq!(s.total_rows, 10);
         for n in s.nodes.iter().flatten() {
             assert_eq!(n.data.grapheme_count(), 0);
@@ -4807,7 +5782,9 @@ mod tests {
         assert_eq!(s.cols, 5);
         assert_eq!(s.rows, 7);
         assert_eq!(s.total_rows, 7);
-        finish(&s);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 5);
+        }
     }
 
     #[test]
@@ -4823,7 +5800,9 @@ mod tests {
         assert_eq!(s.cols, 5);
         assert_eq!(s.rows, 20);
         assert_eq!(s.total_rows, 20);
-        finish(&s);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 5);
+        }
     }
 
     #[test]
@@ -4839,47 +5818,50 @@ mod tests {
         assert_eq!(s.cols, 10);
         assert_eq!(s.rows, 10);
         assert_eq!(s.total_rows, 10);
-        finish(&s);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            assert_eq!(p.cells(&s, CellSubset::All).unwrap().len(), 10);
+        }
     }
 
     #[test]
     fn page_list_increase_capacity_after_col_shrink() {
-        let mut s = PageList::init(80, 24, None).unwrap();
+        let mut s = PageList::init(10, 2, Some(0)).unwrap();
         s.resize(Resize {
-            cols: Some(40),
+            cols: Some(5),
             reflow: false,
             ..Resize::default()
         })
         .unwrap();
-        let id = s
-            .increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
+        assert_eq!(s.cols, 5);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().data.size.cols, 5);
+        assert!(s.node(s.first.unwrap()).unwrap().data.capacity.cols >= 10);
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
             .unwrap();
-        assert_eq!(s.node(id).unwrap().data.size.cols, 40);
-        assert_eq!(s.node(id).unwrap().data.capacity.cols, 80);
-        finish(&s);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().data.size.cols, 5);
+        assert_eq!(s.cols, 5);
     }
 
     #[test]
     fn page_list_increase_capacity_multi_page() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        fill_pages(&mut s, 2);
-        let old = s.first.unwrap();
-        let second = s.node(old).unwrap().next.unwrap();
-        let h = s
-            .track_pin(Pin {
-                node: old,
-                y: 2,
-                x: 3,
-                garbage: false,
-            })
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
+        assert!(s.grow().unwrap().is_some());
+        assert_ne!(s.first, s.last);
+        let before_first = s.node(s.first.unwrap()).unwrap().data.capacity.styles;
+        let before_last = s.node(s.last.unwrap()).unwrap().data.capacity.styles;
+        s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::Styles))
             .unwrap();
-        let id = s
-            .increase_capacity(old, Some(IncreaseCapacity::Styles))
-            .unwrap();
-        assert_eq!(s.node(id).unwrap().next, Some(second));
-        assert_eq!(s.node(second).unwrap().prev, Some(id));
-        assert_eq!(s.tracked_pin(h).unwrap().node, id);
-        finish(&s);
+        assert_eq!(
+            s.node(s.first.unwrap()).unwrap().data.capacity.styles,
+            before_first * 2
+        );
+        assert_eq!(
+            s.node(s.last.unwrap()).unwrap().data.capacity.styles,
+            before_last
+        );
     }
 
     #[test]
@@ -4890,7 +5872,9 @@ mod tests {
             .unwrap();
         let bytes = s.page_size;
         let result = s.compact(id).unwrap();
-        if result.is_some() {
+        if bytes <= std_size() {
+            assert_eq!(result, None);
+        } else if result.is_some() {
             assert!(s.page_size < bytes);
         }
         finish(&s);
@@ -4899,194 +5883,245 @@ mod tests {
     #[test]
     fn page_list_page_iterator_history_two_pages() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let cap = first_cap(&s);
-        fill_pages(&mut s, 2);
-        let chunks: Vec<_> = s
-            .page_iterator(
-                Direction::RightDown,
-                Point::History(Coordinate::default()),
-                None,
-            )
-            .collect();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!((chunks[0].start, chunks[0].end), (0, cap as u16));
-        assert_eq!((chunks[1].start, chunks[1].end), (0, cap as u16 - 24));
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
+        assert!(s.grow().unwrap().is_some());
+        let mut it = s.page_iterator(
+            Direction::RightDown,
+            Point::History(Coordinate::default()),
+            None,
+        );
+        let chunk = it.next().unwrap();
+        assert_eq!(chunk.node, s.first.unwrap());
+        assert_eq!(chunk.start, 0);
+        assert_eq!(chunk.end, s.get_top_left(Tag::Active).unwrap().y);
+        assert!(it.next().is_none());
     }
 
     #[test]
     fn page_list_page_iterator_reverse_history_two_pages() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        let cap = first_cap(&s);
-        fill_pages(&mut s, 2);
-        let mut chunks: Vec<_> = s
-            .page_iterator(
-                Direction::LeftUp,
-                Point::History(Coordinate::default()),
-                None,
-            )
-            .collect();
-        chunks.reverse();
-        assert_eq!(chunks.len(), 2);
-        assert_eq!((chunks[0].start, chunks[0].end), (0, cap as u16));
-        assert_eq!((chunks[1].start, chunks[1].end), (0, cap as u16 - 24));
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        for _ in s.rows..capacity {
+            assert!(s.grow().unwrap().is_none());
+        }
+        assert!(s.grow().unwrap().is_some());
+        let mut it = s.page_iterator(
+            Direction::LeftUp,
+            Point::History(Coordinate::default()),
+            None,
+        );
+        let chunk = it.next().unwrap();
+        assert_eq!(chunk.node, s.first.unwrap());
+        assert_eq!(chunk.start, 0);
+        assert_eq!(chunk.end, s.get_top_left(Tag::Active).unwrap().y);
+        assert!(it.next().is_none());
     }
 
     #[test]
     fn page_list_erase_row_bounded_full_rows_two_pages() {
-        let mut s = PageList::init(80, 24, None).unwrap();
-        let cap = first_cap(&s);
-        fill_pages(&mut s, 2);
-        write_rows(&mut s);
-        let h = s.track_pin(s.pin(screen(2, cap as u32)).unwrap()).unwrap();
-        let counts: Vec<_> = s.nodes.iter().flatten().map(|n| n.data.size.rows).collect();
-        s.erase_row_bounded(screen(0, cap as u32 - 2), 10).unwrap();
-        assert_eq!(
-            s.nodes
-                .iter()
-                .flatten()
-                .map(|n| n.data.size.rows)
-                .collect::<Vec<_>>(),
-            counts
-        );
-        assert_eq!(
-            s.point_from_pin(Tag::Screen, s.tracked_pin(h).unwrap()),
-            Some(screen(2, cap as u32 - 1))
-        );
-        assert_eq!(
-            s.get_cell(screen(0, cap as u32 - 2)).unwrap().codepoint(),
-            cap as u32 - 1
-        );
-        finish(&s);
+        let mut s = PageList::init(80, 10, None).unwrap();
+        let capacity = s.node(s.first.unwrap()).unwrap().data.capacity.rows;
+        grow_rows(&mut s, usize::from(capacity - 10) + 5);
+        assert_eq!(s.total_pages(), 2);
+        assert_eq!(s.node(s.last.unwrap()).unwrap().data.size.rows, 5);
+        let handles: Vec<_> = [4, 3, 8, 9]
+            .into_iter()
+            .map(|y| s.track_pin(s.pin(active_point(0, y)).unwrap()).unwrap())
+            .collect();
+        for (h, (node, y)) in handles.iter().zip([
+            (s.first.unwrap(), capacity - 1),
+            (s.first.unwrap(), capacity - 2),
+            (s.last.unwrap(), 3),
+            (s.last.unwrap(), 4),
+        ]) {
+            let p = s.tracked_pin(*h).unwrap();
+            assert_eq!(p.node, node);
+            assert_eq!(p.y, y);
+            assert_eq!(p.x, 0);
+        }
+        s.erase_row_bounded(active_point(0, 4), 4).unwrap();
+        for y in 4..8 {
+            assert!(s.is_dirty(active_point(0, y)));
+        }
+        for (h, (node, y)) in handles.iter().zip([
+            (s.first.unwrap(), capacity - 2),
+            (s.first.unwrap(), capacity - 2),
+            (s.last.unwrap(), 2),
+            (s.last.unwrap(), 4),
+        ]) {
+            let p = s.tracked_pin(*h).unwrap();
+            assert_eq!(p.node, node);
+            assert_eq!(p.y, y);
+            assert_eq!(p.x, 0);
+        }
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_wrapped_rows_with_graphemes() {
         let mut s = PageList::init(4, 2, None).unwrap();
-        let p = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        assert_eq!(s.first, s.last);
         for y in 0..2 {
             for x in 0..4 {
-                let i = p.cell_index(x, y).unwrap();
-                p.cells[i] = Cell::init(x as u32 + 1);
-                p.append_grapheme(x, y, 10).unwrap();
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
             }
+            s.node_mut(s.first.unwrap())
+                .unwrap()
+                .data
+                .append_grapheme(2, y, 'A' as u32)
+                .unwrap();
         }
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 2);
         assert_eq!(s.total_rows, 4);
-        for pin in s.cell_iterator(Direction::RightDown, screen(0, 0), None) {
-            assert_eq!(pin.grapheme(&s).unwrap(), [10]);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 2))
+        );
+        assert_eq!(s.first, s.last);
+        let mut it = s.row_iterator(Direction::RightDown, screen_point(0, 0), None);
+        for y in 0..4 {
+            let p = it.next().unwrap();
+            assert_eq!(p.row_and_cell(&s).unwrap().0.wrap(), y % 2 == 0);
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), 2);
+            assert_eq!(cells[0].codepoint(), if y % 2 == 0 { 0 } else { 2 });
+            if y % 2 != 0 {
+                assert!(p.row_and_cell(&s).unwrap().0.grapheme());
+                let cps = p.grapheme(&s).unwrap();
+                assert_eq!(cps.len(), 1);
+                assert_eq!(cps[0], 'A' as u32);
+            }
         }
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_copy_style() {
-        let mut s = PageList::init(4, 2, None).unwrap();
-        fill(&mut s);
-        let p = &mut s.node_mut(s.first.unwrap()).unwrap().data;
-        let style = crate::style::Style {
-            fg_color: crate::style::Color::Palette(2),
-            ..Default::default()
-        };
-        for y in 0..2 {
-            for x in 0..4 {
-                p.set_style(x, y, style).unwrap();
-            }
+        use crate::style::{Flags, Style};
+        let mut s = PageList::init(4, 2, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        let page = &mut s.node_mut(s.first.unwrap()).unwrap().data;
+        let id = page
+            .styles
+            .add(Style {
+                flags: Flags {
+                    bold: true,
+                    ..Flags::default()
+                },
+                ..Style::default()
+            })
+            .unwrap();
+        for x in 0..3 {
+            page.get_cells_mut(0).unwrap()[x] = Cell::init(x as u32);
+            page.get_cells_mut(0).unwrap()[x].set_style_id(id);
+            page.styles.r#use(id).unwrap();
         }
+        page.styles.release(id).unwrap();
         s.resize(Resize {
             cols: Some(2),
             ..Resize::default()
         })
         .unwrap();
-        for pin in s.cell_iterator(Direction::RightDown, screen(0, 0), None) {
-            assert_eq!(pin.style(&s).unwrap(), style);
+        assert_eq!(s.cols, 2);
+        assert_eq!(s.total_rows, 2);
+        for p in s.row_iterator(Direction::RightDown, active_point(0, 0), None) {
+            for x in 0..s.cols - 1 {
+                let p = Pin { x, ..p };
+                let (row, cell) = p.row_and_cell(&s).unwrap();
+                assert_ne!(cell.style_id(), 0);
+                assert!(p.style(&s).unwrap().flags.bold);
+                assert!(row.styled());
+            }
         }
-        finish(&s);
     }
 
     #[test]
     fn page_list_resize_reflow_less_cols_wraps_spacer_head() {
         let mut s = PageList::init(4, 3, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
         for x in 0..3 {
-            *s.get_cell_mut(active(x, 0)).unwrap() = Cell::init(120);
+            set_raw(&mut s, x, 0, 'x' as u32, Wide::Narrow);
         }
-        s.get_cell_mut(active(3, 0))
-            .unwrap()
-            .set_wide(Wide::SpacerHead);
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[0].set_wrap(true);
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[1].set_wrap_continuation(true);
-        let c = s.get_cell_mut(active(0, 1)).unwrap();
-        *c = Cell::init(0x1f600);
-        c.set_wide(Wide::Wide);
-        s.get_cell_mut(active(1, 1))
-            .unwrap()
-            .set_wide(Wide::SpacerTail);
+        set_raw(&mut s, 3, 0, 0, Wide::SpacerHead);
+        set_wrap(&mut s, 0, true, false);
+        set_raw(&mut s, 0, 1, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 1, 1, 0, Wide::SpacerTail);
+        set_wrap(&mut s, 1, false, true);
         s.resize(Resize {
             cols: Some(3),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 3);
         assert_eq!(s.total_rows, 3);
-        for x in 0..3 {
-            assert_eq!(s.get_cell(screen(x, 0)).unwrap().codepoint(), 120);
-        }
-        assert_eq!(s.get_cell(screen(0, 1)).unwrap().codepoint(), 0x1f600);
-        finish(&s);
-    }
-
-    #[test]
-    fn page_list_resize_reflow_more_cols_no_reflow_preserves_semantic_prompt() {
-        let mut s = PageList::init(4, 4, Some(0)).unwrap();
-        s.node_mut(s.first.unwrap()).unwrap().data.rows[0]
-            .set_semantic_prompt(SemanticPrompt::Prompt);
-        s.resize(Resize {
-            cols: Some(8),
-            ..Resize::default()
-        })
-        .unwrap();
-        assert_eq!(s.total_rows, 4);
-        assert_eq!(
-            s.get_top_left(Tag::Active)
+        assert_eq!(s.first, s.last);
+        assert!(
+            s.pin(screen_point(0, 0))
                 .unwrap()
                 .row_and_cell(&s)
                 .unwrap()
                 .0
-                .semantic_prompt(),
+                .wrap()
+        );
+        for x in 0..3 {
+            assert_cell(&s, x, 0, 'x' as u32, Wide::Narrow);
+        }
+        assert_cell(&s, 0, 1, '😀' as u32, Wide::Wide);
+        assert_cell(&s, 1, 1, 0, Wide::SpacerTail);
+    }
+
+    #[test]
+    fn page_list_resize_reflow_more_cols_no_reflow_preserves_semantic_prompt() {
+        let mut s = PageList::init(2, 4, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 1, SemanticPrompt::Prompt);
+        s.resize(Resize {
+            cols: Some(4),
+            reflow: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, 4);
+        assert_eq!(s.first, s.last);
+        assert_eq!(
+            s.node(s.first.unwrap()).unwrap().data.rows[1].semantic_prompt(),
             SemanticPrompt::Prompt
         );
-        finish(&s);
     }
+
     #[test]
     fn page_list_scroll_clear() {
         let mut s = PageList::init(80, 24, None).unwrap();
-        *s.get_cell_mut(active(0, 0)).unwrap() = Cell::init(65);
+        for y in [0, 1] {
+            *s.get_cell_mut(active(0, y)).unwrap() = Cell::init('A' as u32);
+        }
         s.scroll_clear().unwrap();
-        assert_eq!(s.total_rows, 25);
-        assert_eq!(s.get_cell(active(0, 0)).unwrap().codepoint(), 0);
-        s.scroll_clear().unwrap();
-        assert_eq!(s.total_rows, 25);
+        assert_viewport_point(&s, 2);
         finish(&s);
     }
+
     #[test]
     fn page_list_resize_reflow_less_cols_to_eliminate_a_wide_char() {
         let mut s = PageList::init(2, 1, Some(0)).unwrap();
-        let c = s.get_cell_mut(active(0, 0)).unwrap();
-        *c = Cell::init(0x1f600);
-        c.set_wide(Wide::Wide);
-        s.get_cell_mut(active(1, 0))
-            .unwrap()
-            .set_wide(Wide::SpacerTail);
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 1, 0, 0, Wide::SpacerTail);
         s.resize(Resize {
             cols: Some(1),
             ..Resize::default()
         })
         .unwrap();
+        assert_eq!(s.cols, 1);
         assert_eq!(s.total_rows, 1);
-        assert_eq!(s.get_cell(active(0, 0)).unwrap(), Cell::default());
-        finish(&s);
+        assert_eq!(s.first, s.last);
+        assert_cell(&s, 0, 0, 0, Wide::Narrow);
     }
     #[test]
     fn stale_tracked_handle_cannot_release_reused_slot() {
@@ -5114,6 +6149,1304 @@ mod tests {
         assert_eq!(first_cap(&s), cap);
         assert_eq!(s.tracked_pin(h), Some(p));
         assert_eq!(s.get_cell(screen(0, 5)).unwrap().codepoint(), 6);
+        finish(&s);
+    }
+    fn grow_rows(s: &mut PageList, count: usize) {
+        for _ in 0..count {
+            s.grow().unwrap();
+        }
+    }
+    fn screen_point(x: u16, y: usize) -> Point {
+        Point::Screen(Coordinate { x, y: y as u32 })
+    }
+    fn active_point(x: u16, y: usize) -> Point {
+        Point::Active(Coordinate { x, y: y as u32 })
+    }
+    fn mark_prompt(s: &mut PageList, y: usize, prompt: SemanticPrompt) {
+        let p = s.pin(screen_point(0, y)).unwrap();
+        s.node_mut(p.node).unwrap().data.rows[usize::from(p.y)].set_semantic_prompt(prompt);
+    }
+    fn assert_scrollbar(s: &PageList, offset: usize) {
+        assert_eq!(
+            s.scrollbar(),
+            Scrollbar {
+                total: s.total_rows,
+                offset,
+                len: usize::from(s.rows)
+            }
+        );
+    }
+    fn assert_viewport_point(s: &PageList, y: usize) {
+        assert_eq!(
+            s.point_from_pin(
+                Tag::Screen,
+                s.pin(Point::Viewport(Coordinate::default())).unwrap()
+            ),
+            Some(screen_point(0, y))
+        );
+    }
+    #[test]
+    fn page_list_grow_allows_exceeding_max_size_for_active_area() {
+        let cap = initial_capacity(5);
+        let mut s = PageList::init(5, cap.rows, Some(0)).unwrap();
+        assert_eq!(usize::from(s.rows), s.total_rows);
+        s.grow().unwrap();
+        let start_pages = s.total_pages();
+        assert!(start_pages >= 2);
+        for node in s.nodes.iter_mut().flatten() {
+            node.data.size.rows = 1;
+            node.data.capacity.rows = 1;
+        }
+        s.total_rows = start_pages;
+        s.grow().unwrap();
+        assert_eq!(start_pages + 1, s.total_pages());
+    }
+    #[test]
+    fn page_list_grow_prune_required_with_a_single_page() {
+        let mut s = PageList::init(80, 24, None).unwrap();
+        while Page::layout(s.node(s.first.unwrap()).unwrap().data.capacity).total_size <= std_size()
+        {
+            s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::GraphemeBytes))
+                .unwrap();
+        }
+        assert!(s.first.is_some());
+        assert_eq!(s.first, s.last);
+        let page = &s.node(s.first.unwrap()).unwrap().data;
+        let rem = page.capacity.rows - page.size.rows;
+        for _ in 0..rem {
+            assert!(s.grow().unwrap().is_none());
+        }
+        let new = s.grow().unwrap();
+        assert!(new.is_some());
+        assert_ne!(new, s.first);
+        assert_scrollbar(&s, s.total_rows - usize::from(s.rows));
+    }
+    #[test]
+    fn page_list_scroll_delta_row_back_without_space_preserves_active() {
+        let mut s = PageList::init(80, 24, None).unwrap();
+        s.scroll(Scroll::DeltaRow(-1));
+        assert_viewport_point(&s, 0);
+        assert_eq!(s.viewport, Viewport::Active);
+        assert_scrollbar(&s, s.total_rows - usize::from(s.rows));
+    }
+    #[test]
+    fn page_list_jump_zero_prompts() {
+        let mut s = PageList::init(5, 3, None).unwrap();
+        grow_rows(&mut s, 3);
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 1, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 5, SemanticPrompt::Prompt);
+        s.scroll(Scroll::DeltaPrompt(0));
+        assert_eq!(s.viewport, Viewport::Active);
+        assert_scrollbar(&s, s.total_rows - usize::from(s.rows));
+    }
+    #[test]
+    fn screen_jump_back_one_prompt() {
+        let mut s = PageList::init(5, 3, None).unwrap();
+        grow_rows(&mut s, 3);
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 1, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 5, SemanticPrompt::Prompt);
+        for _ in 0..2 {
+            s.scroll(Scroll::DeltaPrompt(-1));
+            assert_eq!(s.viewport, Viewport::Pin);
+            assert_viewport_point(&s, 1);
+            assert_scrollbar(&s, 1);
+        }
+        for _ in 0..2 {
+            s.scroll(Scroll::DeltaPrompt(1));
+            assert_eq!(s.viewport, Viewport::Active);
+            assert_scrollbar(&s, s.total_rows - usize::from(s.rows));
+        }
+    }
+    #[test]
+    fn screen_jump_forward_prompt_skips_multiline_continuation() {
+        let mut s = PageList::init(5, 3, None).unwrap();
+        grow_rows(&mut s, 7);
+        mark_prompt(&mut s, 1, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 2, SemanticPrompt::PromptContinuation);
+        mark_prompt(&mut s, 3, SemanticPrompt::PromptContinuation);
+        mark_prompt(&mut s, 6, SemanticPrompt::Prompt);
+        for start in [1, 2] {
+            s.scroll(Scroll::Row(start));
+            s.scroll(Scroll::DeltaPrompt(1));
+            assert_eq!(s.viewport, Viewport::Pin);
+            assert_viewport_point(&s, 6);
+        }
+    }
+    fn cache_erase_fixture(pages: usize) -> (PageList, usize) {
+        let mut s = PageList::init(80, 24, None).unwrap();
+        let capacity = usize::from(s.node(s.last.unwrap()).unwrap().data.capacity.rows);
+        grow_rows(&mut s, capacity * pages);
+        (s, capacity)
+    }
+    fn cache_pin(s: &mut PageList, y: usize) {
+        s.scroll(Scroll::Pin(s.pin(screen_point(0, y)).unwrap()));
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert_scrollbar(s, y);
+    }
+    #[test]
+    fn page_list_erase_rows_invalidates_viewport_offset_cache() {
+        let (mut s, capacity) = cache_erase_fixture(3);
+        cache_pin(&mut s, capacity);
+        let erased = capacity / 2;
+        s.erase_rows(
+            Point::History(Coordinate::default()),
+            Some(Point::History(Coordinate {
+                x: 0,
+                y: (erased - 1) as u32,
+            })),
+        )
+        .unwrap();
+        assert_scrollbar(&s, capacity - erased);
+    }
+    #[test]
+    fn page_list_erase_row_invalidates_viewport_offset_cache() {
+        let (mut s, capacity) = cache_erase_fixture(3);
+        cache_pin(&mut s, capacity);
+        s.erase_row(Point::History(Coordinate::default())).unwrap();
+        assert_scrollbar(&s, capacity - 1);
+    }
+    #[test]
+    fn page_list_erase_row_bounded_invalidates_viewport_offset_cache() {
+        let (mut s, _) = cache_erase_fixture(3);
+        cache_pin(&mut s, 4);
+        s.erase_row_bounded(Point::History(Coordinate::default()), 10)
+            .unwrap();
+        assert_scrollbar(&s, 3);
+    }
+    #[test]
+    fn page_list_erase_row_bounded_multi_page_invalidates_viewport_offset_cache() {
+        let (mut s, capacity) = cache_erase_fixture(3);
+        cache_pin(&mut s, capacity + 1);
+        s.erase_row_bounded(Point::History(Coordinate::default()), capacity + 10)
+            .unwrap();
+        assert_scrollbar(&s, capacity);
+    }
+    #[test]
+    fn page_list_erase_row_bounded_full_page_shift_invalidates_viewport_offset_cache() {
+        let (mut s, capacity) = cache_erase_fixture(4);
+        cache_pin(&mut s, 5);
+        s.erase_row_bounded(Point::History(Coordinate::default()), capacity * 2 + 10)
+            .unwrap();
+        assert_scrollbar(&s, 4);
+    }
+    #[test]
+    fn page_list_erase_row_bounded_exhausts_pages_invalidates_viewport_offset_cache() {
+        let (mut s, capacity) = cache_erase_fixture(3);
+        let total_rows_before = s.total_rows;
+        assert!(total_rows_before > usize::from(s.rows));
+        cache_pin(&mut s, capacity * 2 + 10);
+        s.erase_row_bounded(Point::History(Coordinate::default()), total_rows_before * 2)
+            .unwrap();
+        assert_scrollbar(&s, capacity * 2 + 9);
+    }
+    #[test]
+    fn page_list_prompt_iterator_right_down_continuation_at_start() {
+        let mut s = PageList::init(2, 20, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 0, SemanticPrompt::PromptContinuation);
+        mark_prompt(&mut s, 1, SemanticPrompt::PromptContinuation);
+        mark_prompt(&mut s, 5, SemanticPrompt::Prompt);
+        let mut it = s.prompt_iterator(Direction::RightDown, screen_point(0, 0), None);
+        for y in [0, 5] {
+            assert_eq!(
+                s.point_from_pin(Tag::Screen, it.next().unwrap()),
+                Some(screen_point(0, y))
+            );
+        }
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_prompt_iterator_right_down_with_prompt_before_continuation() {
+        let mut s = PageList::init(2, 20, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 2, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 3, SemanticPrompt::PromptContinuation);
+        mark_prompt(&mut s, 4, SemanticPrompt::PromptContinuation);
+        let mut it = s.prompt_iterator(Direction::RightDown, screen_point(0, 3), None);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, it.next().unwrap()),
+            Some(screen_point(0, 3))
+        );
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_prompt_iterator_right_down_limit_inclusive() {
+        let mut s = PageList::init(2, 20, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 5, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 10, SemanticPrompt::Prompt);
+        let mut it = s.prompt_iterator(
+            Direction::RightDown,
+            screen_point(0, 0),
+            Some(screen_point(0, 5)),
+        );
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, it.next().unwrap()),
+            Some(screen_point(0, 5))
+        );
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_prompt_iterator_left_up_limit_inclusive() {
+        let mut s = PageList::init(2, 20, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        mark_prompt(&mut s, 5, SemanticPrompt::Prompt);
+        mark_prompt(&mut s, 10, SemanticPrompt::Prompt);
+        let mut it = s.prompt_iterator(
+            Direction::LeftUp,
+            screen_point(0, 10),
+            Some(screen_point(0, 15)),
+        );
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, it.next().unwrap()),
+            Some(screen_point(0, 10))
+        );
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_erase_resets_viewport_to_active_if_moves_within_active() {
+        let (mut s, _) = cache_erase_fixture(5);
+        s.scroll(Scroll::DeltaRow(-(s.total_rows as isize)));
+        assert_eq!(s.viewport, Viewport::Top);
+        s.erase_rows(Point::History(Coordinate::default()), None)
+            .unwrap();
+        assert_eq!(s.viewport, Viewport::Active);
+    }
+    #[test]
+    fn page_list_erase_resets_viewport_if_inside_erased_page_but_not_active() {
+        let (mut s, _) = cache_erase_fixture(5);
+        s.scroll(Scroll::DeltaRow(-(s.total_rows as isize)));
+        assert_eq!(s.viewport, Viewport::Top);
+        s.erase_rows(
+            Point::History(Coordinate::default()),
+            Some(Point::History(Coordinate { x: 0, y: 2 })),
+        )
+        .unwrap();
+        assert_eq!(s.viewport, Viewport::Top);
+    }
+    #[test]
+    fn page_list_erase_resets_viewport_to_active_if_top_is_inside_active() {
+        let (mut s, _) = cache_erase_fixture(5);
+        s.scroll(Scroll::Top);
+        s.erase_rows(Point::History(Coordinate::default()), None)
+            .unwrap();
+        assert_eq!(s.viewport, Viewport::Active);
+    }
+    fn shrink_rows_cursor_fixture(y: usize) -> (PageList, TrackedPin) {
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        assert_eq!(s.total_rows, 10);
+        assert_eq!(s.first, s.last);
+        for row in 0..10 {
+            *s.get_cell_mut(active_point(0, row)).unwrap() = Cell::init(row as u32);
+        }
+        let p = s.track_pin(s.pin(active_point(0, y)).unwrap()).unwrap();
+        let cursor = s
+            .point_from_pin(Tag::Active, s.tracked_pin(p).unwrap())
+            .unwrap();
+        assert_eq!(s.get_cell(cursor).unwrap().codepoint(), y as u32);
+        s.resize(Resize {
+            rows: Some(5),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.rows, 5);
+        assert_eq!(s.total_rows, 10);
+        (s, p)
+    }
+    #[test]
+    fn page_list_resize_no_reflow_less_rows_cursor_on_bottom() {
+        let (s, p) = shrink_rows_cursor_fixture(9);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(0, 4))
+        );
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 5))
+        );
+    }
+    #[test]
+    fn page_list_resize_no_reflow_less_rows_cursor_in_scrollback() {
+        let (s, p) = shrink_rows_cursor_fixture(2);
+        assert!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap())
+                .is_none()
+        );
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.tracked_pin(p).unwrap()),
+            Some(screen_point(0, 2))
+        );
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 5))
+        );
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_rows_contains_viewport() {
+        let mut s = PageList::init(5, 5, Some(1)).unwrap();
+        assert_eq!(s.first, s.last);
+        s.grow().unwrap();
+        assert_eq!(s.rows, 5);
+        assert_eq!(s.total_rows, 6);
+        s.scroll(Scroll::DeltaRow(-1));
+        assert_eq!(s.viewport, Viewport::Top);
+        s.resize(Resize {
+            rows: Some(7),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.rows, 7);
+        assert_eq!(s.total_rows, 7);
+        assert_eq!(s.viewport, Viewport::Top);
+    }
+
+    fn set_raw(s: &mut PageList, x: u16, y: usize, cp: u32, wide: Wide) {
+        let cell = s.get_cell_mut(screen_point(x, y)).unwrap();
+        *cell = Cell::init(cp);
+        cell.set_wide(wide);
+    }
+    fn set_wrap(s: &mut PageList, y: usize, wrap: bool, continuation: bool) {
+        let p = s.pin(screen_point(0, y)).unwrap();
+        let row = &mut s.node_mut(p.node).unwrap().data.rows[usize::from(p.y)];
+        row.set_wrap(wrap);
+        row.set_wrap_continuation(continuation);
+    }
+    fn assert_cell(s: &PageList, x: u16, y: usize, cp: u32, wide: Wide) {
+        let c = s.get_cell(screen_point(x, y)).unwrap();
+        assert_eq!(c.codepoint(), cp);
+        assert_eq!(c.wide(), wide);
+    }
+    fn spacer_fixture(rows: u16) -> PageList {
+        let mut s = PageList::init(2, rows, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        set_raw(&mut s, 0, 0, 'x' as u32, Wide::Narrow);
+        set_raw(&mut s, 1, 0, 0, Wide::SpacerHead);
+        set_wrap(&mut s, 0, true, false);
+        set_raw(&mut s, 0, 1, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 1, 1, 0, Wide::SpacerTail);
+        s
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_cols_with_spacer_head() {
+        let mut s = spacer_fixture(3);
+        s.resize(Resize {
+            cols: Some(3),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 3);
+        assert_eq!(s.total_rows, 3);
+        assert_eq!(s.first, s.last);
+        assert_cell(&s, 0, 0, 'x' as u32, Wide::Narrow);
+        assert_cell(&s, 1, 0, 0, Wide::Narrow);
+        assert_cell(&s, 2, 0, 0, Wide::Narrow);
+    }
+    #[test]
+    fn page_list_resize_no_reflow_grow_cols_fast_path_with_spacer_head() {
+        let mut s = PageList::init(10, 3, Some(0)).unwrap();
+        s.resize(Resize {
+            cols: Some(5),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 5);
+        set_raw(&mut s, 0, 0, 'x' as u32, Wide::Narrow);
+        for y in 0..2 {
+            set_raw(&mut s, 4, y, 0, Wide::SpacerHead);
+            set_wrap(&mut s, y, true, false);
+        }
+        s.resize(Resize {
+            cols: Some(10),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 10);
+        for y in 0..2 {
+            let p = s.pin(screen_point(4, y)).unwrap();
+            let (row, cell) = p.row_and_cell(&s).unwrap();
+            assert_eq!(cell.wide(), Wide::Narrow);
+            assert!(!row.wrap());
+        }
+    }
+    fn assert_pages_full_except_last(s: &PageList) {
+        let mut node = s.first;
+        while let Some(id) = node {
+            if Some(id) == s.last {
+                break;
+            }
+            let n = s.node(id).unwrap();
+            assert_eq!(n.data.size.rows, n.data.capacity.rows);
+            node = n.next;
+        }
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_cols_forces_less_rows_per_page() {
+        assert!(initial_capacity(5).rows >= 150);
+        let mut s = PageList::init(5, 150, Some(0)).unwrap();
+        let mut cols = 50;
+        while initial_capacity(cols).rows >= 150 {
+            cols += 50;
+        }
+        s.resize(Resize {
+            cols: Some(cols),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, cols);
+        assert_eq!(s.total_rows, 150);
+        assert_pages_full_except_last(&s);
+        let page = &s.node(s.first.unwrap()).unwrap().data;
+        assert_eq!(page.size.rows, page.capacity.rows);
+        let previous_rows = page.size.rows;
+        cols = page.size.cols + 50;
+        while initial_capacity(cols).rows >= previous_rows {
+            cols += 50;
+        }
+        s.resize(Resize {
+            cols: Some(cols),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, cols);
+        assert_eq!(s.total_rows, 150);
+        assert_pages_full_except_last(&s);
+    }
+    #[test]
+    fn page_list_resize_more_rows_and_cols_doesnt_fit_in_single_std_page() {
+        let mut s = PageList::init(10, 10, Some(0)).unwrap();
+        assert!(initial_capacity(600).rows < 600);
+        s.resize(Resize {
+            cols: Some(600),
+            rows: Some(600),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 600);
+        assert_eq!(s.rows, 600);
+        assert_eq!(s.total_rows, 600);
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_cols_forces_smaller_cap() {
+        let cap = initial_capacity(100);
+        let cap2 = initial_capacity(500);
+        assert_eq!(cap2.cols, 500);
+        assert!(cap2.rows < cap.rows);
+        let mut s = PageList::init(cap.cols, cap.rows, None).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..usize::from(s.rows) {
+            for x in 0..s.cols {
+                set_raw(&mut s, x, y, 'A' as u32, Wide::Narrow);
+            }
+        }
+        let rows = s.total_rows;
+        s.resize(Resize {
+            cols: Some(cap2.cols),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.total_rows, rows);
+        for p in s.row_iterator(Direction::RightDown, screen_point(0, 0), None) {
+            let cells = p.cells(&s, CellSubset::All).unwrap();
+            assert_eq!(cells.len(), usize::from(cap2.cols));
+            assert_eq!(cells[0].codepoint(), 'A' as u32);
+        }
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_rows_adds_blank_rows_if_cursor_at_bottom() {
+        let mut s = PageList::init(5, 3, None).unwrap();
+        grow_rows(&mut s, 2);
+        assert_eq!(s.first, s.last);
+        for y in 0..s.total_rows {
+            set_raw(&mut s, 0, y, y as u32, Wide::Narrow);
+        }
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 2))
+        );
+        let p = s
+            .track_pin(s.pin(active_point(0, usize::from(s.rows - 2))).unwrap())
+            .unwrap();
+        let original_cursor = s
+            .point_from_pin(Tag::Active, s.tracked_pin(p).unwrap())
+            .unwrap();
+        assert_eq!(s.get_cell(original_cursor).unwrap().codepoint(), 3);
+        s.resize(Resize {
+            rows: Some(10),
+            reflow: false,
+            cursor: Some(Cursor {
+                x: 0,
+                y: s.rows - 2,
+            }),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 5);
+        assert_eq!(s.rows, 10);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(original_cursor)
+        );
+        assert_eq!(s.total_rows, 12);
+        assert_eq!(
+            s.point_from_pin(Tag::Screen, s.get_top_left(Tag::Active).unwrap()),
+            Some(screen_point(0, 2))
+        );
+        for y in 0..3 {
+            assert_eq!(
+                s.get_cell(active_point(0, y)).unwrap().codepoint(),
+                (y + 2) as u32
+            );
+        }
+    }
+    #[test]
+    fn page_list_resize_reflow_invalidates_viewport_offset_cache() {
+        let mut s = PageList::init(2, 4, None).unwrap();
+        grow_rows(&mut s, 20);
+        for y in 0..usize::from(s.rows) {
+            set_wrap(&mut s, y, y % 2 == 0, y % 2 != 0);
+            for x in 0..s.cols {
+                set_raw(&mut s, x, y, 'A' as u32, Wide::Narrow);
+            }
+        }
+        cache_pin(&mut s, 10);
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_scrollbar(&s, 5);
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_creates_multiple_pages() {
+        let mut cols = 100;
+        while initial_capacity(cols).rows >= 100 {
+            cols += 100;
+        }
+        let cap = initial_capacity(cols);
+        let mut s = PageList::init(cap.cols, cap.rows, None).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..usize::from(s.rows) {
+            set_wrap(&mut s, y, y % 2 == 0, y % 2 != 0);
+            set_raw(&mut s, 0, y, 'A' as u32, Wide::Narrow);
+        }
+        let newcap = cap
+            .adjust(Adjustment {
+                cols: Some(cap.cols + 100),
+            })
+            .unwrap();
+        assert!(newcap.rows < cap.rows);
+        s.resize(Resize {
+            cols: Some(newcap.cols),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, newcap.cols);
+        assert_eq!(s.total_rows, usize::from(cap.rows));
+        for n in s.nodes.iter().flatten() {
+            assert_eq!(n.data.capacity.cols, newcap.cols);
+            assert_eq!(n.data.capacity.rows, newcap.rows);
+        }
+        assert!(s.total_pages() > 1);
+    }
+    fn two_page_fixture(cols: u16, extra: usize, max: Option<usize>) -> PageList {
+        let mut s = PageList::init(cols, 10, max).unwrap();
+        assert_eq!(s.total_pages(), 1);
+        let page = &s.node(s.first.unwrap()).unwrap().data;
+        let rem = usize::from(page.capacity.rows - page.size.rows);
+        grow_rows(&mut s, rem);
+        assert_eq!(s.total_pages(), 1);
+        grow_rows(&mut s, extra);
+        assert_eq!(s.total_pages(), 2);
+        s
+    }
+    fn wrap_page_boundary(s: &mut PageList) {
+        let y = usize::from(s.node(s.first.unwrap()).unwrap().data.size.rows - 1);
+        set_wrap(s, y, true, false);
+        set_wrap(s, y + 1, false, true);
+        for row in [y, y + 1] {
+            for x in 0..s.cols {
+                set_raw(s, x, row, u32::from(x), Wide::Narrow);
+            }
+        }
+    }
+    fn assert_active_row(s: &PageList, y: usize, wrap: bool, continuation: bool, cps: &[u32]) {
+        let p = s.pin(active_point(0, y)).unwrap();
+        let (row, _) = p.row_and_cell(s).unwrap();
+        assert_eq!(row.wrap(), wrap);
+        assert_eq!(row.wrap_continuation(), continuation);
+        let cells = p.cells(s, CellSubset::All).unwrap();
+        for (cell, cp) in cells.iter().zip(cps) {
+            assert_eq!(cell.codepoint(), *cp);
+        }
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_wrap_across_page_boundary() {
+        let mut s = two_page_fixture(2, 1, Some(0));
+        wrap_page_boundary(&mut s);
+        let end_rows = s.total_rows - 1;
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, end_rows);
+        assert_active_row(&s, 8, false, false, &[0; 4]);
+        for c in s
+            .pin(active_point(0, 8))
+            .unwrap()
+            .cells(&s, CellSubset::All)
+            .unwrap()
+        {
+            assert!(!c.has_text());
+        }
+        assert_active_row(&s, 9, false, false, &[0, 1, 0, 1]);
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_wrap_across_page_boundary_cursor_in_second_page() {
+        let mut s = two_page_fixture(2, 1, Some(0));
+        wrap_page_boundary(&mut s);
+        let p = s.track_pin(s.pin(active_point(1, 9)).unwrap()).unwrap();
+        assert_eq!(Some(s.tracked_pin(p).unwrap().node), s.last);
+        let end_rows = s.total_rows - 1;
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, end_rows);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(3, 9))
+        );
+        assert_active_row(&s, 9, false, false, &[0, 1, 0, 1]);
+    }
+    #[test]
+    fn page_list_resize_reflow_less_cols_wrap_across_page_boundary_cursor_in_second_page() {
+        let mut s = two_page_fixture(5, 5, None);
+        wrap_page_boundary(&mut s);
+        let p = s.track_pin(s.pin(active_point(2, 5)).unwrap()).unwrap();
+        assert_eq!(Some(s.tracked_pin(p).unwrap().node), s.last);
+        assert_eq!(s.tracked_pin(p).unwrap().y, 0);
+        s.resize(Resize {
+            cols: Some(4),
+            cursor: Some(Cursor { x: 2, y: 5 }),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(3, 5))
+        );
+        for y in [3, 7] {
+            assert_active_row(&s, y, false, false, &[0; 4]);
+            for c in s
+                .pin(active_point(0, y))
+                .unwrap()
+                .cells(&s, CellSubset::All)
+                .unwrap()
+            {
+                assert!(!c.has_text());
+            }
+        }
+        assert_active_row(&s, 4, true, false, &[0, 1, 2, 3]);
+        assert_active_row(&s, 5, true, true, &[4, 0, 1, 2]);
+        assert_active_row(&s, 6, false, true, &[3, 4]);
+    }
+    fn grow_cursor_fixture(wrapped_rows: usize, cursor_y: usize) -> (PageList, TrackedPin) {
+        let mut s = PageList::init(2, 4, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..wrapped_rows {
+            set_wrap(&mut s, y, y + 1 < wrapped_rows, y != 0);
+            for x in 0..s.cols {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        let p = s
+            .track_pin(s.pin(active_point(1, cursor_y)).unwrap())
+            .unwrap();
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, 4);
+        (s, p)
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_cursor_in_wrapped_row() {
+        let (s, p) = grow_cursor_fixture(2, 1);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(3, 0))
+        );
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_cursor_in_not_wrapped_row() {
+        let (s, p) = grow_cursor_fixture(2, 0);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(1, 0))
+        );
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_cursor_in_wrapped_row_that_isnt_unwrapped() {
+        let (s, p) = grow_cursor_fixture(3, 2);
+        assert_eq!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap()),
+            Some(active_point(1, 1))
+        );
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_unwrap_wide_spacer_head() {
+        let mut s = spacer_fixture(2);
+        set_wrap(&mut s, 1, false, true);
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, 2);
+        assert_eq!(s.first, s.last);
+        assert_cell(&s, 0, 0, 'x' as u32, Wide::Narrow);
+        assert!(
+            !s.pin(screen_point(0, 0))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        assert_cell(&s, 1, 0, '😀' as u32, Wide::Wide);
+        assert_cell(&s, 2, 0, 0, Wide::SpacerTail);
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_unwrap_wide_spacer_head_across_two_rows() {
+        let mut s = PageList::init(2, 3, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        for (x, y) in [(0, 0), (1, 0), (0, 1)] {
+            set_raw(&mut s, x, y, 'x' as u32, Wide::Narrow);
+        }
+        set_raw(&mut s, 1, 1, 0, Wide::SpacerHead);
+        set_raw(&mut s, 0, 2, '😀' as u32, Wide::Wide);
+        set_raw(&mut s, 1, 2, 0, Wide::SpacerTail);
+        for y in 0..3 {
+            set_wrap(&mut s, y, y < 2, y > 0);
+        }
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, 3);
+        assert_eq!(s.first, s.last);
+        for x in 0..3 {
+            assert_cell(&s, x, 0, 'x' as u32, Wide::Narrow);
+        }
+        assert!(
+            s.pin(screen_point(0, 0))
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .wrap()
+        );
+        assert_cell(&s, 3, 0, 0, Wide::SpacerHead);
+        assert_cell(&s, 0, 1, '😀' as u32, Wide::Wide);
+        assert_cell(&s, 1, 1, 0, Wide::SpacerTail);
+    }
+    #[test]
+    fn page_list_resize_reflow_less_cols_cursor_goes_to_scrollback() {
+        let mut s = PageList::init(4, 2, None).unwrap();
+        assert_eq!(s.first, s.last);
+        for y in 0..2 {
+            for x in 0..4 {
+                set_raw(&mut s, x, y, u32::from(x), Wide::Narrow);
+            }
+        }
+        let p = s.track_pin(s.pin(active_point(2, 0)).unwrap()).unwrap();
+        s.resize(Resize {
+            cols: Some(2),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 2);
+        assert_eq!(s.total_rows, 4);
+        assert!(
+            s.point_from_pin(Tag::Active, s.tracked_pin(p).unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn page_list_resize_reflow_exceeds_hyperlink_memory_forcing_capacity_increase() {
+        use crate::hyperlink::{Hyperlink, HyperlinkId};
+        let mut s = two_page_fixture(2, 1, Some(0));
+        assert_ne!(s.first, s.last);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().next, s.last);
+        for (index, node) in [s.first.unwrap(), s.last.unwrap()].into_iter().enumerate() {
+            let page = &mut s.node_mut(node).unwrap().data;
+            let (x, y) = if index == 0 {
+                (page.size.cols - 1, page.size.rows - 1)
+            } else {
+                (0, 0)
+            };
+            let id = page
+                .insert_hyperlink(Hyperlink {
+                    id: HyperlinkId::Implicit(index as u32),
+                    uri: vec![b'a'; page::STRING_BYTES_DEFAULT as usize - 1],
+                })
+                .unwrap();
+            let i = page.cell_index(usize::from(x), usize::from(y)).unwrap();
+            page.cells[i] = Cell::init('X' as u32);
+            page.rows[usize::from(y)].set_wrap(index == 0);
+            page.rows[usize::from(y)].set_wrap_continuation(index == 1);
+            page.set_hyperlink(usize::from(x), usize::from(y), id)
+                .unwrap();
+            assert_eq!(
+                page.insert_hyperlink(Hyperlink {
+                    id: HyperlinkId::Implicit(index as u32 + 1),
+                    uri: b"AAAAAAAAAAAAAAAAAAAAAAAAAA".to_vec()
+                }),
+                Err(Error::StringsOutOfMemory)
+            );
+        }
+        s.resize(Resize {
+            cols: Some(s.cols + 1),
+            ..Resize::default()
+        })
+        .unwrap();
+        s.assert_integrity();
+    }
+    #[test]
+    fn page_list_resize_reflow_exceeds_grapheme_memory_forcing_capacity_increase() {
+        let mut s = two_page_fixture(2, 1, Some(0));
+        assert_ne!(s.first, s.last);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().next, s.last);
+        for (index, node) in [s.first.unwrap(), s.last.unwrap()].into_iter().enumerate() {
+            let page = &mut s.node_mut(node).unwrap().data;
+            let (x, y) = if index == 0 {
+                (page.size.cols - 1, page.size.rows - 1)
+            } else {
+                (0, 0)
+            };
+            let i = page.cell_index(usize::from(x), usize::from(y)).unwrap();
+            page.cells[i] = Cell::init('X' as u32);
+            page.rows[usize::from(y)].set_wrap(true);
+            page.set_graphemes(
+                usize::from(x),
+                usize::from(y),
+                &vec!['a' as u32; (page::GRAPHEME_BYTES_DEFAULT as usize - 1) / 4],
+            )
+            .unwrap();
+            assert!(!page.can_allocate_grapheme(16 * 4));
+        }
+        s.resize(Resize {
+            cols: Some(s.cols + 1),
+            ..Resize::default()
+        })
+        .unwrap();
+        s.assert_integrity();
+    }
+    #[test]
+    fn page_list_resize_reflow_exceeds_style_memory_forcing_capacity_increase() {
+        use crate::style::{Color, Style};
+        use ghostty_vt::color::Rgb;
+        let mut s = two_page_fixture(page::STD_CAPACITY.styles - 1, 1, Some(0));
+        assert_ne!(s.first, s.last);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().next, s.last);
+        for (index, node) in [s.first.unwrap(), s.last.unwrap()].into_iter().enumerate() {
+            let page = &mut s.node_mut(node).unwrap().data;
+            let y = if index == 0 { page.size.rows - 1 } else { 0 };
+            for x in 0..usize::from(page.size.cols) {
+                let color = Color::Rgb(Rgb {
+                    r: x as u8,
+                    g: (x >> 8) as u8,
+                    b: (x >> 16) as u8,
+                });
+                let style = if index == 0 {
+                    Style {
+                        bg_color: color,
+                        ..Style::default()
+                    }
+                } else {
+                    Style {
+                        fg_color: color,
+                        ..Style::default()
+                    }
+                };
+                let Ok(id) = page.styles.add(style) else {
+                    break;
+                };
+                let i = page.cell_index(x, usize::from(y)).unwrap();
+                page.cells[i] = Cell::init('X' as u32);
+                page.cells[i].set_style_id(id);
+                page.rows[usize::from(y)].set_styled(true);
+                page.rows[usize::from(y)].set_wrap(index == 0);
+                page.rows[usize::from(y)].set_wrap_continuation(index == 1);
+            }
+        }
+        s.resize(Resize {
+            cols: Some(s.cols * 2),
+            ..Resize::default()
+        })
+        .unwrap();
+        s.assert_integrity();
+    }
+    fn kitty_fixture(start: u16) -> PageList {
+        let mut s = PageList::init(4, 2, Some(0)).unwrap();
+        assert_eq!(s.first, s.last);
+        for x in start..s.cols - 1 {
+            set_raw(&mut s, x, 0, 0x10eeee, Wide::Narrow);
+        }
+        s.node_mut(s.first.unwrap()).unwrap().data.rows[0].set_kitty_virtual_placeholder(true);
+        s
+    }
+    #[test]
+    fn page_list_resize_reflow_less_cols_copy_kitty_placeholder() {
+        let mut s = kitty_fixture(0);
+        s.resize(Resize {
+            cols: Some(2),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 2);
+        assert_eq!(s.total_rows, 2);
+        for p in s.row_iterator(Direction::RightDown, active_point(0, 0), None) {
+            for x in 0..s.cols - 1 {
+                assert!(
+                    Pin { x, ..p }
+                        .row_and_cell(&s)
+                        .unwrap()
+                        .0
+                        .kitty_virtual_placeholder()
+                );
+            }
+        }
+    }
+    #[test]
+    fn page_list_resize_reflow_more_cols_clears_kitty_placeholder() {
+        let mut s = kitty_fixture(0);
+        s.resize(Resize {
+            cols: Some(2),
+            ..Resize::default()
+        })
+        .unwrap();
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert_eq!(s.total_rows, 2);
+        let mut it = s.row_iterator(Direction::RightDown, active_point(0, 0), None);
+        assert!(
+            it.next()
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .kitty_virtual_placeholder()
+        );
+        assert!(
+            !it.next()
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .kitty_virtual_placeholder()
+        );
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_resize_reflow_wrap_moves_kitty_placeholder() {
+        let mut s = kitty_fixture(2);
+        s.resize(Resize {
+            cols: Some(2),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 2);
+        assert_eq!(s.total_rows, 2);
+        let mut it = s.row_iterator(Direction::RightDown, active_point(0, 0), None);
+        assert!(
+            !it.next()
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .kitty_virtual_placeholder()
+        );
+        assert!(
+            it.next()
+                .unwrap()
+                .row_and_cell(&s)
+                .unwrap()
+                .0
+                .kitty_virtual_placeholder()
+        );
+        assert!(it.next().is_none());
+    }
+    #[test]
+    fn page_list_resize_reflow_grapheme_map_capacity_exceeded() {
+        let mut s = PageList::init(4, 10, Some(0)).unwrap();
+        assert_eq!(s.total_pages(), 1);
+        let page = &s.node(s.first.unwrap()).unwrap().data;
+        let capacity = page.grapheme_capacity();
+        let per_page = capacity / 2 + capacity / 4;
+        let rem = usize::from(page.capacity.rows - page.size.rows);
+        grow_rows(&mut s, rem);
+        assert_eq!(s.total_pages(), 1);
+        grow_rows(&mut s, per_page);
+        assert_eq!(s.total_pages(), 2);
+        assert_ne!(s.first, s.last);
+        assert_eq!(s.node(s.first.unwrap()).unwrap().next, s.last);
+        for (index, node) in [s.first.unwrap(), s.last.unwrap()].into_iter().enumerate() {
+            let page = &mut s.node_mut(node).unwrap().data;
+            let start = if index == 0 {
+                usize::from(page.size.rows) - per_page
+            } else {
+                0
+            };
+            let count = per_page.min(usize::from(page.size.rows));
+            for y in start..start + count {
+                let i = page.cell_index(0, y).unwrap();
+                page.cells[i] = Cell::init(if index == 0 { 'A' } else { 'B' } as u32);
+                page.append_grapheme(0, y, 0x0301 + index as u32).unwrap();
+            }
+        }
+        s.resize(Resize {
+            cols: Some(2),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 2);
+        s.assert_integrity();
+    }
+    #[test]
+    fn page_list_resize_grow_cols_with_unwrap_fixes_viewport_pin() {
+        let mut s = PageList::init(2, 10, None).unwrap();
+        grow_rows(&mut s, 30);
+        assert_eq!(s.total_rows, 40);
+        for y in 0..40 {
+            set_wrap(&mut s, y, y % 2 == 0, y % 2 != 0);
+            for x in 0..2 {
+                set_raw(&mut s, x, y, 'A' as u32, Wide::Narrow);
+            }
+        }
+        s.scroll(Scroll::Pin(s.pin(screen_point(0, 28)).unwrap()));
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert!(s.get_bottom_right(Tag::Viewport).is_some());
+        s.resize(Resize {
+            cols: Some(4),
+            ..Resize::default()
+        })
+        .unwrap();
+        assert_eq!(s.cols, 4);
+        assert!(s.total_rows < 40);
+        assert!(s.get_bottom_right(Tag::Viewport).is_some());
+    }
+    fn oversize_first(s: &mut PageList) {
+        while Page::layout(s.node(s.first.unwrap()).unwrap().data.capacity).total_size <= std_size()
+        {
+            s.increase_capacity(s.first.unwrap(), Some(IncreaseCapacity::GraphemeBytes))
+                .unwrap();
+        }
+        assert!(
+            Page::layout(s.node(s.first.unwrap()).unwrap().data.capacity).total_size > std_size()
+        );
+    }
+    #[test]
+    fn page_list_grow_reuses_non_standard_page_without_leak() {
+        let mut s = PageList::init(80, 24, Some(3 * std_size())).unwrap();
+        oversize_first(&mut s);
+        let first = s.first.unwrap();
+        let page = &s.node(first).unwrap().data;
+        let rem = usize::from(page.capacity.rows - page.size.rows);
+        grow_rows(&mut s, rem);
+        s.grow().unwrap();
+        assert_ne!(s.first, s.last);
+        while s.page_size + std_size() <= s.max_size()
+            || s.node(s.last.unwrap()).unwrap().data.size.rows
+                < s.node(s.last.unwrap()).unwrap().data.capacity.rows
+        {
+            s.grow().unwrap();
+        }
+        assert!(
+            Page::layout(s.node(s.first.unwrap()).unwrap().data.capacity).total_size > std_size()
+        );
+        assert!(s.total_rows >= usize::from(s.rows));
+        assert_eq!(
+            s.node(s.last.unwrap()).unwrap().data.size.rows,
+            s.node(s.last.unwrap()).unwrap().data.capacity.rows
+        );
+        let first_page = s.first.unwrap();
+        let first_allocation = first_page;
+        let tracked = s
+            .track_pin(Pin {
+                node: first_page,
+                x: 0,
+                y: 0,
+                garbage: false,
+            })
+            .unwrap();
+        s.grow().unwrap();
+        assert_ne!(s.first, Some(first_page));
+        // Rust may reuse the freed Vec address. Node generations identify the
+        // allocation, and oversized pages must never enter the standard pool.
+        assert_ne!(s.last, Some(first_allocation));
+        assert!(
+            s.page_pool
+                .iter()
+                .all(|page| Page::layout(page.capacity).total_size <= std_size())
+        );
+        let p = s.tracked_pin(tracked).unwrap();
+        assert_eq!(Some(p.node), s.first);
+        assert_eq!(p.x, 0);
+        assert_eq!(p.y, 0);
+        assert!(p.garbage);
+        s.assert_integrity();
+    }
+    #[test]
+    fn page_list_grow_non_standard_page_prune_protection() {
+        let mut s = PageList::init(80, 600, Some(std_size())).unwrap();
+        oversize_first(&mut s);
+        let first = s.first.unwrap();
+        let first_cap = s.node(first).unwrap().data.capacity.rows;
+        while s.node(first).unwrap().data.size.rows < first_cap {
+            s.grow().unwrap();
+        }
+        while s.first == s.last {
+            s.grow().unwrap();
+        }
+        assert_ne!(s.first, s.last);
+        let last = s.last.unwrap();
+        let second_cap = s.node(last).unwrap().data.capacity.rows;
+        while s.node(last).unwrap().data.size.rows < second_cap {
+            s.grow().unwrap();
+        }
+        let would_remain = s.total_rows - usize::from(first_cap) + 1;
+        assert!(would_remain < usize::from(s.rows));
+        assert_ne!(s.first, s.last);
+        assert!(s.page_size + std_size() > s.max_size());
+        assert!(s.total_rows >= usize::from(s.rows));
+        assert_eq!(s.node(last).unwrap().data.size.rows, second_cap);
+        s.grow().unwrap();
+        assert!(s.total_rows >= usize::from(s.rows));
+    }
+    #[test]
+    fn page_list_resize_no_reflow_more_cols_remaps_pins_in_backfill_path() {
+        let cap = initial_capacity(5);
+        let mut s = PageList::init(5, cap.rows, None).unwrap();
+        while s.first == s.last {
+            s.grow().unwrap();
+        }
+        let first = s.first.unwrap();
+        let second = s.last.unwrap();
+        assert_ne!(first, second);
+        s.erase_rows(
+            Point::History(Coordinate::default()),
+            Some(Point::History(Coordinate::default())),
+        )
+        .unwrap();
+        assert!(s.node(first).unwrap().data.size.rows < s.node(first).unwrap().data.capacity.rows);
+        let adjusted = s
+            .node(second)
+            .unwrap()
+            .data
+            .capacity
+            .adjust(Adjustment { cols: Some(6) })
+            .unwrap();
+        assert!(s.node(second).unwrap().data.capacity.cols < adjusted.cols);
+        let tracked = s
+            .track_pin(Pin {
+                node: second,
+                x: 0,
+                y: 0,
+                garbage: false,
+            })
+            .unwrap();
+        s.node_mut(second).unwrap().data.get_cells_mut(0).unwrap()[0] = Cell::init('X' as u32);
+        s.resize(Resize {
+            cols: Some(6),
+            reflow: false,
+            ..Resize::default()
+        })
+        .unwrap();
+        let p = s.tracked_pin(tracked).unwrap();
+        let mut node = s.first;
+        let mut found = false;
+        while let Some(id) = node {
+            if id == p.node {
+                found = true;
+                break;
+            }
+            node = s.node(id).unwrap().next;
+        }
+        assert!(found);
+        assert!(p.y < s.node(p.node).unwrap().data.size.rows);
+        let cell = p.row_and_cell(&s).unwrap().1;
+        assert_eq!(cell.content_tag(), ContentTag::Codepoint);
+        assert_eq!(cell.codepoint(), 'X' as u32);
+    }
+    #[test]
+    fn active_erasure_preserves_history_and_regrows_removed_rows() {
+        let mut s = PageList::init(8, 4, None).unwrap();
+        grow(&mut s, 8);
+        for y in 0..s.total_rows {
+            set_raw(&mut s, 0, y, 65 + y as u32, Wide::Narrow);
+        }
+        s.scroll(Scroll::Row(3));
+        assert_eq!(s.viewport_row_offset(), 3);
+        let total = s.total_rows;
+        s.erase_rows(active(0, 0), Some(active(0, 1))).unwrap();
+        assert_eq!(s.total_rows, total);
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert_eq!(s.viewport_row_offset(), 3);
+        for y in 0..8 {
+            assert_eq!(s.get_cell(screen(0, y)).unwrap().codepoint(), 65 + y);
+        }
+        assert_eq!(s.get_cell(active(0, 0)).unwrap().codepoint(), 75);
+        assert_eq!(s.get_cell(active(0, 1)).unwrap().codepoint(), 76);
+        for y in 2..4 {
+            assert!(s.get_cell(active(0, y)).unwrap().is_empty());
+        }
+        finish(&s);
+    }
+
+    #[test]
+    fn pruning_does_not_populate_invalid_viewport_offset_cache() {
+        let mut s = PageList::init(80, 24, Some(1)).unwrap();
+        fill_pages(&mut s, 2);
+        let target = s.pin(screen(0, 5)).unwrap();
+        s.scroll(Scroll::Pin(target));
+        assert_eq!(
+            s.viewport_pin_row_offset.load(Ordering::Relaxed),
+            usize::MAX
+        );
+        s.grow().unwrap();
+        assert_eq!(
+            s.viewport_pin_row_offset.load(Ordering::Relaxed),
+            usize::MAX
+        );
+        assert_eq!(s.viewport, Viewport::Pin);
+        assert_eq!(s.viewport_row_offset(), 0);
         finish(&s);
     }
 }

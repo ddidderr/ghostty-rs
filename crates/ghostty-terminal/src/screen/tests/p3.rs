@@ -211,7 +211,6 @@ fn bg_fill_rows(s: &mut Screen) {
 }
 
 #[test]
-#[ignore = "pagelist: PageList::resize (no reflow, fewer rows) does not trim trailing rows that only contain background-color cells; the content row is pushed to history instead"]
 fn screen_resize_no_reflow_less_rows_trims_blank_lines() {
     let mut s = init(10, 3, 0);
     let str = "1ABCD";
@@ -886,7 +885,6 @@ fn screen_resize_less_cols_no_reflow() {
 }
 
 #[test]
-#[ignore = "pagelist: reflow keeps trailing blank rows (total_rows 4 > 3) instead of trimming them like Zig, pushing the first row into history"]
 fn screen_resize_less_cols_with_reflow_but_row_space() {
     let mut s = init(5, 3, 1);
     let str = "1ABCD";
@@ -1141,7 +1139,6 @@ fn screen_resize_less_cols_to_eliminate_wide_char() {
 }
 
 #[test]
-#[ignore = "pagelist: reflow keeps trailing blank rows, pushing the wrapped first row into history (erased by no_scrollback)"]
 fn screen_resize_less_cols_to_wrap_wide_char() {
     let mut s = init(3, 3, 0);
     let str = "x😀";

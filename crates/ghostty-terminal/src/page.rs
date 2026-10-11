@@ -578,12 +578,14 @@ pub struct Page {
     pub styles: style::Set,
     /// Shared hyperlink values.
     pub hyperlink_set: hyperlink::Set,
-    grapheme_map: HashMap<usize, Vec<u32>>,
+    // Graphemes share a page arena; copying a cell never allocates a Vec.
+    grapheme_map: HashMap<usize, std::ops::Range<usize>>,
+    grapheme_data: Vec<u32>,
     grapheme_allocations: HashMap<usize, Allocation>,
     grapheme_alloc: ChunkAlloc,
     hyperlink_map: hyperlink::Map,
     string_alloc: ChunkAlloc,
-    link_allocations: HashMap<u16, Vec<Allocation>>,
+    link_allocations: HashMap<u16, [Option<Allocation>; 2]>,
     pause_integrity_checks: usize,
 }
 /// A cell with its page-independent managed values, used when copying pages.
@@ -679,6 +681,29 @@ impl Page {
             .try_reserve_exact(count)
             .map_err(|_| Error::OutOfMemory)?;
         cells.resize(count, Cell::default());
+        let grapheme_alloc = ChunkAlloc::new(l.grapheme_alloc_layout, 16)?;
+        let mut grapheme_data = Vec::new();
+        let codepoints = grapheme_alloc.used.len() * 4;
+        grapheme_data
+            .try_reserve_exact(codepoints)
+            .map_err(|_| Error::OutOfMemory)?;
+        grapheme_data.resize(codepoints, 0);
+        let mut grapheme_map = HashMap::new();
+        grapheme_map
+            .try_reserve(l.grapheme_map_layout.capacity)
+            .map_err(|_| Error::OutOfMemory)?;
+        let mut grapheme_allocations = HashMap::new();
+        grapheme_allocations
+            .try_reserve(l.grapheme_map_layout.capacity)
+            .map_err(|_| Error::OutOfMemory)?;
+        let mut hyperlink_map = HashMap::new();
+        hyperlink_map
+            .try_reserve(l.hyperlink_map_layout.capacity)
+            .map_err(|_| Error::OutOfMemory)?;
+        let mut link_allocations = HashMap::new();
+        link_allocations
+            .try_reserve(l.hyperlink_set_layout.cap)
+            .map_err(|_| Error::OutOfMemory)?;
         Ok(Self {
             size: Size {
                 rows: cap.rows,
@@ -688,14 +713,18 @@ impl Page {
             dirty: false,
             rows,
             cells,
-            styles: style::Set::init(usize::from(cap.styles))?,
-            hyperlink_set: hyperlink::Set::init(usize::from(cap.hyperlink_bytes) / 48)?,
-            grapheme_map: HashMap::new(),
-            grapheme_allocations: HashMap::new(),
-            grapheme_alloc: ChunkAlloc::new(l.grapheme_alloc_layout, 16)?,
-            hyperlink_map: HashMap::new(),
+            styles: style::Set::init_with_hasher(usize::from(cap.styles), Style::zig_hash)?,
+            hyperlink_set: hyperlink::Set::init_with_hasher(
+                usize::from(cap.hyperlink_bytes) / 48,
+                Hyperlink::zig_hash,
+            )?,
+            grapheme_map,
+            grapheme_data,
+            grapheme_allocations,
+            grapheme_alloc,
+            hyperlink_map,
             string_alloc: ChunkAlloc::new(l.string_alloc_layout, 32)?,
-            link_allocations: HashMap::new(),
+            link_allocations,
             pause_integrity_checks: 0,
         })
     }
@@ -717,8 +746,8 @@ impl Page {
         self.hyperlink_map.clear();
         self.string_alloc.reset();
         self.link_allocations.clear();
-        self.styles = style::Set::init(usize::from(self.capacity.styles))?;
-        self.hyperlink_set = hyperlink::Set::init(usize::from(self.capacity.hyperlink_bytes) / 48)?;
+        self.styles.clear();
+        self.hyperlink_set.clear();
         Ok(())
     }
     /// Return row metadata by logical row number.
@@ -785,7 +814,9 @@ impl Page {
     }
     /// Return additional codepoints, excluding the first stored on the cell.
     pub fn lookup_grapheme(&self, index: usize) -> Option<&[u32]> {
-        self.grapheme_map.get(&index).map(Vec::as_slice)
+        self.grapheme_map
+            .get(&index)
+            .map(|range| &self.grapheme_data[range.clone()])
     }
     /// Number of cells with grapheme data.
     pub fn grapheme_count(&self) -> usize {
@@ -804,21 +835,13 @@ impl Page {
         if self.grapheme_count() >= self.grapheme_capacity() {
             return Err(Error::GraphemeMapOutOfMemory);
         }
-        self.grapheme_map
-            .try_reserve(1)
-            .map_err(|_| Error::OutOfMemory)?;
-        self.grapheme_allocations
-            .try_reserve(1)
-            .map_err(|_| Error::OutOfMemory)?;
-        let mut data = Vec::new();
-        data.try_reserve_exact(cps.len())
-            .map_err(|_| Error::OutOfMemory)?;
-        data.extend_from_slice(cps);
         let a = self
             .grapheme_alloc
             .alloc(cps.len() * 4)
             .ok_or(Error::GraphemeAllocOutOfMemory)?;
-        self.grapheme_map.insert(i, data);
+        let range = a.start * 4..a.start * 4 + cps.len();
+        self.grapheme_data[range.clone()].copy_from_slice(cps);
+        self.grapheme_map.insert(i, range);
         self.grapheme_allocations.insert(i, a);
         self.cells[i].set_content_tag(ContentTag::CodepointGrapheme);
         self.rows[y].set_grapheme(true);
@@ -831,21 +854,25 @@ impl Page {
         if !self.cells[i].has_grapheme() {
             return self.set_graphemes(x, y, &[cp]);
         }
-        let data = self
+        let range = self
             .grapheme_map
             .get_mut(&i)
             .ok_or(Error::InvalidCoordinate)?;
-        data.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-        if data.len().is_multiple_of(4) {
+        if range.len().is_multiple_of(4) {
+            // Allocate before releasing the old block, as in the page allocator.
             let a = self
                 .grapheme_alloc
-                .alloc((data.len() + 1) * 4)
+                .alloc((range.len() + 1) * 4)
                 .ok_or(Error::GraphemeAllocOutOfMemory)?;
+            let start = a.start * 4;
+            self.grapheme_data.copy_within(range.clone(), start);
+            *range = start..start + range.len();
             if let Some(old) = self.grapheme_allocations.insert(i, a) {
                 self.grapheme_alloc.free(old);
             }
         }
-        data.push(cp);
+        self.grapheme_data[range.end] = cp;
+        range.end += 1;
         self.rows[y].set_dirty(true);
         Ok(())
     }
@@ -895,25 +922,64 @@ impl Page {
     }
     /// Allocate strings and retain a page-local hyperlink.
     pub fn insert_hyperlink(&mut self, link: Hyperlink) -> Result<u16, Error> {
-        let mut allocations = Vec::with_capacity(2);
+        self.insert_hyperlink_with_id(link, None)
+    }
+    /// Retain a hyperlink, preserving a source page ID when possible.
+    pub(crate) fn insert_hyperlink_with_id(
+        &mut self,
+        link: Hyperlink,
+        preferred: Option<u16>,
+    ) -> Result<u16, Error> {
+        let allocations = self.allocate_hyperlink_strings(&link)?;
+        let result = if let Some(id) = preferred {
+            self.hyperlink_set
+                .add_with_id(link, id)
+                .map(|actual| actual.unwrap_or(id))
+        } else {
+            self.hyperlink_set.add(link)
+        };
+        self.finish_hyperlink_insert(result, allocations)
+    }
+    fn allocate_hyperlink_strings(
+        &mut self,
+        link: &Hyperlink,
+    ) -> Result<[Option<Allocation>; 2], Error> {
+        let mut allocations = [None; 2];
         let uri = self
             .string_alloc
             .alloc(link.uri.len())
             .ok_or(Error::StringsOutOfMemory)?;
-        allocations.push(uri);
+        allocations[0] = Some(uri);
         if let HyperlinkId::Explicit(v) = &link.id {
             if let Some(a) = self.string_alloc.alloc(v.len()) {
-                allocations.push(a);
+                allocations[1] = Some(a);
             } else {
                 self.string_alloc.free(uri);
                 return Err(Error::StringsOutOfMemory);
             }
         }
-        let result = self.hyperlink_set.add(link);
+        Ok(allocations)
+    }
+    fn finish_hyperlink_insert(
+        &mut self,
+        result: Result<u16, AddError>,
+        allocations: [Option<Allocation>; 2],
+    ) -> Result<u16, Error> {
+        // A failed insertion may still trim dead IDs. Reclaim their strings
+        // before returning the error, matching the set's deletion callback.
+        self.link_allocations.retain(|id, allocations| {
+            if self.hyperlink_set.contains_slot(*id) {
+                return true;
+            }
+            for a in allocations.iter().flatten() {
+                self.string_alloc.free(*a);
+            }
+            false
+        });
         let id = match result {
             Ok(id) => id,
             Err(e) => {
-                for a in allocations {
+                for a in allocations.into_iter().flatten() {
                     self.string_alloc.free(a);
                 }
                 return Err(match e {
@@ -922,26 +988,12 @@ impl Page {
                 });
             }
         };
-        // Trimmed set entries no longer own their retained string chunks.
-        let dead: Vec<_> = self
-            .link_allocations
-            .keys()
-            .copied()
-            .filter(|id| !self.hyperlink_set.contains_slot(*id))
-            .collect();
-        for id in dead {
-            if let Some(v) = self.link_allocations.remove(&id) {
-                for a in v {
-                    self.string_alloc.free(a);
-                }
-            }
-        }
         if self.hyperlink_set.ref_count(id) > 1 {
-            for a in allocations {
+            for a in allocations.into_iter().flatten() {
                 self.string_alloc.free(a);
             }
         } else if let Some(v) = self.link_allocations.insert(id, allocations) {
-            for a in v {
+            for a in v.into_iter().flatten() {
                 self.string_alloc.free(a);
             }
         }
@@ -1016,6 +1068,20 @@ impl Page {
         if start > end || end > usize::from(self.size.cols) || y >= usize::from(self.size.rows) {
             return Err(Error::InvalidCoordinate);
         }
+        let old = self.rows[y];
+        let full = start == 0 && end == usize::from(self.size.cols) && !protect;
+        let styled = old.styled()
+            && self
+                .get_cells(y)
+                .is_some_and(|cells| cells.iter().any(|c| c.has_styling()));
+        if old.kitty_virtual_placeholder()
+            && full
+            && self
+                .get_cells(y)
+                .is_some_and(|cells| cells.iter().all(|c| c.codepoint() != 0x10eeee))
+        {
+            self.rows[y].set_kitty_virtual_placeholder(false);
+        }
         let base = self.rows[y].cells();
         for i in base + start..base + end {
             let c = self.cells[i];
@@ -1032,6 +1098,15 @@ impl Page {
                 self.clear_hyperlink(i)?;
             }
             self.cells[i] = Cell::default();
+        }
+        if old.grapheme() {
+            self.update_row_grapheme_flag(y);
+        }
+        if old.hyperlink() {
+            self.update_row_hyperlink_flag(y);
+        }
+        if old.styled() {
+            self.rows[y].set_styled(!full && styled);
         }
         self.rows[y].set_dirty(true);
         Ok(())
@@ -1114,7 +1189,7 @@ impl Page {
                 None
             },
             grapheme: if cell.has_grapheme() {
-                self.grapheme_map.get(&i).cloned()
+                self.lookup_grapheme(i).map(<[u32]>::to_vec)
             } else {
                 None
             },
@@ -1157,6 +1232,101 @@ impl Page {
         }
         Ok(())
     }
+    /// Copy a cell directly from a borrowed source page. Only the destination's
+    /// persistent managed storage is allocated; no owned cell snapshot is made.
+    pub(crate) fn clone_cell_from(
+        &mut self,
+        src: &Self,
+        i: usize,
+        x: usize,
+        y: usize,
+    ) -> Result<(), Error> {
+        let cell = src.cells[i];
+        let dst = self.cell_index(x, y)?;
+        self.clear_cells(y, x, x + 1, false)?;
+        self.cells[dst] = cell;
+        self.cells[dst].set_style_id(0);
+        self.cells[dst].set_hyperlink(false);
+        if cell.has_grapheme() {
+            self.cells[dst].set_content_tag(ContentTag::Codepoint);
+        }
+        if cell.has_grapheme() {
+            self.set_graphemes(x, y, src.lookup_grapheme(i).ok_or(Error::InvalidId)?)?;
+        }
+        if cell.hyperlink() {
+            let source_id = src.lookup_hyperlink(i).ok_or(Error::InvalidId)?;
+            let link = src.hyperlink_set.get(source_id).ok_or(Error::InvalidId)?;
+            let id = if let Some(id) = self.hyperlink_set.lookup(link) {
+                self.hyperlink_set.r#use(id)?;
+                id
+            } else {
+                self.insert_hyperlink_with_id(link.clone(), Some(source_id))?
+            };
+            if let Err(error) = self.set_hyperlink(x, y, id) {
+                self.hyperlink_set.release(id)?;
+                return Err(error);
+            }
+        }
+        if cell.has_styling() {
+            let style = *src.styles.get(cell.style_id()).ok_or(Error::InvalidId)?;
+            let id = self
+                .styles
+                .add_with_id(style, cell.style_id())?
+                .unwrap_or(cell.style_id());
+            self.cells[dst].set_style_id(id);
+            self.rows[y].set_styled(true);
+        }
+        Ok(())
+    }
+    pub(crate) fn can_allocate_grapheme(&mut self, bytes: usize) -> bool {
+        if let Some(allocation) = self.grapheme_alloc.alloc(bytes) {
+            self.grapheme_alloc.free(allocation);
+            true
+        } else {
+            false
+        }
+    }
+    /// Test the contiguous allocation used by reflow before duplicating a link.
+    pub(crate) fn can_allocate_string(&mut self, bytes: usize) -> bool {
+        if let Some(allocation) = self.string_alloc.alloc(bytes) {
+            self.string_alloc.free(allocation);
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn clone_hyperlink_from(
+        &mut self,
+        src: &Self,
+        i: usize,
+        x: usize,
+        y: usize,
+    ) -> Result<(), Error> {
+        if self.hyperlink_count() >= self.hyperlink_capacity() {
+            return Err(Error::HyperlinkMapOutOfMemory);
+        }
+        let source_id = src.lookup_hyperlink(i).ok_or(Error::InvalidId)?;
+        let link = src.hyperlink_set.get(source_id).ok_or(Error::InvalidId)?;
+        let required = link.uri.len()
+            + match &link.id {
+                HyperlinkId::Explicit(id) => id.len(),
+                HyperlinkId::Implicit(_) => 0,
+            };
+        if !self.can_allocate_string(required) {
+            return Err(Error::StringsOutOfMemory);
+        }
+        let allocations = self.allocate_hyperlink_strings(link)?;
+        let result = self
+            .hyperlink_set
+            .add_ref_with_id(link, source_id)
+            .map(|id| id.unwrap_or(source_id));
+        let id = self.finish_hyperlink_insert(result, allocations)?;
+        if let Err(e) = self.set_hyperlink(x, y, id) {
+            self.hyperlink_set.release(id)?;
+            return Err(e);
+        }
+        Ok(())
+    }
     /// Clone rows from another page, truncating or padding columns as needed.
     pub fn clone_from(&mut self, src: &Self, y_start: usize, y_end: usize) -> Result<(), Error> {
         if y_start > y_end
@@ -1173,11 +1343,7 @@ impl Page {
     /// Clone one complete row to a destination row.
     pub fn clone_row_from(&mut self, src: &Self, src_y: usize, dst_y: usize) -> Result<(), Error> {
         let cols = usize::from(self.size.cols.min(src.size.cols));
-        self.clear_cells(dst_y, 0, usize::from(self.size.cols), false)?;
         self.clone_partial_row_from(src, src_y, dst_y, 0, 0, cols)?;
-        let start = self.rows[dst_y].cells();
-        self.rows[dst_y] = *src.get_row(src_y).ok_or(Error::InvalidCoordinate)?;
-        self.rows[dst_y].set_cells(start);
         if self.size.cols > src.size.cols {
             let i = self.cell_index(usize::from(src.size.cols - 1), dst_y)?;
             if self.cells[i].wide() == Wide::SpacerHead {
@@ -1211,7 +1377,7 @@ impl Page {
         if source_row.managed_memory() {
             for n in 0..len {
                 let i = src.cell_index(src_x + n, src_y)?;
-                self.import_cell(dst_x + n, dst_y, &src.export_cell(i))?;
+                self.clone_cell_from(src, i, dst_x + n, dst_y)?;
             }
         } else {
             let from = source_row.cells() + src_x;
@@ -1246,9 +1412,13 @@ impl Page {
         }
         let src = self.cell_index(src_x, src_y)?;
         self.cell_index(dst_x, dst_y)?;
-        let data: Vec<_> = (src..src + len).map(|i| self.export_cell(i)).collect();
-        for (n, v) in data.iter().enumerate() {
-            self.import_cell(dst_x + n, dst_y, v)?;
+        let dst = self.cell_index(dst_x, dst_y)?;
+        // Copy in memmove order. Only one managed cell is borrowed through an
+        // owned value at a time, so overlap never requires a row snapshot.
+        for n in 0..len {
+            let n = if dst > src { len - 1 - n } else { n };
+            let value = self.export_cell(src + n);
+            self.import_cell(dst_x + n, dst_y, &value)?;
         }
         Ok(())
     }
