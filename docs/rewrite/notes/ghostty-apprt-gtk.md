@@ -139,3 +139,52 @@ TODO: toggle-inspector is a stub (log only).
 `command_palette::CommandPalette` (GhosttyCommandPalette, `adw::Bin`, template `ui/1.5/command-palette.ui`, root object is the `AdwDialog`): prop `config`; signal `trigger(BoxedAction)` with `connect_trigger(|palette, &binding::Action|)`; `new()` (keeps a self-reference until the dialog's `closed`, like Zig's refSink), `toggle(&Window)`. Private `GhosttyCommand` list item (props `config`, `action-key`, `action`, `title`, `description`; regular + jump commands, comparator `compare_commands` with colon normalisation) sourced from `config.command_palette_entry` filtered by `is_action_supported_on_gtk` plus one jump command per `Application::surfaces()`.
 Tests: 3 unit tests (title ordering, unsupported actions, titlebar conversion); GObject runtime paths need a display (exercised by the demo).
 Shared edit: added `"gnome_44"` to the gtk4 features in Cargo.toml (glib >= 2.74/2.76 APIs such as SignalGroup/BindingGroup).
+
+## F5: surface (class/surface.rs = class/surface.zig + Surface.zig)
+
+`GhosttySurface` (`adw::Bin` + `gtk::Scrollable`, template `ui/1.2/surface.ui`, all template children/callbacks/closures bound).
+Properties (same names as Zig): `bell-ringing`, `config` (class::config::Config), `child-exited`, `default-size`/`min-size` (boxed `Size{width,height}`),
+`error`, `font-size-request` (boxed `FontSizeRequest(DesiredFontSize)`), `focused`, `mouse-hidden`, `mouse-shape` (**i32 = `MouseShape` discriminant**, Zig used a GEnum),
+`mouse-hover-url`, `pwd`, `title`, `title-override`, `zoom`, `is-split`, `readonly` (read-only, from `CoreSurface::readonly`), `key-sequence`/`key-table` (**GStrv/`Vec<String>`**, matching F4's KeyStateOverlay),
+and the 4 `Gtk.Scrollable` overrides. Signals: `bell`, `close-request`, `clipboard-write(u32 clipboard, str)`, `clipboard-read`, `init`, `menu`, `present-request`, `toggle-fullscreen`, `toggle-maximize`
+(typed `connect_*` helpers exist for all). glib's derived accessors live on a private alias wrapper (`SurfaceProps`) so the hand-written Zig-shaped API below owns the names.
+
+Public API on `Surface` (Zig name snake_cased; `?T` -> `Option`):
+`new(SurfaceOverrides{command,working_directory,title})`, `id()`, `Surface::from_id(id)`, `Surface::all()`, `core() -> Option<Rc<dyn CoreSurface>>`, `rt() -> Rc<RtSurfaceHandle>`,
+`set_parent(&Surface, NewSurfaceContext)`, `redraw`, `toggle_fullscreen`, `toggle_maximize`, `toggle_command_palette -> bool`, `control_inspector(Inspector) -> bool` (TODO inspector: no-op, returns true),
+`redraw_inspector` (no-op), `key_sequence_action(&KeySequence)`, `key_table_action(&KeyTable)`, `show_on_screen_keyboard()`, `show_on_screen_keyboard_event(Option<&gdk::Event>)`, `set_scrollbar(Scrollbar)`,
+`set_progress_report(ProgressReport)`, `present`, `command_finished(&CommandFinished) -> bool`, `get_readonly`, `set_readonly(Readonly) -> bool`, `key_event(..)`, `prompt_title`, `close`, `child_exited(&ChildExited) -> bool`,
+`get_content_scale`, `get_size`, `get_cursor_pos`, `default_termio_env() -> Vec<(String,String)>`, `clipboard_request`, `set_clipboard`, `paste(&str)`, `grab_focus()` (inherent; grabs the GLArea),
+`send_desktop_notification(&str,&str)`, `get_title/set_title(Option<&str>)`, `get_effective_title`, `get_title_override/set_title_override(Option<&str>)`, `copy_title_to_clipboard -> bool`, `get_pwd/set_pwd(Option<&str>)`,
+`get_focused`, `get_config/set_config(&Config)`, `get_default_size -> Option<Size>`/`set_default_size(Size)`, `get_min_size/set_min_size(Size)`, `get_font_size_request`, `estimate_initial_size`,
+`get/set_mouse_shape(MouseShape)`, `get/set_mouse_hidden`, `set_mouse_hover_url(Option<&str>)`, `get/set_bell_ringing`, `set_error`, `get_zoom`, `get_is_split`, `get_child_exited`,
+`set_search_active(bool,&str)`, `set_search_total(Option<usize>)`, `set_search_selected(Option<usize>)`, `get/set_hadjustment`, `get/set_vadjustment`.
+`RtSurfaceHandle` (Zig `Surface.zig`) implements `core::RtSurface` over a weak ref; `cgroup()` returns None (the Zig forwarder points at a method that doesn't exist).
+
+Deviations / decisions:
+- The surface registers itself in a thread-local `id -> WeakRef` map (`from_id`); core's `Target::Surface(id)` is resolved with it. The ids are given to `CoreApp::new_surface(id, ..)`; desktop-notification action target is the u64 id.
+- `set_parent` takes the parent `&Surface` widget (font size via `parent.core().font_size()`, pwd via `get_pwd()`).
+- `core.rs` additions (all with defaults): `CoreSurface::{readonly, grid_size, font_size, id}` (`id` currently unused). `draw_frame(0)`: GTK's GLArea FBO id is not exposed by gtk4-rs, the renderer must query `GL_FRAMEBUFFER_BINDING` itself.
+- New-surface config: `apprt::surface::new_config(base, context, prev_pwd)` where prev_pwd is the pwd of another focused surface (Zig `App.focusedSurface`), looked up via the registry.
+- Zig's `Clipboard.paste` for a dropped single `GFile` builds the escaped string but never pastes it; preserved (flagged in a comment).
+- `gtk-xft-dpi`/primary-paste come from `crate::gsettings` (portal aware in Flatpak). Snap env filtering (`build_config.snap`) not ported. `child exited` always uses the banner overlay (adw >= 1.3).
+- vadjustment value-changed uses a manual handler id (+ block/unblock) instead of `GSignalGroup` (needs glib v2_74 feature).
+- Inspector (`control_inspector`, `redraw_inspector`, inspector weak ref) deferred.
+- Tests: Zig `computeFraction` ported; extra tests for mouse button/shape translation. GTK-requiring behaviour is exercised via the demo.
+
+## class/split_tree.rs and class/tab.rs (F6)
+
+Ported: `GhosttySplitTree`, internal `GhosttySplitTreeSplit` (split_tree.zig) and `GhosttyTab` (tab.zig), templates ui/1.5/{split-tree,split-tree-split,tab}.
+
+Tree model: `split_tree::Tree = ghostty_datastruct::SplitTree<Surface>`; `impl SplitTreeView for Surface` lives in split_tree.rs;
+`SurfaceTree(pub Tree)` is the `glib::Boxed` (`GhosttySurfaceTree`, nullable) used for the `tree`/`surface-tree` properties and the `changed(old,new)` signal.
+Deviation: Zig `getTree()` returns a mutable pointer; Rust `get_tree()` returns a clone (views are ref-counted GObjects). In-place mutation (zoom, live split resize) is done internally (RefCell); external changes use `set_tree(Some(&new_tree))`.
+
+SplitTree public API: `new()`, `new_split(direction, parent: Option<&Surface>, SurfaceOverrides) -> Result<(), SplitError>`, `resize(direction, amount: u16) -> Result<bool, SplitError>`, `goto(Goto) -> bool`, `get_needs_confirm_quit()`, `get_active_surface()`, `get_last_focused_surface()`, `get_has_surfaces()`, `get_is_zoomed()`, `get_is_split()`, `get_tree()`, `set_tree(Option<&Tree>)`.
+Properties: `active-surface`(ro), `has-surfaces`(ro), `is-zoomed`(ro), `tree`(rw boxed), `is-split`(ro). Signal: `changed`. Actions (group `split-tree`): `new-split(s)`, `equalize`, `zoom`.
+Surface close: connects each surface's `close-request` / `notify::focused` via generic signal API; shows `CloseConfirmationDialog` when `core.needs_confirm_quit()`.
+
+Tab public API: `Tab::new(Option<&Config>, SurfaceOverrides)`, `set_parent(&Surface)`, `set_parent_with_context(&Surface, ctx)`, `set_title_override(Option<&str>)`, `get_title_override()`, `get_title()`, `prompt_tab_title()`, `get_active_surface()`, `get_surface_tree()`, `get_split_tree()`, `get_config()`, `get_needs_confirm_quit()`, `connect_close_request(f)`.
+Properties: `active-surface`(ro), `config`, `split-tree`(ro), `surface-tree`(ro), `tooltip`, `title`, `title-override`. Signal `close-request`. Actions (group `tab`): `close(s: this|other|right)`, `ring-bell`, `next-page`, `previous-page`, `prompt-tab-title`.
+Differences: Tab::set_parent takes the parent `&Surface` (not a core surface) to match `Surface::set_parent`. Template callbacks that Zig bound with the tab as user-data (`notify_active_surface`, `notify_tree`) find the tab through `ancestor()` of the emitting SplitTree. The computed-title closure is a `#[template_callback(function)]` (not yet runtime-verified in a live window).
+No Zig tests exist for these files.
