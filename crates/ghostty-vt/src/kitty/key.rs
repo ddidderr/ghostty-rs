@@ -170,4 +170,55 @@ mod tests {
         stack.pop(100);
         assert_eq!(stack, FlagStack::default());
     }
+
+    #[test]
+    fn flag_stack_push_pop() {
+        let mut stack = FlagStack::default();
+        stack.push(Flags {
+            disambiguate: true,
+            ..Flags::DISABLED
+        });
+        assert_eq!(
+            stack.current(),
+            Flags {
+                disambiguate: true,
+                ..Flags::DISABLED
+            }
+        );
+        stack.pop(1);
+        assert_eq!(stack.current(), Flags::DISABLED);
+    }
+
+    #[test]
+    fn flag_stack_pop_big_number() {
+        let mut stack = FlagStack::default();
+        stack.pop(100);
+        assert_eq!(stack.current(), Flags::DISABLED);
+    }
+
+    #[test]
+    fn flag_stack_set() {
+        let mut stack = FlagStack::default();
+        let dis = Flags {
+            disambiguate: true,
+            ..Flags::DISABLED
+        };
+        let ev = Flags {
+            report_events: true,
+            ..Flags::DISABLED
+        };
+        stack.set(SetMode::Set, dis);
+        assert_eq!(stack.current(), dis);
+        stack.set(SetMode::Or, ev);
+        assert_eq!(
+            stack.current(),
+            Flags {
+                disambiguate: true,
+                report_events: true,
+                ..Flags::DISABLED
+            }
+        );
+        stack.set(SetMode::Not, ev);
+        assert_eq!(stack.current(), dis);
+    }
 }
