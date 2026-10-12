@@ -74,7 +74,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z8 | RV6 gaps: crash abort handoff, SHELL/PATH bytes, Windows env, show-config round-trip, lib locale | sonnet | ✅ | 3390 tests |
 | RV7 | final Codex verification of RV6 rows + sweep + verdict | codex astra | ✅ | all prior rows resolved; 9 narrow byte/Windows gaps → Z9 |
 | Z9 | RV7 gaps + systematic config-string consumer audit | sonnet | ✅ | 3405 tests; flaky TMPDIR test race fixed |
-| Z10 | byte-typed C API key/preedit text | sonnet | 🟨 | |
+| Z10 | byte-typed C API key/preedit text | sonnet | ✅ | 3407 tests; preedit error semantics aligned with Zig by orchestrator |
+| RV8 | final Codex verification (RV7 gaps, Z9/Z10) + sweep + verdict | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -105,3 +106,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Z7 committed (EncodedOs newtype; 3376 tests). RV6 final verification running.
 - 2026-10-12: Z8 committed (3390 tests, cross-checks green). RV7 running.
 - 2026-10-12: Z9 committed (audit table in notes/final-Z9.md). Z10 launched; RV8 after.
+- 2026-10-12: Z10 committed (3407 tests, all cross-checks green). RV8 running.
