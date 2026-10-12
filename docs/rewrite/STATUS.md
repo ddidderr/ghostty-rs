@@ -109,11 +109,12 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 ## Phase 9 — macOS Swift app → Rust (AppKit via objc2; compile-checked)
 | WP | Scope | Owner | State | Notes |
 |---|---|---|---|---|
-| MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | ✅ | compile-checked; MA2–MA5 on hold pending user decision |
-| MA2 | Ghostty/ incl. Surface View (Metal layer, input, IME, DnD, a11y) | – | ⬜ | after MA1 |
-| MA3 | Features/Terminal (windows, tabs, styles) + Splits | – | ⬜ | after MA1 |
-| MA4 | QuickTerminal, Command Palette, Settings, About, Clipboard, Global Keybinds, Secure Input, Services, App Icon | – | ⬜ | after MA1 |
-| MA5 | AppleScript, Update (Sparkle), App Intents (assess) | – | ⬜ | after MA1 |
+| MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | ↩️ | reverted (cfded0e): user decision — keep the original Swift app, wire it to the Rust core |
+| MSW | `just macos-swift-app`: original Swift app built against the Rust libghostty (xcframework + resources + xcodebuild) | opus | ✅ | macOS-only; dry-run verified here |
+| MA2 | Ghostty/ incl. Surface View (Metal layer, input, IME, DnD, a11y) | – | ✖ | after MA1 | cancelled
+| MA3 | Features/Terminal (windows, tabs, styles) + Splits | – | ✖ | after MA1 | cancelled
+| MA4 | QuickTerminal, Command Palette, Settings, About, Clipboard, Global Keybinds, Secure Input, Services, App Icon | – | ✖ | after MA1 | cancelled
+| MA5 | AppleScript, Update (Sparkle), App Intents (assess) | – | ✖ | after MA1 | cancelled
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -171,3 +172,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Stop-hook: live D-Bus/portal behaviour still unexercised → LIVE launched (private buses; user session untouched).
 - 2026-10-12: LIVE committed (3605 tests). Remaining unverifiable here: native macOS, native Windows (Wine-tested), IME (no input-method daemon installed).
 - 2026-10-12: Stop-hook: Swift macOS app is part of Ghostty 1.3.1 → Phase 9 (port to Rust/AppKit) started with MA1.
+- 2026-10-12: User: Swift app was agreed out of scope; the /goal hook should not have overridden that. Phase 9 reverted; instead the original Swift app is wired to the Rust core (`just macos-swift-app`).

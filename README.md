@@ -19,6 +19,22 @@ Windows test suites also run under Wine (`just test-windows-wine`), macOS has
 not been run natively. The Swift macOS app is not part of the port; it is a
 client of the libghostty C API.
 
+### The macOS app (original Swift app on the Rust core)
+
+Ghostty's macOS app stays the original Swift app, unchanged. It is wired to
+the Rust core instead of the Zig core: the Rust `libghostty` exports the
+identical `include/ghostty.h` ABI. On a Mac with Xcode:
+
+```sh
+just macos-swift-app ../ghostty          # Release; or: just macos-swift-app ../ghostty Debug
+```
+
+This builds the Rust core as `GhosttyKit.xcframework` into
+`<ghostty>/macos/`, installs the resources into `<ghostty>/zig-out/share`
+(what the Xcode project bundles) and runs `xcodebuild`, mirroring
+`zig build -Demit-macos-app`. Not runnable on this Linux machine
+(`DRY_RUN=1` previews the steps).
+
 ## Building and running
 
 Requirements: Rust (edition 2024), GTK ≥ 4.14, libadwaita ≥ 1.5,
