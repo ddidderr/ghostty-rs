@@ -15,6 +15,7 @@ pub mod fish;
 pub mod mdgen;
 pub mod sublime;
 pub mod vim;
+pub mod webdata;
 pub mod zsh;
 
 #[allow(clippy::needless_raw_string_hashes)]
@@ -43,6 +44,14 @@ pub enum Mode {
     Man1,
     /// `ghostty(5)` man page markdown (Zig: `mdgen_ghostty_5`).
     Man5,
+    /// Website `config.mdx` (Zig: `webgen_config`).
+    WebdataConfig,
+    /// Website `actions.mdx` (keybind actions; Zig: `webgen_actions`).
+    WebdataActions,
+    /// Website `commands.mdx` (CLI actions; Zig: `webgen_commands`).
+    WebdataCommands,
+    /// The Ghostty version string (embedded into source tarballs as `VERSION`).
+    Version,
 }
 
 impl Mode {
@@ -58,6 +67,10 @@ impl Mode {
         ("terminfo", Mode::Terminfo),
         ("mdgen-ghostty-1", Mode::Man1),
         ("mdgen-ghostty-5", Mode::Man5),
+        ("webgen-config", Mode::WebdataConfig),
+        ("webgen-actions", Mode::WebdataActions),
+        ("webgen-commands", Mode::WebdataCommands),
+        ("version", Mode::Version),
     ];
 
     /// Parse `+name` (Zig action syntax) or a bare `name`.
@@ -82,6 +95,10 @@ impl Mode {
             Mode::Terminfo => ghostty_termio::terminfo::ghostty.encode_to_string(),
             Mode::Man1 => mdgen::ghostty_1(),
             Mode::Man5 => mdgen::ghostty_5(),
+            Mode::WebdataConfig => webdata::config_mdx(),
+            Mode::WebdataActions => webdata::actions_mdx(),
+            Mode::WebdataCommands => webdata::commands_mdx(),
+            Mode::Version => ghostty_cli::build_info::get().version_string.clone(),
         }
     }
 }
@@ -172,6 +189,27 @@ mod tests {
         let five = mdgen::ghostty_5();
         assert!(five.contains("# KEYBIND ACTIONS"));
         assert!(five.contains("**`new_split`**"));
+    }
+
+    #[test]
+    fn webdata_has_frontmatter_and_sections() {
+        let config = webdata::config_mdx();
+        assert!(config.starts_with(
+            "---\ntitle: Reference\ndescription: Reference of all Ghostty configuration options.\n"
+        ));
+        assert!(config.contains("organize these options.\n\n## `language`\n\n"));
+        assert!(config.contains("## `font-family`\n"));
+        assert!(!config.contains("## `_"));
+        // Callouts and indented code blocks are rewritten for the website.
+        assert!(config.contains("<Note>\n") || config.contains("<Warning>\n"));
+        assert!(config.contains("```\n"));
+        let actions = webdata::actions_mdx();
+        assert!(actions.starts_with("---\ntitle: Keybinding Action Reference\n"));
+        assert!(actions.contains("\n## `ignore`\nIgnore this key combination.\n"));
+        let commands = webdata::commands_mdx();
+        assert!(commands.contains("## version\n"));
+        assert!(commands.contains("\n```\nghostty --version\n```\n\n"));
+        assert!(commands.contains("\n```\nghostty +list-fonts\n```\n\n"));
     }
 
     /// Every supported locale has a `.po` catalog and vice versa

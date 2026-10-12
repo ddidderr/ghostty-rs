@@ -89,22 +89,43 @@ locales OUT="target/locale":
 # Install bin + share/ghostty (shell-integration, themes, docs) +
 # share/terminfo (compiled db, ghostty.terminfo, ghostty.termcap) + shell
 # completions, vim/neovim/bat syntax, man pages, translations, desktop file,
-# D-Bus/systemd/metainfo and icons, mirroring Ghostty's GhosttyResources.zig,
-# GhosttyDocs.zig and GhosttyI18n.zig.
+# D-Bus/systemd/metainfo and icons, plus libghostty-vt (lib, headers,
+# libghostty-vt.pc), mirroring Ghostty's GhosttyResources.zig,
+# GhosttyDocs.zig, GhosttyI18n.zig and GhosttyLibVt.zig.
 #
-# Usage: `just install [PREFIX] [FLATPAK] [SYSTEM_PACKAGE]`; honours DESTDIR.
+# Usage: `just install [PREFIX] [FLATPAK] [SYSTEM_PACKAGE] [PROFILE]`;
+# honours DESTDIR.
 #   PREFIX          install prefix (default /usr/local)
 #   FLATPAK         "true": use the Flatpak D-Bus template, no systemd unit
 #                   and no 1024x1024 icon (Zig: -Dflatpak)
 #   SYSTEM_PACKAGE  "true": install the systemd user unit to lib/systemd/user
 #                   instead of share/systemd/user (Zig: --system / system
-# package mode)
-install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false": build-release build-data docs locales
+#                   package mode)
+#   PROFILE         cargo profile to build and install (default "production":
+#                   no debug assertions, the Zig ReleaseFast equivalent).
+#                   Like Zig's Debug/ReleaseSafe modes, any other profile
+#                   (dev, release) installs the "-debug" application id
+#                   (com.mitchellh.ghostty-debug, "Ghostty (Debug)"), which is
+#                   the id the binary uses at runtime when built with debug
+#                   assertions.
+install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="production": build-data docs locales
     #!/usr/bin/env bash
     set -euo pipefail
+    cargo build --profile {{ PROFILE }}
+    just install-lib '{{ PREFIX }}' '{{ PROFILE }}' vt
     P="${DESTDIR:-}{{ PREFIX }}"
     BD=target/release/ghostty-build-data
-    install -Dm755 target/release/ghostty "$P/bin/ghostty"
+    dir={{ PROFILE }}
+    if [ "$dir" = dev ]; then dir=debug; fi
+    # GhosttyResources.zig: Debug/ReleaseSafe get the "-debug" id and name.
+    if [ "{{ PROFILE }}" = production ]; then
+        APPID=com.mitchellh.ghostty
+        NAME=Ghostty
+    else
+        APPID=com.mitchellh.ghostty-debug
+        NAME="Ghostty (Debug)"
+    fi
+    install -Dm755 "target/$dir/ghostty" "$P/bin/ghostty"
     mkdir -p "$P/share/ghostty" "$P/share/terminfo"
     cp -R resources/shell-integration resources/themes "$P/share/ghostty/"
     find "$P/share/ghostty/shell-integration" -name '*.md' -delete
@@ -150,20 +171,20 @@ install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false": build-releas
 
     gen() { # template out
         mkdir -p "$(dirname "$2")"
-        sed -e 's|@NAME@|Ghostty|g' -e 's|@APPID@|com.mitchellh.ghostty|g' \
+        sed -e "s|@NAME@|$NAME|g" -e "s|@APPID@|$APPID|g" \
             -e "s|@GHOSTTY@|{{ PREFIX }}/bin/ghostty|g" "$1" > "$2"
     }
-    gen dist/linux/app.desktop.in "$P/share/applications/com.mitchellh.ghostty.desktop"
+    gen dist/linux/app.desktop.in "$P/share/applications/$APPID.desktop"
     if [ "{{ FLATPAK }}" = "true" ]; then
-        gen dist/linux/dbus.service.flatpak.in "$P/share/dbus-1/services/com.mitchellh.ghostty.service"
+        gen dist/linux/dbus.service.flatpak.in "$P/share/dbus-1/services/$APPID.service"
     else
-        gen dist/linux/dbus.service.in "$P/share/dbus-1/services/com.mitchellh.ghostty.service"
+        gen dist/linux/dbus.service.in "$P/share/dbus-1/services/$APPID.service"
         # systemd looks in lib/ for system packages and share/ otherwise.
         sysd=share
         if [ "{{ SYSTEM_PACKAGE }}" = "true" ]; then sysd=lib; fi
-        gen dist/linux/systemd.service.in "$P/$sysd/systemd/user/app-com.mitchellh.ghostty.service"
+        gen dist/linux/systemd.service.in "$P/$sysd/systemd/user/app-$APPID.service"
     fi
-    gen dist/linux/com.mitchellh.ghostty.metainfo.xml.in "$P/share/metainfo/com.mitchellh.ghostty.metainfo.xml"
+    gen dist/linux/com.mitchellh.ghostty.metainfo.xml.in "$P/share/metainfo/$APPID.metainfo.xml"
     install -Dm644 dist/linux/ghostty_dolphin.desktop "$P/share/kio/servicemenus/com.mitchellh.ghostty.desktop"
     install -Dm755 dist/linux/ghostty_nautilus.py "$P/share/nautilus-python/extensions/ghostty.py"
     ic="$P/share/icons/hicolor"
@@ -173,8 +194,62 @@ install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false": build-releas
         if [ "{{ FLATPAK }}" = "true" ] && [ "${pair%%:*}" = "1024" ]; then continue; fi
         install -Dm644 "dist/icons/${pair%%:*}.png" "$ic/${pair##*:}/apps/com.mitchellh.ghostty.png"
     done
-    echo "installed to $P"
+    echo "installed to $P (application id $APPID)"
 
 # Regenerate resources/terminfo from the terminfo source in ghostty-termio.
 terminfo:
     scripts/gen-terminfo.sh
+
+# Install libghostty and libghostty-vt below PREFIX (honours DESTDIR):
+# lib/libghostty.{so,a}, include/ghostty.h, include/module.modulemap
+# (GhosttyLib.zig) and lib/libghostty-vt.so{,.0,.0.1.0},
+# include/ghostty/vt*.h, share/pkgconfig/libghostty-vt.pc (GhosttyLibVt.zig).
+# WHAT is one of: all, vt, ghostty.
+install-lib PREFIX="/usr/local" PROFILE="production" WHAT="all":
+    scripts/install-lib.sh '{{ PREFIX }}' '{{ PROFILE }}' '{{ WHAT }}'
+
+# Build libghostty (the embedded C API) as static and shared libraries.
+lib PROFILE="production":
+    cargo build -p ghostty-lib --profile {{ PROFILE }}
+
+# Build GhosttyKit.xcframework with lipo + xcodebuild (macOS only; Zig:
+# GhosttyXCFramework.zig). TARGET is "universal" (macOS arm64+x86_64, iOS,
+# iOS simulator) or "native". Set DRY_RUN=1 to only print the commands.
+xcframework TARGET="universal" PROFILE="production" OUT="macos/GhosttyKit.xcframework":
+    scripts/xcframework.sh '{{ TARGET }}' '{{ PROFILE }}' '{{ OUT }}'
+
+# Generate the website reference data (Zig: GhosttyWebdata.zig): config.mdx,
+# actions.mdx (keybind actions) and commands.mdx (CLI actions) in OUT.
+webdata OUT="target/webdata": build-data
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p "{{ OUT }}"
+    for m in config actions commands; do
+        target/release/ghostty-build-data "+webgen-$m" > "{{ OUT }}/$m.mdx"
+    done
+
+# Install the website data to PREFIX/share/ghostty/webdata (Zig:
+# `-Demit-webdata`); honours DESTDIR.
+install-webdata PREFIX="/usr/local": webdata
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for m in config actions commands; do
+        install -Dm644 "target/webdata/$m.mdx" "${DESTDIR:-}{{ PREFIX }}/share/ghostty/webdata/$m.mdx"
+    done
+
+# Regenerate po/com.mitchellh.ghostty.pot (xgettext over the GTK blueprints,
+# the GTK apprt Rust sources and the Nautilus extension) and msgmerge every
+# po/*.po against it (Zig: `zig build update-translations`).
+update-translations:
+    scripts/update-translations.sh
+
+# Create the versioned source tarball target/dist/ghostty-<version>.tar.gz with
+# the embedded VERSION file and the prebuilt dist resources (Zig: `zig build
+# dist`).
+dist:
+    scripts/dist.sh target/dist
+
+# Extract the dist tarball and check that it builds and tests (Zig:
+# `zig build distcheck`).
+distcheck: dist
+    scripts/dist.sh --check
