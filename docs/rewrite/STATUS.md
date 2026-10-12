@@ -109,7 +109,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 ## Phase 9 — macOS Swift app → Rust (AppKit via objc2; compile-checked)
 | WP | Scope | Owner | State | Notes |
 |---|---|---|---|---|
-| MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | 🟨 | |
+| MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | ✅ | compile-checked; MA2–MA5 on hold pending user decision |
 | MA2 | Ghostty/ incl. Surface View (Metal layer, input, IME, DnD, a11y) | – | ⬜ | after MA1 |
 | MA3 | Features/Terminal (windows, tabs, styles) + Splits | – | ⬜ | after MA1 |
 | MA4 | QuickTerminal, Command Palette, Settings, About, Clipboard, Global Keybinds, Secure Input, Services, App Icon | – | ⬜ | after MA1 |
