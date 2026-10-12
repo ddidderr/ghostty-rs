@@ -50,14 +50,14 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 |---|---|---|---|---|
 | L2 | libghostty-vt C API (lib_vt.zig, terminal/c/*, vt.h) + run example/c-vt* + wasm examples | sonnet | ✅ | ABI-checked, examples run |
 | W1 | WASM: main_wasm, config/Wasm, os/wasm, font web_canvas face+shaper | sonnet | ✅ | W1b aligning zig-js ABI |
-| CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | ✅ | uncommitted (shared files with VR) |
+| CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | ✅ | |
 | PF | perf: RenderState render 2.4x, parser SGR 1.5x | sonnet | ✅ | all benches ≤ Zig |
-| VR | verify IME, paste dialog confirm/deny, quick terminal (niri layer-shell), Flatpak via mock D-Bus | sonnet | 🟨 | batch A |
-| L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | – | ⬜ | batch B |
-| M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | sonnet | 🟨 | |
-| WIN | Windows: ConPTY pty, os/windows, Command | sonnet | 🟨 | |
+| VR | verify IME, paste dialog confirm/deny, quick terminal (niri layer-shell), Flatpak via mock D-Bus | sonnet | ✅ | fixed quick-terminal link-order bug |
+| L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | sonnet | 🟨 | |
+| M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | sonnet | ✅ | compile-checked apple-darwin |
+| WIN | Windows: ConPTY pty, os/windows, Command | sonnet | ✅ | compile-checked windows-gnu |
 | W1b | wasm: align JS imports with zig-js ABI | sonnet | ✅ | |
-| GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators | – | ⬜ | batch B |
+| GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators, cli windows, ssh-cache lock | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -79,3 +79,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: I1, X1, X2 committed (3037 tests). Docs written. V3 real-app verification running.
 - 2026-10-12: V3 verification passed, final polish (nightly fmt) done. Rewrite complete.
 - 2026-10-12: Stop-hook review: 'full end-to-end' not met → Phase 8 (full scope) started.
+- 2026-10-12: Phase 8 batch A + M1/WIN/W1b committed (3224 tests). L1, GC launched.
