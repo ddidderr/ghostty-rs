@@ -626,9 +626,8 @@ impl RtSurface for SurfaceRt {
             .iter()
             .map(|(m, d)| {
                 (
-                    CString::new(m.replace('\0', "")).unwrap_or_default(),
-                    CString::new(d.iter().copied().filter(|b| *b != 0).collect::<Vec<u8>>())
-                        .unwrap_or_default(),
+                    nul_terminated_prefix(m.as_bytes()),
+                    nul_terminated_prefix(d),
                 )
             })
             .collect();
@@ -2155,6 +2154,13 @@ mod darwin {
         // Read the selection
         fill_text(core, t, sel, result)
     }
+}
+
+/// A C string that ends at the first interior NUL, like a C consumer of a
+/// Zig sentinel-terminated slice.
+fn nul_terminated_prefix(bytes: &[u8]) -> CString {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    CString::new(&bytes[..end]).unwrap_or_default()
 }
 
 #[cfg(test)]

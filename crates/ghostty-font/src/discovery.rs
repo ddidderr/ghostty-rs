@@ -164,6 +164,43 @@ mod tests {
 
     #[cfg(font_fontconfig)]
     #[test]
+    fn interior_nul_in_font_names_ends_the_c_string() {
+        use ghostty_config::config::Config;
+        use ghostty_os::osbytes::os_bytes;
+
+        use crate::fontconfig::Property;
+        let mut config = Config::default();
+        config
+            .parse_field_bytes("font-family", Some(b"monospace\0suffix"))
+            .unwrap();
+        config
+            .parse_field_bytes("font-style", Some(b"Regular\0suffix"))
+            .unwrap();
+        config
+            .parse_field_bytes("font-codepoint-map", Some(b"U+0041=Fam\0ily"))
+            .unwrap();
+        let pat = to_fc_pattern(&Descriptor {
+            family: Some(config.font_family.list[0].clone()),
+            style: config.font_style.name_value().cloned(),
+            ..Descriptor::default()
+        });
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Family, 0).unwrap()),
+            b"monospace"
+        );
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Style, 0).unwrap()),
+            b"Regular"
+        );
+        let pat = to_fc_pattern(&config.font_codepoint_map.map.list[0].descriptor);
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Family, 0).unwrap()),
+            b"Fam"
+        );
+    }
+
+    #[cfg(font_fontconfig)]
+    #[test]
     fn configured_font_names_reach_fontconfig_as_original_bytes() {
         use ghostty_config::config::Config;
         use ghostty_os::osbytes::os_bytes;

@@ -98,18 +98,23 @@ impl CConfig {
     }
 }
 
-/// A C string without interior NULs.
+/// A C string over `bytes` that ends at the first NUL, like a C consumer
+/// reading Zig's backing bytes (the rest is never visible through the pointer).
+fn cstring_until_nul(bytes: &[u8]) -> CString {
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    CString::new(&bytes[..end]).unwrap_or_default()
+}
+
+/// A C string for a UTF-8 string, ending at the first NUL.
 fn cstring(s: &str) -> CString {
-    CString::new(s.replace('\0', "")).unwrap_or_default()
+    cstring_until_nul(s.as_bytes())
 }
 
 /// A C string for a config *value*: config strings carry non-UTF-8 bytes in
 /// the reversible [`ghostty_os::osbytes`] encoding, so the embedder gets the
 /// decoded bytes (Zig hands out the original byte slice).
 fn cstring_value(s: &str) -> CString {
-    let mut bytes = ghostty_os::osbytes::config_str_to_bytes(s);
-    bytes.retain(|b| *b != 0);
-    CString::new(bytes).unwrap_or_default()
+    cstring_until_nul(&ghostty_os::osbytes::config_str_to_bytes(s))
 }
 
 /// Intern a string for the lifetime of the process (enum tag names).
@@ -612,6 +617,23 @@ mod tests {
         // Plain text (even with the escape char) is unchanged.
         let b = build_backing(&CValue::String("h\u{e9}llo".to_owned()));
         assert_eq!(b.strings[0].to_str().unwrap(), "h\u{e9}llo");
+    }
+
+    #[test]
+    fn config_string_values_end_at_the_first_interior_nul() {
+        use ghostty_os::osbytes::EncodedOs;
+        let enc = EncodedOs::from_bytes(b"a\0b");
+        let b = build_backing(&CValue::String(enc.into_encoded()));
+        assert_eq!(b.strings[0].as_bytes(), b"a");
+        let b = build_backing(&CValue::String("x\0y".to_owned()));
+        assert_eq!(b.strings[0].as_bytes(), b"x");
+        let enc = EncodedOs::from_bytes(b"\0lead");
+        let b = build_backing(&CValue::Path {
+            path: enc.into_encoded(),
+            optional: false,
+        });
+        assert_eq!(b.strings[0].as_bytes(), b"");
+        assert_eq!(intern("ab\0c"), intern("ab"));
     }
 
     fn get<T: Copy>(cfg: ghostty_config_t, key: &str, init: T) -> (bool, T) {

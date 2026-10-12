@@ -14,6 +14,7 @@
     )
 )]
 
+pub mod arg_iterator;
 pub mod args;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cf_release_thread;
@@ -31,6 +32,7 @@ pub mod file_type;
 #[cfg(unix)]
 pub mod flatpak;
 pub mod osbytes;
+pub mod zig_fmt;
 #[cfg(windows)]
 pub mod flatpak {
     //! Flatpak does not exist on Windows.

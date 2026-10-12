@@ -33,11 +33,12 @@ pub fn launched_from_desktop() -> bool {
 
     // (`std::process::id` is `getpid` / `GetCurrentProcessId`.)
     let pid = std::process::id();
-    let Ok(gio_pid) = gio_pid_str.to_string_lossy().parse::<u32>() else {
+    // (`parseInt(c_int, ..., 10)`.)
+    let Ok(gio_pid) = crate::zig_fmt::parse_int::<i32>(gio_pid_str.as_encoded_bytes(), 10) else {
         return false;
     };
 
-    gio_pid == pid
+    i64::from(gio_pid) == i64::from(pid)
 }
 
 /// Environment variable set by the macOS app to tell libghostty how it was

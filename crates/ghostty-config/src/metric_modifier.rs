@@ -30,13 +30,18 @@ impl MetricModifier {
     /// Parses the modifier value. If the value ends in "%" it is assumed
     /// to be a percent, otherwise the value is parsed as an integer.
     pub fn parse(input: &str) -> Result<MetricModifier, ArgError> {
+        Self::parse_bytes(input.as_bytes())
+    }
+
+    /// [`MetricModifier::parse`] over the original bytes (Zig never
+    /// validates UTF-8; every failure is `InvalidFormat`).
+    pub fn parse_bytes(input: &[u8]) -> Result<MetricModifier, ArgError> {
         if input.is_empty() {
             return Err(ArgError::other("InvalidFormat"));
         }
 
-        if let Some(num) = input.strip_suffix('%') {
-            let mut percent = num
-                .parse::<f64>()
+        if let Some(num) = input.strip_suffix(b"%") {
+            let mut percent = ghostty_os::zig_fmt::parse_float::<f64>(num)
                 .map_err(|_| ArgError::other("InvalidFormat"))?;
             percent /= 100.0;
 
@@ -46,15 +51,14 @@ impl MetricModifier {
             return Ok(MetricModifier::Percent(1.0 + percent));
         }
 
-        input
-            .parse::<i32>()
+        ghostty_os::zig_fmt::parse_int::<i32>(input, 10)
             .map(MetricModifier::Absolute)
             .map_err(|_| ArgError::other("InvalidFormat"))
     }
 
     /// So it works with the config framework.
-    pub fn parse_cli_value(input: Option<&str>) -> Result<MetricModifier, ArgError> {
-        Self::parse(input.ok_or(ArgError::ValueRequired)?)
+    pub fn parse_cli_value(input: Option<&[u8]>) -> Result<MetricModifier, ArgError> {
+        Self::parse_bytes(input.ok_or(ArgError::ValueRequired)?)
     }
 
     /// Apply a modifier to an integer value (saturating, clamped at zero for
@@ -100,14 +104,16 @@ impl MetricModifier {
 
 impl ConfigField for MetricModifier {
     fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
-        let value = crate::cli_args::text_value(value)?;
         *self = Self::parse_cli_value(value)?;
         Ok(())
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         let s = match self {
-            MetricModifier::Percent(v) => format!("{}%", (v - 1.0) * 100.0),
+            MetricModifier::Percent(v) => format!(
+                "{}%",
+                ghostty_os::zig_fmt::format_float_d((v - 1.0) * 100.0)
+            ),
             MetricModifier::Absolute(v) => format!("{v}"),
         };
         f.format_entry(&s)

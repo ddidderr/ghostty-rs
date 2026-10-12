@@ -177,10 +177,8 @@ impl SplitResizeParameter {
     pub(super) fn parse_param(param: &str) -> Result<SplitResizeParameter, Error> {
         let mut it = param.split(',');
         let dir = SplitResizeDirection::parse_param(it.next().ok_or(Error::InvalidFormat)?)?;
-        let amt = it
-            .next()
-            .ok_or(Error::InvalidFormat)?
-            .parse::<u16>()
+        let amt = it.next().ok_or(Error::InvalidFormat)?;
+        let amt = ghostty_os::zig_fmt::parse_int::<u16>(amt.as_bytes(), 10)
             .map_err(|_| Error::InvalidFormat)?;
         // If we have extra parameters it is an error
         if it.next().is_some() {
@@ -304,16 +302,23 @@ pub(super) trait ParseNum: Sized {
     fn parse_param(s: &str) -> Result<Self, Error>;
 }
 
-macro_rules! num_param {
+macro_rules! int_param {
     ($($t:ty),*) => {$(
         impl ParseNum for $t {
             fn parse_param(s: &str) -> Result<$t, Error> {
-                s.parse::<$t>().map_err(|_| Error::InvalidFormat)
+                ghostty_os::zig_fmt::parse_int::<$t>(s.as_bytes(), 10)
+                    .map_err(|_| Error::InvalidFormat)
             }
         }
     )*};
 }
-num_param!(f32, usize, isize, i16);
+int_param!(usize, isize, i16);
+
+impl ParseNum for f32 {
+    fn parse_param(s: &str) -> Result<f32, Error> {
+        ghostty_os::zig_fmt::parse_float::<f32>(s.as_bytes()).map_err(|_| Error::InvalidFormat)
+    }
+}
 
 /// Escape in the style of Zig's `std.zig.stringEscape`.
 pub(super) fn string_escape(s: &[u8], out: &mut String) {
@@ -378,12 +383,14 @@ impl Action {
             "set_tab_title" => Ok(Self::SetTabTitle(bytes()?)),
             "activate_key_table" => Ok(Self::ActivateKeyTable(bytes()?)),
             "activate_key_table_once" => Ok(Self::ActivateKeyTableOnce(bytes()?)),
+            // Zig never validates UTF-8 for enum/numeric parameters: the
+            // bytes just fail the field's own grammar (`InvalidFormat`) for
+            // a known action and `InvalidAction` for an unknown name. U+FFFD
+            // is accepted by none of those grammars, so it stands in for any
+            // invalid parameter.
             _ => Self::parse_named(
                 name,
-                param
-                    .map(std::str::from_utf8)
-                    .transpose()
-                    .map_err(|_| Error::InvalidAction)?,
+                param.map(|p| std::str::from_utf8(p).unwrap_or("\u{fffd}")),
             ),
         }
     }
@@ -1930,15 +1937,15 @@ impl Action {
             }
             Action::IncreaseFontSize(v) => {
                 out.push(':');
-                out.push_str(&v.to_string());
+                out.push_str(&ghostty_os::zig_fmt::format_float_d(*v));
             }
             Action::DecreaseFontSize(v) => {
                 out.push(':');
-                out.push_str(&v.to_string());
+                out.push_str(&ghostty_os::zig_fmt::format_float_d(*v));
             }
             Action::SetFontSize(v) => {
                 out.push(':');
-                out.push_str(&v.to_string());
+                out.push_str(&ghostty_os::zig_fmt::format_float_d(*v));
             }
             Action::Search(v) => {
                 out.push(':');
@@ -1954,7 +1961,7 @@ impl Action {
             }
             Action::ScrollPageFractional(v) => {
                 out.push(':');
-                out.push_str(&v.to_string());
+                out.push_str(&ghostty_os::zig_fmt::format_float_d(*v));
             }
             Action::ScrollPageLines(v) => {
                 out.push(':');

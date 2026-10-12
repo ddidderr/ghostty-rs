@@ -34,16 +34,15 @@ pub struct Keep {
 }
 
 impl Keep {
-    /// A NUL terminated copy of `s` (interior NULs are dropped).
+    /// A NUL terminated copy of `s` (it ends at the first interior NUL).
     fn cstr(&mut self, s: &str) -> *const c_char {
         self.cstr_bytes(s.as_bytes())
     }
 
     /// [`Keep::cstr`] for raw bytes.
     fn cstr_bytes(&mut self, s: &[u8]) -> *const c_char {
-        let mut s = s.to_vec();
-        s.retain(|&b| b != 0);
-        let c = CString::new(s).unwrap_or_default();
+        let end = s.iter().position(|&b| b == 0).unwrap_or(s.len());
+        let c = CString::new(&s[..end]).unwrap_or_default();
         let ptr = c.as_ptr();
         // The heap buffer of a CString doesn't move when the Vec grows.
         self.strings.push(c);
@@ -240,6 +239,26 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn c_title_actions_end_at_the_first_interior_nul() {
+        use ghostty_os::osbytes::EncodedOs;
+        let mut keep = Keep::default();
+        for tab in [false, true] {
+            let title = SetTitle {
+                title: EncodedOs::from_bytes(b"a\0b"),
+            };
+            let action = if tab {
+                Action::SetTabTitle(title)
+            } else {
+                Action::SetTitle(title)
+            };
+            let c = action_to_c(&action, &mut keep);
+            // SAFETY: both title union members have identical layout, pointer owned by keep.
+            let title = unsafe { std::ffi::CStr::from_ptr(c.action.set_title.title) };
+            assert_eq!(title.to_bytes(), b"a");
+        }
+    }
 
     #[test]
     fn c_title_actions_and_key_table_names_forward_original_bytes() {

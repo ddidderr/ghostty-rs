@@ -506,48 +506,48 @@ pub fn parse_packed_struct_with(
     Ok(())
 }
 
+/// Zig's `@max` on floats: a NaN operand yields the other operand and
+/// `max(+0, -0)` is `+0`.
+#[must_use]
+pub fn zig_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        b
+    } else if b.is_nan() {
+        a
+    } else if a == b {
+        if a.is_sign_negative() { b } else { a }
+    } else {
+        a.max(b)
+    }
+}
+
+/// Zig's `@min` on floats: a NaN operand yields the other operand and
+/// `min(+0, -0)` is `-0`.
+#[must_use]
+pub fn zig_min(a: f64, b: f64) -> f64 {
+    if a.is_nan() {
+        b
+    } else if b.is_nan() {
+        a
+    } else if a == b {
+        if a.is_sign_negative() { a } else { b }
+    } else {
+        a.min(b)
+    }
+}
+
+/// `std.math.clamp` on floats (`@max(lower, @min(val, upper))`).
+#[must_use]
+pub fn zig_clamp(val: f64, lower: f64, upper: f64) -> f64 {
+    zig_max(lower, zig_min(val, upper))
+}
+
 pub fn parse_bool(v: &str) -> Result<bool, ArgError> {
     match v {
         "1" | "t" | "T" | "true" => Ok(true),
         "0" | "f" | "F" | "false" => Ok(false),
         _ => Err(ArgError::InvalidValue),
     }
-}
-
-/// Parse an integer like Zig's `std.fmt.parseInt(T, s, 0)`: optional sign,
-/// optional `0x`/`0o`/`0b` prefix, underscores between digits allowed.
-pub fn parse_int_base0(s: &str) -> Option<i128> {
-    let (neg, rest) = match s.as_bytes().first()? {
-        b'-' => (true, &s[1..]),
-        b'+' => (false, &s[1..]),
-        _ => (false, s),
-    };
-    let (base, digits) = if rest.len() >= 2 && rest.as_bytes()[0] == b'0' {
-        match rest.as_bytes()[1] {
-            b'x' => (16, &rest[2..]),
-            b'o' => (8, &rest[2..]),
-            b'b' => (2, &rest[2..]),
-            _ => (10, rest),
-        }
-    } else {
-        (10, rest)
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let db = digits.as_bytes();
-    if db[0] == b'_' || db[db.len() - 1] == b'_' || digits.contains("__") {
-        return None;
-    }
-    let mut acc: i128 = 0;
-    for &c in db {
-        if c == b'_' {
-            continue;
-        }
-        let d = i128::from((c as char).to_digit(base)?);
-        acc = acc.checked_mul(i128::from(base))?.checked_add(d)?;
-    }
-    Some(if neg { -acc } else { acc })
 }
 
 // ---------------------------------------------------------------------
@@ -580,10 +580,9 @@ macro_rules! impl_int_field {
             }
 
             fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
-        let value = crate::cli_args::text_value(value)?;
                 let v = value.ok_or(ArgError::ValueRequired)?;
-                let n = parse_int_base0(v).ok_or(ArgError::InvalidValue)?;
-                *self = <$t>::try_from(n).map_err(|_| ArgError::InvalidValue)?;
+                *self = ghostty_os::zig_fmt::parse_int::<$t>(v, 0)
+                    .map_err(|_| ArgError::InvalidValue)?;
                 Ok(())
             }
 
@@ -615,14 +614,14 @@ macro_rules! impl_float_field {
             }
 
             fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
-        let value = crate::cli_args::text_value(value)?;
                 let v = value.ok_or(ArgError::ValueRequired)?;
-                *self = v.parse::<$t>().map_err(|_| ArgError::InvalidValue)?;
+                *self = ghostty_os::zig_fmt::parse_float::<$t>(v)
+                    .map_err(|_| ArgError::InvalidValue)?;
                 Ok(())
             }
 
             fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
-                writeln!(f.writer, "{} = {}", f.name, self)
+                writeln!(f.writer, "{} = {}", f.name, ghostty_os::zig_fmt::format_float_d(*self))
             }
         }
     )*};
@@ -1642,12 +1641,45 @@ mod tests {
     }
 
     #[test]
-    fn parse_int_base0_forms() {
-        assert_eq!(parse_int_base0("0x_1"), None);
-        assert_eq!(parse_int_base0("1_000"), Some(1000));
-        assert_eq!(parse_int_base0("-0b11"), Some(-3));
-        assert_eq!(parse_int_base0("0o17"), Some(15));
-        assert_eq!(parse_int_base0(""), None);
+    fn numeric_fields_use_zig_parse_int_and_parse_float_grammars() {
+        let mut n = 0u32;
+        n.parse_bytes(Some(b"0X10")).unwrap();
+        assert_eq!(n, 16);
+        n.parse_bytes(Some(b"1__0")).unwrap();
+        assert_eq!(n, 10);
+        n.parse_bytes(Some(b"+0b1_1")).unwrap();
+        assert_eq!(n, 3);
+        for bad in ["0x_1", "_1", "1_", "-1", "0x", "", " 1", "1 ", "\u{e9}"] {
+            assert_eq!(
+                n.parse_bytes(Some(bad.as_bytes())),
+                Err(ArgError::InvalidValue),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(n.parse_bytes(None), Err(ArgError::ValueRequired));
+        let mut i = 0i16;
+        i.parse_bytes(Some(b"-0O17")).unwrap();
+        assert_eq!(i, -15);
+        assert_eq!(i.parse_bytes(Some(b"40000")), Err(ArgError::InvalidValue));
+        // Invalid UTF-8 is just an invalid character for numbers.
+        assert_eq!(n.parse_bytes(Some(b"\xff")), Err(ArgError::InvalidValue));
+
+        let mut f = 0f32;
+        f.parse_bytes(Some(b"1_4")).unwrap();
+        assert_eq!(f, 14.0);
+        f.parse_bytes(Some(b"0x1.cp+3")).unwrap();
+        assert_eq!(f, 14.0);
+        f.parse_bytes(Some(b"-INF")).unwrap();
+        assert_eq!(f, f32::NEG_INFINITY);
+        f.parse_bytes(Some(b"nan")).unwrap();
+        assert!(f.is_nan());
+        for bad in ["1__4", "infx", ".", "1e", " 1", "0x"] {
+            assert_eq!(
+                f.parse_bytes(Some(bad.as_bytes())),
+                Err(ArgError::InvalidValue),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

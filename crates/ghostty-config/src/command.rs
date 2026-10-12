@@ -63,55 +63,14 @@ impl Iterator for ArgIterator {
     }
 }
 
-/// Best-effort shell string splitter matching Zig's
-/// `std.process.ArgIteratorGeneral(.{})` (whitespace separated, double
-/// quotes group, backslashes only special before a double quote).
+/// Zig's `std.process.ArgIteratorGeneral(.{})`.
 fn split_general(b: &[u8]) -> Vec<EncodedOs> {
-    let mut out = vec![];
-    let mut i = 0;
-    loop {
-        // skip whitespace
-        while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
-            i += 1;
-        }
-        if i >= b.len() {
-            break;
-        }
-
-        let mut cur: Vec<u8> = vec![];
-        let mut quoted = false;
-        while i < b.len() {
-            match b[i] {
-                b' ' | b'\t' if !quoted => break,
-                b'\\' => {
-                    let mut n = 0;
-                    while i < b.len() && b[i] == b'\\' {
-                        n += 1;
-                        i += 1;
-                    }
-                    if i < b.len() && b[i] == b'"' {
-                        cur.extend(std::iter::repeat_n(b'\\', n / 2));
-                        if n % 2 == 1 {
-                            cur.push(b'"');
-                            i += 1;
-                        }
-                    } else {
-                        cur.extend(std::iter::repeat_n(b'\\', n));
-                    }
-                }
-                b'"' => {
-                    quoted = !quoted;
-                    i += 1;
-                }
-                c => {
-                    cur.push(c);
-                    i += 1;
-                }
-            }
-        }
-        out.push(EncodedOs::from_bytes(&cur));
-    }
-    out
+    ghostty_os::arg_iterator::ArgIteratorGeneral::new(
+        ghostty_os::arg_iterator::Options::default(),
+        b,
+    )
+    .map(|arg| EncodedOs::from_bytes(&arg))
+    .collect()
 }
 
 impl Command {
@@ -257,6 +216,13 @@ mod tests {
         let v = Command::Shell("echo \"hello world\" a\\\"b".into());
         let args: Vec<EncodedOs> = v.arg_iterator().collect();
         assert_eq!(args, ["echo", "hello world", "a\"b"]);
+    }
+
+    #[test]
+    fn command_arg_iterator_shell_splits_cr_lf_tab_like_zig() {
+        let v = Command::Shell(EncodedOs::from_bytes(b"bash\n-i\r\tx \"a\nb\"\0ignored"));
+        let args: Vec<EncodedOs> = v.arg_iterator().collect();
+        assert_eq!(args, ["bash", "-i", "x", "a\nb"]);
     }
 
     #[test]

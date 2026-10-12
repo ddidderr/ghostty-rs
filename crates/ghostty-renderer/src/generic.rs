@@ -244,7 +244,7 @@ impl DerivedConfig {
             .value
             .iter()
             .filter_map(|p| {
-                let path = match p.path().to_path() {
+                let path = match p.path().to_syscall_path() {
                     Ok(path) => path,
                     Err(error) => {
                         log::warn!("invalid shader path: {error}");
@@ -869,7 +869,7 @@ impl<G: GraphicsApi> DrawState<G> {
         if let Some(p) = &self.config.bg_image
             && let Some(image) = p
                 .path()
-                .to_path()
+                .to_syscall_path()
                 .map_err(|error| log::warn!("invalid background image path: {error}"))
                 .ok()
                 .and_then(|path| load_background_image(&path))

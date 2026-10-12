@@ -1138,12 +1138,13 @@ impl Application {
                 }
                 if let Some(v) = s.strip_prefix("--working-directory=") {
                     // D-Bus strings are plain UTF-8, including literal U+FDD0.
-                    working_directory =
-                        Some(ghostty_os::osbytes::EncodedOs::from_plain_text(v.trim()));
+                    working_directory = Some(ghostty_os::osbytes::EncodedOs::from_plain_text(
+                        trim_ascii_whitespace(v),
+                    ));
                     continue;
                 }
                 if let Some(v) = s.strip_prefix("--title=") {
-                    title = Some(v.trim().to_owned());
+                    title = Some(trim_ascii_whitespace(v).to_owned());
                 }
             }
         }
@@ -1868,4 +1869,31 @@ impl Drop for ReadyGuard {
 }
 fn scopeguard_ready() -> ReadyGuard {
     ReadyGuard
+}
+
+/// `std.mem.trim(u8, v, &std.ascii.whitespace)`: only ASCII whitespace
+/// (space, `\t`, `\n`, VT, FF, `\r`) is trimmed, never Unicode whitespace
+/// such as U+00A0.
+fn trim_ascii_whitespace(v: &str) -> &str {
+    v.trim_matches(|c: char| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+}
+
+#[cfg(test)]
+mod trim_tests {
+    use super::trim_ascii_whitespace;
+
+    #[test]
+    fn new_window_arguments_trim_only_ascii_whitespace() {
+        assert_eq!(
+            trim_ascii_whitespace(" \t\n\r\x0b\x0c/tmp/a b \n"),
+            "/tmp/a b"
+        );
+        assert_eq!(trim_ascii_whitespace("/tmp/name\u{a0}"), "/tmp/name\u{a0}");
+        assert_eq!(
+            trim_ascii_whitespace("\u{a0}title\u{2003} "),
+            "\u{a0}title\u{2003}"
+        );
+        assert_eq!(trim_ascii_whitespace("\x0btitle\x0b"), "title");
+        assert_eq!(trim_ascii_whitespace(" \t "), "");
+    }
 }

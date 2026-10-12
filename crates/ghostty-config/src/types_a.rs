@@ -8,7 +8,7 @@ use ghostty_vt::color::{DEFAULT as DEFAULT_PALETTE, Palette as TermPalette, Pale
 
 use crate::{
     c_value::CValue,
-    cli_args::{ArgError, ConfigField, parse_int_base0, trim_ws},
+    cli_args::{ArgError, ConfigField, trim_ws},
     clipboard_codepoint_map::{ClipboardCodepointMap, Entry as ClipboardEntry, Replacement},
     config_enum,
     config_packed,
@@ -242,11 +242,18 @@ impl Color {
 
     /// Zig: `Color.parseCLI(input)` (static form returning a new value).
     pub fn from_cli(input: Option<&str>) -> Result<Color, ArgError> {
+        Color::from_cli_bytes(input.map(str::as_bytes))
+    }
+
+    /// [`Color::from_cli`] over the original bytes: Zig never validates
+    /// UTF-8 here, so a stray byte is an `InvalidCharacter` (or
+    /// `InvalidValue` for a wrong length), not a generic invalid value.
+    pub fn from_cli_bytes(input: Option<&[u8]>) -> Result<Color, ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         // Trim any whitespace before processing
-        let trimmed = trim_ws(input);
+        let trimmed = crate::cli_args::trim_bytes(input);
 
-        if let Some(rgb) = ghostty_vt::x11_color::get(trimmed) {
+        if let Some(rgb) = ghostty_vt::x11_color::get_bytes(trimmed) {
             return Ok(Color {
                 r: rgb.r,
                 g: rgb.g,
@@ -254,7 +261,7 @@ impl Color {
             });
         }
 
-        Color::from_hex(trimmed)
+        Color::from_hex_bytes(trimmed)
     }
 
     /// Format the color as a string.
@@ -266,8 +273,13 @@ impl Color {
     /// fromHex parses a color from a hex value such as #RRGGBB. The "#"
     /// is optional.
     pub fn from_hex(input: &str) -> Result<Color, ArgError> {
+        Color::from_hex_bytes(input.as_bytes())
+    }
+
+    /// [`Color::from_hex`] over bytes.
+    pub fn from_hex_bytes(input: &[u8]) -> Result<Color, ArgError> {
         // Trim the beginning '#' if it exists
-        let trimmed = input.strip_prefix('#').unwrap_or(input).as_bytes();
+        let trimmed = input.strip_prefix(b"#").unwrap_or(input);
         if trimmed.len() != 6 && trimmed.len() != 3 {
             return Err(ArgError::InvalidValue);
         }
@@ -282,7 +294,7 @@ impl Color {
         };
 
         let digit = |c: u8| -> Result<u8, ArgError> {
-            (c as char)
+            char::from(c)
                 .to_digit(16)
                 .map(|d| d as u8)
                 .ok_or_else(|| ArgError::other("InvalidCharacter"))
@@ -308,8 +320,7 @@ impl ConfigField for Color {
     }
 
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
-        *self = Color::from_cli(input)?;
+        *self = Color::from_cli_bytes(input)?;
         Ok(())
     }
 
@@ -336,11 +347,16 @@ impl Default for TerminalColor {
 impl TerminalColor {
     /// Zig: `TerminalColor.parseCLI(input)`.
     pub fn from_cli(input: Option<&str>) -> Result<TerminalColor, ArgError> {
+        TerminalColor::from_cli_bytes(input.map(str::as_bytes))
+    }
+
+    /// [`TerminalColor::from_cli`] over bytes.
+    pub fn from_cli_bytes(input: Option<&[u8]>) -> Result<TerminalColor, ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         match input {
-            "cell-foreground" => Ok(TerminalColor::CellForeground),
-            "cell-background" => Ok(TerminalColor::CellBackground),
-            _ => Ok(TerminalColor::Color(Color::from_cli(Some(input))?)),
+            b"cell-foreground" => Ok(TerminalColor::CellForeground),
+            b"cell-background" => Ok(TerminalColor::CellBackground),
+            _ => Ok(TerminalColor::Color(Color::from_cli_bytes(Some(input))?)),
         }
     }
 
@@ -355,8 +371,7 @@ impl TerminalColor {
 
 impl ConfigField for TerminalColor {
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
-        *self = TerminalColor::from_cli(input)?;
+        *self = TerminalColor::from_cli_bytes(input)?;
         Ok(())
     }
 
@@ -385,18 +400,22 @@ impl Default for BoldColor {
 impl BoldColor {
     /// Zig: `BoldColor.parseCLI(input)`.
     pub fn from_cli(input: Option<&str>) -> Result<BoldColor, ArgError> {
+        BoldColor::from_cli_bytes(input.map(str::as_bytes))
+    }
+
+    /// [`BoldColor::from_cli`] over bytes.
+    pub fn from_cli_bytes(input: Option<&[u8]>) -> Result<BoldColor, ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
-        if input == "bright" {
+        if input == b"bright" {
             return Ok(BoldColor::Bright);
         }
-        Ok(BoldColor::Color(Color::from_cli(Some(input))?))
+        Ok(BoldColor::Color(Color::from_cli_bytes(Some(input))?))
     }
 }
 
 impl ConfigField for BoldColor {
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
-        *self = BoldColor::from_cli(input)?;
+        *self = BoldColor::from_cli_bytes(input)?;
         Ok(())
     }
 
@@ -419,7 +438,6 @@ impl ConfigField for ColorList {
     }
 
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
@@ -430,15 +448,15 @@ impl ConfigField for ColorList {
 
         // Split the input by commas and parse each color
         let mut count = 0usize;
-        for raw in input.split(',').filter(|s| !s.is_empty()) {
+        for raw in input.split(|b| *b == b',').filter(|s| !s.is_empty()) {
             count += 1;
             if count > 64 {
                 return Err(ArgError::InvalidValue);
             }
 
             // Trim whitespace from each color value
-            let trimmed = trim_ws(raw);
-            let color = Color::from_cli(Some(trimmed))?;
+            let trimmed = crate::cli_args::trim_bytes(raw);
+            let color = Color::from_cli_bytes(Some(trimmed))?;
             self.colors.push(color);
         }
 
@@ -488,21 +506,26 @@ impl ConfigField for Palette {
     }
 
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
         let value = input.ok_or(ArgError::ValueRequired)?;
-        let eql_idx = value.find('=').ok_or(ArgError::InvalidValue)?;
+        let eql_idx = value
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(ArgError::InvalidValue)?;
 
         // Parse the key part (trim whitespace)
-        let key_str = trim_ws(&value[..eql_idx]);
-        let key = match parse_int_base0(key_str) {
-            None => return Err(ArgError::other("InvalidCharacter")),
-            Some(n) if n < 0 => return Err(ArgError::other("InvalidCharacter")),
-            Some(n) if n > 255 => return Err(ArgError::other("Overflow")),
-            Some(n) => n as usize,
+        let key_str = crate::cli_args::trim_bytes(&value[..eql_idx]);
+        let key = match ghostty_os::zig_fmt::parse_int::<u8>(key_str, 0) {
+            Ok(n) => usize::from(n),
+            Err(ghostty_os::zig_fmt::ParseIntError::InvalidCharacter) => {
+                return Err(ArgError::other("InvalidCharacter"));
+            }
+            Err(ghostty_os::zig_fmt::ParseIntError::Overflow) => {
+                return Err(ArgError::other("Overflow"));
+            }
         };
 
         // Parse the color part (Color parsing will handle whitespace)
-        let rgb = Color::from_cli(Some(&value[eql_idx + 1..]))?;
+        let rgb = Color::from_cli_bytes(Some(&value[eql_idx + 1..]))?;
         self.value[key] = rgb.to_terminal_rgb();
         self.mask.set(key);
         Ok(())
@@ -698,7 +721,8 @@ impl ConfigField for RepeatableFontVariation {
         let key: &[u8; 4] = key.try_into().map_err(|_| ArgError::InvalidValue)?;
         self.list.push(Variation {
             id: VariationId::init(key),
-            value: value.parse::<f64>().map_err(|_| ArgError::InvalidValue)?,
+            value: ghostty_os::zig_fmt::parse_float::<f64>(value.as_bytes())
+                .map_err(|_| ArgError::InvalidValue)?,
         });
         Ok(())
     }
@@ -861,8 +885,7 @@ impl<'a> UnicodeRangeParser<'a> {
 
 /// `std.fmt.parseInt(u21, s, 16)` for plain hex digit strings.
 fn parse_u21_hex(s: &[u8]) -> Option<u32> {
-    let s = std::str::from_utf8(s).ok()?;
-    let v = u32::from_str_radix(s, 16).ok()?;
+    let v = ghostty_os::zig_fmt::parse_int::<u32>(s, 16).ok()?;
     (v <= 0x1f_ffff).then_some(v)
 }
 
@@ -1054,7 +1077,6 @@ pub struct RepeatableLink {
 
 impl ConfigField for RepeatableLink {
     fn parse_bytes(&mut self, _input: Option<&[u8]>) -> Result<(), ArgError> {
-        let _input = crate::cli_args::text_value(_input)?;
         Err(ArgError::other("NotImplemented"))
     }
 

@@ -4224,7 +4224,7 @@ impl Config {
                 continue;
             }
 
-            let file = match path.to_path().and_then(std::fs::File::open) {
+            let file = match path.to_syscall_path().and_then(std::fs::File::open) {
                 Ok(f) => f,
                 Err(err) => {
                     if err.kind() != std::io::ErrorKind::NotFound || !optional {
@@ -4564,16 +4564,19 @@ impl Config {
         }
 
         // Clamp our mouse scroll multiplier
+        // (`@min(10_000, @max(0.01, v))`: NaN becomes the minimum.)
+        let zmin = cli_args::zig_min;
+        let zmax = cli_args::zig_max;
         self.mouse_scroll_multiplier.precision =
-            self.mouse_scroll_multiplier.precision.clamp(0.01, 10_000.0);
+            zmin(10_000.0, zmax(0.01, self.mouse_scroll_multiplier.precision));
         self.mouse_scroll_multiplier.discrete =
-            self.mouse_scroll_multiplier.discrete.clamp(0.01, 10_000.0);
+            zmin(10_000.0, zmax(0.01, self.mouse_scroll_multiplier.discrete));
 
         // Clamp our split opacity
-        self.unfocused_split_opacity = self.unfocused_split_opacity.clamp(0.15, 1.0);
+        self.unfocused_split_opacity = zmin(1.0, zmax(0.15, self.unfocused_split_opacity));
 
         // Clamp our contrast
-        self.minimum_contrast = self.minimum_contrast.clamp(1.0, 21.0);
+        self.minimum_contrast = zmin(21.0, zmax(1.0, self.minimum_contrast));
 
         // Minimum window size
         if self.window_width > 0 {
@@ -4606,7 +4609,7 @@ impl Config {
             self.auto_update_channel = Some(ReleaseChannel::Stable);
         }
 
-        self.faint_opacity = self.faint_opacity.clamp(0.0, 1.0);
+        self.faint_opacity = cli_args::zig_clamp(self.faint_opacity, 0.0, 1.0);
 
         // Finalize key remapping set for efficient lookups
         self.key_remap.finalize();
@@ -4753,14 +4756,37 @@ impl Iterator for ChangeIterator<'_> {
     }
 }
 
-/// Name of an IO error like Zig's error names (best effort), used in
-/// user-visible diagnostics.
+/// Name of an IO error like Zig's `{}` formatting of an error value
+/// (`error.FileNotFound`), used in user-visible diagnostics.
 fn zig_io_error_name(err: &std::io::Error) -> String {
     use std::io::ErrorKind;
+    #[cfg(unix)]
+    if let Some(errno) = err.raw_os_error() {
+        let name = match errno {
+            2 => Some("FileNotFound"),
+            13 => Some("AccessDenied"),
+            1 => Some("PermissionDenied"),
+            21 => Some("IsDir"),
+            20 => Some("NotDir"),
+            40 => Some("SymLinkLoop"),
+            36 => Some("NameTooLong"),
+            24 => Some("ProcessFdQuotaExceeded"),
+            23 => Some("SystemFdQuotaExceeded"),
+            12 => Some("SystemResources"),
+            19 => Some("NoDevice"),
+            16 => Some("DeviceBusy"),
+            26 => Some("FileBusy"),
+            30 => Some("ReadOnlyFileSystem"),
+            _ => None,
+        };
+        if let Some(name) = name {
+            return format!("error.{name}");
+        }
+    }
     match err.kind() {
-        ErrorKind::NotFound => "FileNotFound".to_string(),
-        ErrorKind::PermissionDenied => "AccessDenied".to_string(),
-        _ => err.to_string(),
+        ErrorKind::NotFound => "error.FileNotFound".to_string(),
+        ErrorKind::PermissionDenied => "error.AccessDenied".to_string(),
+        _ => "error.Unexpected".to_string(),
     }
 }
 

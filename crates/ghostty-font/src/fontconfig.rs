@@ -189,8 +189,10 @@ impl Pattern {
         self.add_string_bytes(prop, v.as_bytes())
     }
 
-    /// [`Pattern::add_string`] for arbitrary bytes (file names).
+    /// [`Pattern::add_string`] for arbitrary bytes (file names). Like Zig's
+    /// sentinel-terminated C string handoff, the value ends at the first NUL.
     pub fn add_string_bytes(&mut self, prop: Property, v: &[u8]) -> bool {
+        let v = v.split(|&b| b == 0).next().unwrap_or(v);
         let Ok(c) = CString::new(v) else {
             return false;
         };

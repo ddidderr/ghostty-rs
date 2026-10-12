@@ -413,7 +413,8 @@ impl ConfigField for MouseScrollMultiplier {
         match r {
             Ok(()) => *self = result,
             Err(ArgError::InvalidValue) => {
-                let v: f64 = input.parse().map_err(|_| ArgError::InvalidValue)?;
+                let v = ghostty_os::zig_fmt::parse_float::<f64>(input.as_bytes())
+                    .map_err(|_| ArgError::InvalidValue)?;
                 *self = MouseScrollMultiplier {
                     precision: v,
                     discrete: v,
@@ -427,7 +428,11 @@ impl ConfigField for MouseScrollMultiplier {
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         fmt_str(
             f,
-            &format!("precision:{},discrete:{}", self.precision, self.discrete),
+            &format!(
+                "precision:{},discrete:{}",
+                ghostty_os::zig_fmt::format_float_d(self.precision),
+                ghostty_os::zig_fmt::format_float_d(self.discrete)
+            ),
         )
     }
 }
@@ -537,19 +542,21 @@ impl QuickTerminalSizeValue {
         }
     }
 
-    pub fn parse(input: &str) -> Result<Self, ArgError> {
+    pub fn parse(input: &[u8]) -> Result<Self, ArgError> {
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
         }
 
-        if let Some(num) = input.strip_suffix("px") {
+        if let Some(num) = input.strip_suffix(b"px") {
             return Ok(Self::Pixels(
-                num.parse::<u32>().map_err(|_| ArgError::InvalidValue)?,
+                ghostty_os::zig_fmt::parse_int::<u32>(num, 10)
+                    .map_err(|_| ArgError::InvalidValue)?,
             ));
         }
 
-        if let Some(num) = input.strip_suffix('%') {
-            let percentage = num.parse::<f32>().map_err(|_| ArgError::InvalidValue)?;
+        if let Some(num) = input.strip_suffix(b"%") {
+            let percentage =
+                ghostty_os::zig_fmt::parse_float::<f32>(num).map_err(|_| ArgError::InvalidValue)?;
             if percentage < 0.0 {
                 return Err(ArgError::InvalidValue);
             }
@@ -630,15 +637,16 @@ impl ConfigField for QuickTerminalSize {
     }
 
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let mut it = input.split(',');
+        let mut it = input.split(|b| *b == b',');
 
-        let primary = trim_ws(it.next().ok_or(ArgError::ValueRequired)?);
+        let primary = crate::cli_args::trim_bytes(it.next().ok_or(ArgError::ValueRequired)?);
         self.primary = Some(QuickTerminalSizeValue::parse(primary)?);
 
         self.secondary = match it.next() {
-            Some(s) => Some(QuickTerminalSizeValue::parse(trim_ws(s))?),
+            Some(s) => Some(QuickTerminalSizeValue::parse(crate::cli_args::trim_bytes(
+                s,
+            ))?),
             None => None,
         };
 
@@ -824,15 +832,17 @@ impl ConfigField for BackgroundBlur {
     }
 
     fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
-        let input = crate::cli_args::text_value(input)?;
         let Some(input) = input else {
             // Emulate behavior for bools
             *self = BackgroundBlur::True;
             return Ok(());
         };
+        // Only the bool/enum spellings need text; everything else is a
+        // `parseInt` over the raw bytes.
+        let text = std::str::from_utf8(input).unwrap_or("\u{fffd}");
 
         // Try to parse normal bools
-        if let Ok(b) = parse_bool(input) {
+        if let Ok(b) = parse_bool(text) {
             *self = if b {
                 BackgroundBlur::True
             } else {
@@ -842,7 +852,7 @@ impl ConfigField for BackgroundBlur {
         }
 
         // Try to parse enums (only void variants can be parsed this way)
-        match input {
+        match text {
             "macos-glass-regular" => {
                 *self = BackgroundBlur::MacosGlassRegular;
                 return Ok(());
@@ -854,11 +864,20 @@ impl ConfigField for BackgroundBlur {
             _ => {}
         }
 
-        let mut r = 0u8;
-        r.parse_cli(Some(input))
-            .map_err(|_| ArgError::InvalidValue)?;
+        // Zig writes `self.* = .{ .radius = parseInt(...) catch return ... }`
+        // in place: the union tag is switched to `radius` before the payload
+        // is computed, so a failed parse leaves a `radius` variant behind
+        // (observable in the oracle: an invalid value formats as `0`).
+        let mut r = match *self {
+            BackgroundBlur::Radius(v) => v,
+            _ => 0,
+        };
+        let parsed = ghostty_os::zig_fmt::parse_int::<u8>(input, 0);
+        if let Ok(v) = parsed {
+            r = v;
+        }
         *self = BackgroundBlur::Radius(r);
-        Ok(())
+        parsed.map(|_| ()).map_err(|_| ArgError::InvalidValue)
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
@@ -1028,14 +1047,7 @@ pub const DURATION_UNITS: &[(&str, u64)] = &[
 
 /// `std.fmt.parseUnsigned(u64, s, 10)`.
 fn parse_unsigned_u64(s: &[u8]) -> Option<u64> {
-    if s.is_empty() || !s.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let mut acc: u64 = 0;
-    for &c in s {
-        acc = acc.checked_mul(10)?.checked_add(u64::from(c - b'0'))?;
-    }
-    Some(acc)
+    ghostty_os::zig_fmt::parse_unsigned::<u64>(s, 10).ok()
 }
 
 impl Duration {
@@ -1201,7 +1213,10 @@ pub struct WindowPadding {
 impl WindowPadding {
     pub fn parse(input: Option<&str>) -> Result<WindowPadding, ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let p = |s: &str| s.parse::<u32>().map_err(|_| ArgError::InvalidValue);
+        let p = |s: &str| {
+            ghostty_os::zig_fmt::parse_int::<u32>(s.as_bytes(), 10)
+                .map_err(|_| ArgError::InvalidValue)
+        };
 
         if let Some(idx) = input.find(',') {
             let left = p(trim_ws(&input[..idx]))?;

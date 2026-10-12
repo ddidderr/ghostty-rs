@@ -173,11 +173,7 @@ impl<'a> Parser<'a> {
                 // This is kind of hacky but we put a dummy trigger
                 // for chained inputs. The `next` will never yield this
                 // because we have chain set.
-                input: if chain {
-                    "a"
-                } else {
-                    std::str::from_utf8(&input[..eql_idx]).map_err(|_| Error::InvalidFormat)?
-                },
+                input: if chain { b"a" } else { &input[..eql_idx] },
                 i: 0,
             },
             action: Action::parse_bytes(&input[eql_idx + 1..])?,
@@ -279,13 +275,16 @@ pub struct SequenceIterator<'a> {
     /// The input of triggers. This is expected to be ONLY triggers. Things
     /// like the "unconsumed:" prefix or action must be stripped before
     /// passing to this iterator.
-    pub input: &'a str,
+    pub input: &'a [u8],
     pub i: usize,
 }
 
 impl<'a> SequenceIterator<'a> {
     pub fn new(input: &'a str) -> Self {
-        SequenceIterator { input, i: 0 }
+        SequenceIterator {
+            input: input.as_bytes(),
+            i: 0,
+        }
     }
 
     /// Returns the next trigger in the sequence if there is no parsing error.
@@ -294,9 +293,9 @@ impl<'a> SequenceIterator<'a> {
             return Ok(None);
         }
         let rem = &self.input[self.i..];
-        let idx = rem.find('>').unwrap_or(rem.len());
+        let idx = rem.iter().position(|b| *b == b'>').unwrap_or(rem.len());
         self.i += idx + 1;
-        Ok(Some(Trigger::parse(&rem[..idx])?))
+        Ok(Some(Trigger::parse_bytes(&rem[..idx])?))
     }
 
     /// Returns true if there are no more triggers to parse.
@@ -545,18 +544,27 @@ impl Trigger {
     /// not be part of a sequence (i.e. `a>b`). This parses exactly a single
     /// trigger.
     pub fn parse(input: &str) -> Result<Trigger, Error> {
+        Trigger::parse_bytes(input.as_bytes())
+    }
+
+    /// [`Trigger::parse`] over the original bytes. Invalid UTF-8 can only
+    /// reach (and fail) the key lookups, which all end in `InvalidFormat`.
+    pub fn parse_bytes(input: &[u8]) -> Result<Trigger, Error> {
         if input.is_empty() {
             return Err(Error::InvalidFormat);
         }
         let mut result = Trigger::default();
-        let mut rem: &str = input;
+        let mut rem: &[u8] = input;
         'outer: while !rem.is_empty() {
-            let idx = rem.find('+').unwrap_or(rem.len());
+            let idx = rem.iter().position(|b| *b == b'+').unwrap_or(rem.len());
             let part = &rem[..idx];
             rem = if idx >= rem.len() {
-                ""
+                b""
             } else {
                 &rem[idx + 1..]
+            };
+            let Ok(part) = std::str::from_utf8(part) else {
+                return Err(Error::InvalidFormat);
             };
 
             // Check if its a modifier

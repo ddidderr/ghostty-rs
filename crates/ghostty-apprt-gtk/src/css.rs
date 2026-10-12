@@ -110,8 +110,8 @@ impl CssProviders {
 
         for p in &config.gtk_custom_css.value {
             let (path, optional) = match p {
-                Path::Optional(path) => (path.to_path(), true),
-                Path::Required(path) => (path.to_path(), false),
+                Path::Optional(path) => (path.to_syscall_path(), true),
+                Path::Required(path) => (path.to_syscall_path(), false),
             };
             let path = match path {
                 Ok(path) => path,

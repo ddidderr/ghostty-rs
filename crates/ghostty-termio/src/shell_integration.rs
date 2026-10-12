@@ -533,6 +533,17 @@ mod tests {
     }
 
     #[test]
+    fn detect_shell_splits_on_all_zig_separators() {
+        for sep in ["\n", "\r", "\t", " "] {
+            let v: Vec<_> = sh(&format!("bash{sep}-i")).arg_iterator().collect();
+            assert_eq!(v, ["bash", "-i"]);
+            assert_eq!(detect_shell(&sh(&format!("zsh{sep}-l"))), Some(Shell::Zsh));
+        }
+        // The first argument must end at the LF, not include `-i`.
+        assert_eq!(detect_shell(&sh("/bin/fish\n-l")), Some(Shell::Fish));
+    }
+
+    #[test]
     fn arg_iterator_shell_and_direct() {
         let v: Vec<_> = sh("echo hello world").arg_iterator().collect();
         assert_eq!(v, ["echo", "hello", "world"]);

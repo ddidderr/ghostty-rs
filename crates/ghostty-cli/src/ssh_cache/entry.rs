@@ -40,7 +40,7 @@ impl Entry {
         let hostname = iter.next()?;
         let timestamp_str = iter.next()?;
         let terminfo_version = iter.next().unwrap_or("xterm-ghostty");
-        let timestamp = match timestamp_str.parse::<i64>() {
+        let timestamp = match ghostty_os::zig_fmt::parse_int::<i64>(timestamp_str.as_bytes(), 10) {
             Ok(t) => t,
             Err(err) => {
                 log::warn!("Invalid timestamp in cache entry: {timestamp_str} err={err}");

@@ -431,6 +431,17 @@ impl EncodedOs {
         }
     }
 
+    /// [`EncodedOs::to_path`] as a syscall sees it: Zig hands paths to the
+    /// OS as NUL-terminated C strings, so an interior NUL ends the path
+    /// (Rust's `std::fs` would refuse the whole path instead).
+    pub fn to_syscall_path(&self) -> std::io::Result<std::path::PathBuf> {
+        let bytes = self.to_bytes();
+        match bytes.iter().position(|&b| b == 0) {
+            Some(end) => EncodedOs::from_bytes(&bytes[..end]).to_path(),
+            None => self.to_path(),
+        }
+    }
+
     /// Whether the decoded value starts with the given plain prefix.
     #[must_use]
     pub fn starts_with_plain(&self, prefix: &str) -> bool {
@@ -525,6 +536,22 @@ pub fn config_str_to_path(s: &str) -> std::io::Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn syscall_path_ends_at_the_first_nul() {
+        let e = EncodedOs::from_bytes(b"/a/b\0c");
+        assert_eq!(
+            e.to_syscall_path().unwrap(),
+            std::path::PathBuf::from("/a/b")
+        );
+        let e = EncodedOs::from_bytes(b"/a/\xffb");
+        assert_eq!(e.to_syscall_path().unwrap(), e.to_path().unwrap());
+        assert_eq!(
+            EncodedOs::from_bytes(b"\0x").to_syscall_path().unwrap(),
+            std::path::PathBuf::new()
+        );
+    }
 
     #[test]
     fn windows_paths_fail_with_bad_path_name_instead_of_replacement() {

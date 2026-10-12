@@ -154,7 +154,7 @@ impl Path {
         // Make sure the base directory can be opened.
         std::fs::read_dir(&base_path)?;
 
-        let full = base_path.join(path.to_path()?);
+        let full = base_path.join(path.to_syscall_path()?);
         let abs = match std::fs::canonicalize(&full) {
             Ok(p) => EncodedOs::from_path(&p),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -390,6 +390,31 @@ mod tests {
         p.expand(&e("/tmp"), &mut diags).unwrap();
         assert_eq!(p, Path::Optional(e("/abs/path")));
         assert!(diags.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expand_interior_nul_resolves_the_c_string_prefix_like_zig() {
+        let tmp = ghostty_os::TempDir::init().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        std::fs::write(base.join("exists"), b"x").unwrap();
+
+        // The syscall sees only the prefix, which exists: the real path of
+        // the prefix replaces the value.
+        let mut p = Path::Required(EncodedOs::from_bytes(b"exists\0tail"));
+        let mut diags = DiagnosticList::default();
+        p.expand(&EncodedOs::from_path(&base), &mut diags).unwrap();
+        assert_eq!(diags.items().len(), 0);
+        assert_eq!(p.path().to_path().unwrap(), base.join("exists"));
+
+        // The prefix is missing: the whole value is resolved lexically.
+        let mut p = Path::Required(EncodedOs::from_bytes(b"missing\0tail"));
+        p.expand(&EncodedOs::from_path(&base), &mut diags).unwrap();
+        assert_eq!(diags.items().len(), 0);
+        assert_eq!(
+            p.path().to_bytes(),
+            [base.as_os_str().as_encoded_bytes(), b"/missing\0tail"].concat()
+        );
     }
 
     #[cfg(unix)]
