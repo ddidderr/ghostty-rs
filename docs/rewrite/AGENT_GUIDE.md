@@ -13,7 +13,14 @@ You are porting part of Ghostty 1.3.1 (Zig) to Rust. Read
    local version, mark it `// TODO(integration): ...`, and mention it in your
    report. Never rewrite other agents' modules. You MAY add dependencies to your
    own crate's `Cargo.toml` (prefer well-known crates; use `cargo add -p <crate>`).
-2. **Faithful port.** Preserve behaviour, edge cases, defaults and naming
+2. **Faithful port — except genuine bugs.** If the Zig code has a real
+   memory-safety bug or undefined behaviour (use-after-free, out-of-bounds,
+   leaks, stale pointers, infinite loops, integer overflow UB), do NOT
+   replicate it: implement the evidently intended, safe behaviour, add a test,
+   and record it under "Upstream bugs fixed" in your notes (Zig file:line,
+   what was wrong, what the Rust does). Everything else stays faithful.
+   Original rule 2:
+   **Faithful port.** Preserve behaviour, edge cases, defaults and naming
    (snake_case of the Zig names). Port doc comments (they are user-visible for
    config/actions). Don't "improve" semantics. Idiomatic Rust structure is fine
    (enums for tagged unions, traits for comptime interfaces, `Result` for error
