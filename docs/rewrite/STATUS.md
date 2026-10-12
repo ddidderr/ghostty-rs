@@ -84,7 +84,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV11 | final Codex verification (clean HEAD worktree) | codex astra | ✅ | RV10 7/8 resolved; 3 small gaps (0 P1) → Z14 |
 | Z14 | RV11: bench enum dups, theme NUL prefix, Zig error names in diagnostics | sonnet | ✅ | 3492 tests |
 | VP | visual pixel parity vs installed Ghostty (nested weston captures, diff, fix) | sonnet | ✅ | 0.020% px diff on test page; tabs/splits/chrome bit-identical |
-| RV12 | final Codex verification (clean HEAD) | codex astra | 🟨 | |
+| RV12 | final Codex verification (clean HEAD) | codex astra | ✅ | RV11 3/3 resolved; 3 P3 left → Z15 |
+| Z15 | P3: per-platform errno names, dot theme diag, z2d stroker port (pixel identity) | sonnet | 🟨 | |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
@@ -126,3 +127,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: User: fix (don't replicate) genuine Zig memory bugs → AGENT_GUIDE rule 2. User: aim for pixel-identical look → VP launched. Z13 + DF committed.
 - 2026-10-12: RV11: down to 3 small gaps (bench args, theme NUL, error names) → Z14. VP still running.
 - 2026-10-12: VP + Z14 committed (3492 tests, all cross-checks green). RV12 running.
+- 2026-10-12: RV12: only 3 P3 items remain → Z15.
