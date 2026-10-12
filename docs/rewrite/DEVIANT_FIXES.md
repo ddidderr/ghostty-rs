@@ -83,7 +83,7 @@ the port matches Ghostty.
 - Windows: no file locking in the ssh-cache `DiskCache` (Zig does not lock on Windows either).
 - Config theme-name basename and numeric parsing follow Zig 0.15.2, not 0.16 (`fix(config)` commits 3068e3a, a57ff41).
 
-## Other deliberate deviations (platform/Rust-imposed or out of scope)
+## Other deliberate deviations (platform/Rust-imposed or explicitly requested)
 
 Only entries with an observable behavioural difference are listed.
 
@@ -105,7 +105,8 @@ Only entries with an observable behavioural difference are listed.
 | OSC 52 base64 acceptance | Surface.zig:2149,2163 rules | Was different in both directions (Codex core audit); fixed to match Zig | `notes/review-core-codex.md` | 2f58f02 |
 | Benchmark / synthetic tooling extensions | `ghostty-bench` has no `--time` option and only the simplified terminal handler; `ghostty-synthetic` has the actions `ascii`, `osc`, `utf8` | `ghostty-bench --time` prints the measured step time to stderr; `ghostty-bench --handler=full` runs the full `stream_readonly` handler instead of the print-only one; `ghostty-synthetic +sgr` generates SGR-heavy output. Dev/benchmark tooling only; otherwise upstream behaviour is unchanged | `crates/ghostty-bench/src/main.rs`, `src/benches.rs`, `src/bin/ghostty-synthetic.rs`; `notes/review-rv16-codex.md` | 0c4f0ee |
 | Inspector font rasterizer (Windows, Apple, wasm) | Dear ImGui is built with `IMGUI_ENABLE_FREETYPE` (`pkg/dcimgui`), so the 32 px inspector font is rasterized by FreeType | Linux and other Unix targets: FreeType (`dear-imgui-rs` feature `freetype`, system FreeType through pkg-config), 32 px. Windows, Apple and wasm32 keep Dear ImGui's stb_truetype loader at 32 px, because `dear-imgui-sys` can only locate FreeType through pkg-config/vcpkg and those targets cannot be built or run here. Glyph anti-aliasing differs slightly there. | `crates/ghostty-inspector/Cargo.toml`, `src/inspector.rs` (`embedded_font_source`) | Z20 (uncommitted) |
-| Development resources fallback | `resourcesDir` returns nothing when no terminfo bundle is found next to the binary | In the Cargo `dev` profile, if neither installed resources nor `GHOSTTY_RESOURCES_DIR` apply, the in-repo `<workspace>/resources` directory is used when the binary lives inside this workspace | `crates/ghostty-os/src/resourcesdir.rs` (`dev_resources_dir`) | 967e3a1 |
+| Build-time resource directory | No build-time resource path; relocated binaries need executable-relative terminfo detection or the runtime environment override | Optional `GHOSTTY_BUILD_RESOURCES_DIR` embeds an absolute path or a path relative to the executable directory. A nonempty runtime override wins in every profile when configured, then the build path; unset/empty retains existing discovery. No terminfo sentinel is required for an explicit path. User-requested packaging extension. | `crates/ghostty-os/src/resourcesdir.rs`, `crates/ghostty-os/build.rs`; tests `configured_absolute_dir_overrides_discovery_without_requiring_exe`, `configured_relative_dir_is_relative_to_executable`, `runtime_env_overrides_configured_dir_in_every_profile` | This commit (feat-deviant(os): embed a configurable resource directory) |
+| Development resources fallback | `resourcesDir` returns nothing when no terminfo bundle is found next to the binary | In any Cargo profile, if neither installed resources nor `GHOSTTY_RESOURCES_DIR` apply, the in-repo `<workspace>/resources` directory is used when the binary lives inside this workspace | `crates/ghostty-os/src/resourcesdir.rs` (`dev_resources_dir`) | 967e3a1 |
 
 ## Maintenance
 

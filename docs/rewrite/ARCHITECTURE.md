@@ -70,6 +70,14 @@ ghostty-bench (benchmarks), ghostty-build-data (completions, man pages, syntax).
 Non-code: `resources/` (shell-integration, themes, terminfo), `dist/` (desktop
 integration), `po/` (translations), crate-local `res/`/`shaders/`/`resources/`.
 
+Resource lookup: `ghostty-os::resourcesdir` accepts the optional build-time
+`GHOSTTY_BUILD_RESOURCES_DIR` path (watched by `ghostty-os/build.rs`). Runtime
+`GHOSTTY_RESOURCES_DIR` overrides a configured build path; otherwise that path
+precedes automatic discovery. Relative build paths resolve from the executable's
+directory, allowing relocatable installations. Without a build path, upstream's
+environment/terminfo lookup and the checkout resource fallback apply. See
+`README.md` (Build-time resource directory) and `DEVIANT_FIXES.md`.
+
 Build inputs: `ghostty-build-info/build.rs` derives version metadata from the
 workspace manifest and Git HEAD/refs, watching `packed-refs` only when it exists
 (packing loose refs also changes the watched `refs` directory). The GTK build

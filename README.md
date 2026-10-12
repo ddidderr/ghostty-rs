@@ -61,6 +61,32 @@ just install /usr/local          # binary, share/ghostty, terminfo, desktop file
 just install /usr false true     # system-package layout (lib/systemd/user)
 ```
 
+### Build-time resource directory
+
+Set `GHOSTTY_BUILD_RESOURCES_DIR` while building or installing to embed an
+explicit resource directory:
+
+```sh
+GHOSTTY_BUILD_RESOURCES_DIR=/usr/share/ghostty cargo build --profile production
+GHOSTTY_BUILD_RESOURCES_DIR=/usr/share/ghostty cargo install --path . --profile production
+GHOSTTY_BUILD_RESOURCES_DIR=../share/ghostty cargo build --profile production
+```
+
+Absolute paths are used directly. Relative paths resolve from the running
+executable's directory, not the current working directory; `../share/ghostty`
+allows moving an installed `bin/` and `share/` tree together. The directory
+contains `themes/` and `shell-integration/`; these files still need to be installed
+separately (`cargo install` only installs the executable).
+
+A nonempty runtime `GHOSTTY_RESOURCES_DIR` overrides the embedded path in every
+profile. The embedded path takes precedence over automatic resource discovery
+and does not require a terminfo sentinel. An unset or empty build option keeps
+the existing discovery rules, including the debug profile's preference for
+installed resources over the runtime override. Changing or unsetting the build
+option causes Cargo to rebuild resource lookup. Paths are literal: `~` and shell
+variables are not expanded by Ghostty. Flatpak's sandbox resource layout remains
+managed by its runtime integration.
+
 ## Testing
 
 ```sh

@@ -73,6 +73,11 @@ const DEV_SENTINELS: [&str; 1] = ["terminfo/x/xterm-ghostty"];
 /// Zig's `builtin.mode == .Debug` is mapped to the Cargo `dev` profile
 /// (`cfg(ghostty_debug_build)`, set by `build.rs`), not to `debug_assertions`:
 /// the repository's `release` profile enables assertions like ReleaseSafe.
+///
+/// `GHOSTTY_BUILD_RESOURCES_DIR` optionally embeds an absolute path or a path
+/// relative to the executable directory. When configured, a nonempty runtime
+/// `GHOSTTY_RESOURCES_DIR` overrides it in every profile; automatic discovery
+/// applies only when the build option is unset or empty.
 pub fn resources_dir() -> io::Result<ResourcesDir> {
     let exe = std::env::current_exe().ok();
     let env = std::env::var_os("GHOSTTY_RESOURCES_DIR");
@@ -80,21 +85,48 @@ pub fn resources_dir() -> io::Result<ResourcesDir> {
         cfg!(ghostty_debug_build),
         exe.as_deref(),
         env,
+        option_env!("GHOSTTY_BUILD_RESOURCES_DIR").map(Path::new),
     ))
 }
 
-fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) -> ResourcesDir {
+/// An explicit build path takes precedence over automatic discovery. Relative
+/// build paths are anchored to the executable, never the working directory.
+fn resources_dir_impl(
+    debug: bool,
+    exe: Option<&Path>,
+    env: Option<OsString>,
+    build_dir: Option<&Path>,
+) -> ResourcesDir {
+    let build_dir = build_dir.filter(|dir| !dir.as_os_str().is_empty());
     // Use the GHOSTTY_RESOURCES_DIR environment variable in release builds.
     //
     // In debug builds we try using terminfo detection first instead, since
     // if debug Ghostty is launched by an older version of Ghostty, it
     // would inherit the old, stale resources of older Ghostty instead of the
     // freshly built ones under zig-out/share/ghostty.
-    if !debug && let Some(dir) = env.as_ref().filter(|d| !d.is_empty()) {
+    // Configured builds allow the runtime override in every profile. Without a
+    // build path, retain upstream's debug preference for automatic discovery.
+    if (!debug || build_dir.is_some())
+        && let Some(dir) = env.as_ref().filter(|d| !d.is_empty())
+    {
         return ResourcesDir {
             app_path: Some(EncodedOs::from_os(dir)),
             host_path: None,
         };
+    }
+
+    if let Some(dir) = build_dir {
+        let path = if dir.is_absolute() {
+            Some(dir.to_path_buf())
+        } else {
+            exe.and_then(Path::parent).map(|base| base.join(dir))
+        };
+        if let Some(path) = path {
+            return ResourcesDir {
+                app_path: Some(enc(&path)),
+                host_path: None,
+            };
+        }
     }
 
     // Get the path to our running binary
@@ -215,7 +247,7 @@ mod tests {
     fn detects_share_dir_from_exe() {
         let td = make_tree();
         let exe = td.path().join("bin/ghostty");
-        let r = resources_dir_impl(true, Some(&exe), None);
+        let r = resources_dir_impl(true, Some(&exe), None, None);
         let expected = format!("{}/share/ghostty", td.path().display());
         assert_eq!(r.app().map(EncodedOs::as_encoded), Some(expected.as_str()));
     }
@@ -226,27 +258,27 @@ mod tests {
         let exe = td.path().join("bin/ghostty");
         let env = Some(OsString::from("/env/res"));
         assert_eq!(
-            resources_dir_impl(false, Some(&exe), env.clone())
+            resources_dir_impl(false, Some(&exe), env.clone(), None)
                 .app()
                 .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         assert_ne!(
-            resources_dir_impl(true, Some(&exe), env.clone())
+            resources_dir_impl(true, Some(&exe), env.clone(), None)
                 .app()
                 .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         // Debug fallback when detection fails.
         assert_eq!(
-            resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), env)
+            resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), env, None)
                 .app()
                 .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         // Empty env is ignored.
         assert_eq!(
-            resources_dir_impl(false, None, Some(OsString::new()))
+            resources_dir_impl(false, None, Some(OsString::new()), None)
                 .app()
                 .map(EncodedOs::as_encoded),
             None
@@ -256,25 +288,83 @@ mod tests {
     #[test]
     fn dev_fallback_finds_workspace_resources() {
         let exe = workspace_root().join("target/debug/ghostty");
-        let r = resources_dir_impl(true, Some(&exe), None);
+        let r = resources_dir_impl(true, Some(&exe), None, None);
         assert!(r.app().is_some_and(|d| d.ends_with_plain("/resources")));
         // Outside the workspace there is no fallback.
-        let r = resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), None);
+        let r = resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), None, None);
         assert_eq!(r.app().map(EncodedOs::as_encoded), None);
         // Release builds run from the workspace use it too...
         let exe = workspace_root().join("target/production/ghostty");
-        let r = resources_dir_impl(false, Some(&exe), None);
+        let r = resources_dir_impl(false, Some(&exe), None, None);
         assert!(r.app().is_some_and(|d| d.ends_with_plain("/resources")));
         // ...but GHOSTTY_RESOURCES_DIR still takes precedence there.
-        let r = resources_dir_impl(false, Some(&exe), Some("/env/res".into()));
+        let r = resources_dir_impl(false, Some(&exe), Some("/env/res".into()), None);
         assert_eq!(r.app_os().unwrap(), Path::new("/env/res"));
+    }
+
+    #[test]
+    fn configured_absolute_dir_overrides_discovery_without_requiring_exe() {
+        let td = make_tree();
+        let exe = td.path().join("bin/ghostty");
+        let configured = Path::new("/configured/resources");
+        for debug in [false, true] {
+            for exe in [Some(exe.as_path()), None] {
+                let r = resources_dir_impl(debug, exe, None, Some(configured));
+                assert_eq!(r.app_os().as_deref(), Some(configured));
+                assert_eq!(r.host_os(), r.app_os());
+            }
+        }
+    }
+
+    #[test]
+    fn configured_relative_dir_is_relative_to_executable() {
+        let td = make_tree();
+        for name in ["bin/ghostty", "relocated/bin/ghostty"] {
+            let exe = td.path().join(name);
+            let expected = exe.parent().unwrap().join("../share/ghostty");
+            for debug in [false, true] {
+                let r = resources_dir_impl(
+                    debug,
+                    Some(&exe),
+                    None,
+                    Some(Path::new("../share/ghostty")),
+                );
+                assert_eq!(r.app_os(), Some(expected.clone()));
+            }
+        }
+        // Without an executable path a relative directory cannot be resolved.
+        assert_eq!(
+            resources_dir_impl(false, None, None, Some(Path::new("relative"))),
+            ResourcesDir::default()
+        );
+    }
+
+    #[test]
+    fn runtime_env_overrides_configured_dir_in_every_profile() {
+        let td = make_tree();
+        let exe = td.path().join("bin/ghostty");
+        let configured = Path::new("/configured/resources");
+        for debug in [false, true] {
+            let r = resources_dir_impl(
+                debug,
+                Some(&exe),
+                Some("/runtime/resources".into()),
+                Some(configured),
+            );
+            assert_eq!(r.app_os().unwrap(), Path::new("/runtime/resources"));
+            let r = resources_dir_impl(debug, Some(&exe), Some(OsString::new()), Some(configured));
+            assert_eq!(r.app_os().as_deref(), Some(configured));
+            // An empty build option preserves automatic discovery.
+            let r = resources_dir_impl(debug, Some(&exe), None, Some(Path::new("")));
+            assert_eq!(r.app_os().unwrap(), td.path().join("share/ghostty"));
+        }
     }
 
     #[test]
     fn non_utf8_env_dir_is_honored_and_exe_dir_detected() {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
         let env = OsString::from_vec(b"/env/\xffres".to_vec());
-        let r = resources_dir_impl(false, None, Some(env.clone()));
+        let r = resources_dir_impl(false, None, Some(env.clone()), None);
         assert_eq!(r.app_os().unwrap().as_os_str(), env.as_os_str());
 
         // Executable lives under a directory with a non-UTF-8 name.
@@ -283,7 +373,7 @@ mod tests {
         std::fs::create_dir_all(root.join("share/terminfo/x")).unwrap();
         std::fs::write(root.join("share/terminfo/x/xterm-ghostty"), b"").unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();
-        let r = resources_dir_impl(true, Some(&root.join("bin/ghostty")), None);
+        let r = resources_dir_impl(true, Some(&root.join("bin/ghostty")), None, None);
         assert_eq!(r.app_os().unwrap(), root.join("share/ghostty"));
     }
 }
