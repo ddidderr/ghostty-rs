@@ -359,16 +359,15 @@ impl log::Log for Logger {
 }
 
 fn init_logger(logging: Logging) {
-    // Our log level is always at least info in every build mode; debug
-    // builds (or RUST_LOG=debug) also show debug messages.
+    // Only show errors by default in every build mode. RUST_LOG can opt
+    // into more verbose logging when needed.
     let max = match std::env::var("RUST_LOG").ok().as_deref() {
         Some("trace") => log::LevelFilter::Trace,
         Some("debug") => log::LevelFilter::Debug,
         Some("warn") => log::LevelFilter::Warn,
         Some("error") => log::LevelFilter::Error,
         Some("info") => log::LevelFilter::Info,
-        _ if cfg!(debug_assertions) => log::LevelFilter::Debug,
-        _ => log::LevelFilter::Info,
+        _ => log::LevelFilter::Error,
     };
     let logger = Box::new(Logger {
         stderr: logging.stderr,

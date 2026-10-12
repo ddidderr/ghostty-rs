@@ -62,15 +62,9 @@ impl Log for Logger {
 
 static LOGGER: Logger = Logger;
 
-/// Installs the logger. Zig's level: debug in Debug, warn in ReleaseSmall,
-/// info otherwise; here debug with `debug_assertions`, info otherwise.
+/// Installs the logger with errors only in every build mode.
 pub fn init() {
-    let level = if cfg!(debug_assertions) {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Info
-    };
     if ::log::set_logger(&LOGGER).is_ok() {
-        ::log::set_max_level(level);
+        ::log::set_max_level(LevelFilter::Error);
     }
 }
