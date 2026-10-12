@@ -85,7 +85,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z14 | RV11: bench enum dups, theme NUL prefix, Zig error names in diagnostics | sonnet | ✅ | 3492 tests |
 | VP | visual pixel parity vs installed Ghostty (nested weston captures, diff, fix) | sonnet | ✅ | 0.020% px diff on test page; tabs/splits/chrome bit-identical |
 | RV12 | final Codex verification (clean HEAD) | codex astra | ✅ | RV11 3/3 resolved; 3 P3 left → Z15 |
-| Z15 | P3: per-platform errno names, dot theme diag, z2d stroker port (pixel identity) | sonnet | 🟨 | |
+| Z15 | P3: per-platform errno names, dot theme diag, z2d stroker port (pixel identity) | sonnet | ✅ | 0 differing pixels vs Ghostty; 3498 tests |
+| RV13 | final Codex verification (clean HEAD) | codex astra | 🟨 | |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
@@ -128,3 +129,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: RV11: down to 3 small gaps (bench args, theme NUL, error names) → Z14. VP still running.
 - 2026-10-12: VP + Z14 committed (3492 tests, all cross-checks green). RV12 running.
 - 2026-10-12: RV12: only 3 P3 items remain → Z15.
+- 2026-10-12: Z15 committed — rendering now pixel-identical to Ghostty 1.3.1 (production build, all scenarios). RV13 running.
