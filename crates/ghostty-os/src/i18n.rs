@@ -27,19 +27,18 @@ pub enum InitError {
 /// used by libghostty.
 #[cfg(windows)]
 #[allow(clippy::unnecessary_wraps)]
-pub fn init(_resources_dir: &str) -> Result<(), InitError> {
+pub fn init(_resources_dir: &std::path::Path) -> Result<(), InitError> {
     // i18n is unsupported on Windows
     Ok(())
 }
 
 /// See the Windows variant above.
 #[cfg(not(windows))]
-pub fn init(resources_dir: &str) -> Result<(), InitError> {
+pub fn init(resources_dir: &std::path::Path) -> Result<(), InitError> {
     // Our resources dir is always nested below the share dir that
     // is standard for translations.
     // (`std.fs.path.dirname` returns null for a bare relative name, where
     // `Path::parent` returns an empty path.)
-    let resources_dir = crate::osbytes::config_str_to_path(resources_dir);
     let share_dir = resources_dir
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -248,10 +247,13 @@ mod tests {
     #[test]
     fn init_rejects_dirless_resources_dir() {
         assert!(matches!(
-            init("ghostty"),
+            init(std::path::Path::new("ghostty")),
             Err(InitError::InvalidResourcesDir)
         ));
-        assert!(matches!(init("/"), Err(InitError::InvalidResourcesDir)));
+        assert!(matches!(
+            init(std::path::Path::new("/")),
+            Err(InitError::InvalidResourcesDir)
+        ));
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use crate::{
     color::Rgb,
-    kitty::color::{Kind, OSC, Request},
+    kitty::color::{Kind, List, OSC, Request},
     osc::{ByteStorage, Command, Parser, State, Terminator},
 };
 
@@ -23,16 +23,18 @@ pub fn parse<S: ByteStorage>(
     }
     parser.buffered()?;
 
-    // The parse only reads the payload; failure marks the parser invalid
-    // after the borrow ends.
-    let data = parser.payload();
+    // The parse reads the payload and appends encoded records to the
+    // parser's auxiliary storage (the caller's allocator in the C API); the
+    // command then borrows them.
+    let (data, aux) = parser.payload_and_aux();
+    aux.reset();
     let mut exceeded = false;
-    let mut osc = OSC {
-        list: Vec::new(),
-        terminator: Terminator::init(terminator_ch),
+    let mut out = Pending {
+        failed: false,
+        count: 0,
     };
     for kv in data.split(|&c| c == b';') {
-        if osc.list.len() >= Kind::MAX * 2 {
+        if out.count >= Kind::MAX * 2 {
             log::warn!("exceeded limit for number of keys in kitty color protocol, ignoring");
             exceeded = true;
             break;
@@ -54,11 +56,11 @@ pub fn parse<S: ByteStorage>(
         };
         let value = rest.trim_ascii_matching(b' ');
         if value.is_empty() {
-            osc.list.push(Request::Reset(key));
+            out.push(aux, Request::Reset(key));
         } else if value == b"?" {
-            osc.list.push(Request::Query(key));
+            out.push(aux, Request::Query(key));
         } else if let Ok(color) = Rgb::parse_bytes(value) {
-            osc.list.push(Request::Set { key, color });
+            out.push(aux, Request::Set { key, color });
         } else {
             log::warn!(
                 "invalid color format in kitty color protocol: {}",
@@ -66,11 +68,31 @@ pub fn parse<S: ByteStorage>(
             );
         }
     }
-    if exceeded {
+    if exceeded || out.failed {
         parser.state = State::Invalid;
         return None;
     }
-    Some(Command::KittyColorProtocol(osc))
+    Some(Command::KittyColorProtocol(OSC {
+        list: List::from_encoded(parser.aux_bytes()),
+        terminator: Terminator::init(terminator_ch),
+    }))
+}
+
+/// Bookkeeping while appending records to the parser's storage.
+struct Pending {
+    /// An allocation failed (the OSC cannot be represented).
+    failed: bool,
+    /// Number of requests so far (for the limit).
+    count: usize,
+}
+
+impl Pending {
+    fn push<S: ByteStorage>(&mut self, aux: &mut S, req: Request) {
+        if !self.failed && aux.try_extend(&req.encode()).is_err() {
+            self.failed = true;
+        }
+        self.count += 1;
+    }
 }
 
 trait TrimMatching {
@@ -123,7 +145,7 @@ mod tests {
         let Command::KittyColorProtocol(osc) = cmd else {
             panic!("wrong command");
         };
-        let list = osc.list;
+        let list = osc.list.to_vec();
         assert_eq!(9, list.len());
         assert_eq!(Request::Query(Kind::Special(Special::Foreground)), list[0]);
         assert_eq!(

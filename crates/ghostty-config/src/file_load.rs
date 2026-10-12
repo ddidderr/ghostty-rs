@@ -7,10 +7,10 @@
 
 use std::fs::File;
 
-use ghostty_os::xdg;
+use ghostty_os::{osbytes::EncodedOs, xdg};
 
 /// Default path for the XDG home configuration file.
-pub fn default_xdg_path() -> Result<String, xdg::Error> {
+pub fn default_xdg_path() -> Result<EncodedOs, xdg::Error> {
     xdg::config(&xdg::Options {
         subdir: Some("ghostty/config.ghostty"),
         home: None,
@@ -18,7 +18,7 @@ pub fn default_xdg_path() -> Result<String, xdg::Error> {
 }
 
 /// Ghostty <1.3.0 default path for the XDG home configuration file.
-pub fn legacy_default_xdg_path() -> Result<String, xdg::Error> {
+pub fn legacy_default_xdg_path() -> Result<EncodedOs, xdg::Error> {
     xdg::config(&xdg::Options {
         subdir: Some("ghostty/config"),
         home: None,
@@ -26,7 +26,7 @@ pub fn legacy_default_xdg_path() -> Result<String, xdg::Error> {
 }
 
 /// Preferred default path for the XDG home configuration file.
-pub fn preferred_xdg_path() -> Result<String, xdg::Error> {
+pub fn preferred_xdg_path() -> Result<EncodedOs, xdg::Error> {
     // If the XDG path exists, use that.
     let xdg_path = default_xdg_path()?;
     if open(&xdg_path).is_ok() {
@@ -45,28 +45,28 @@ pub fn preferred_xdg_path() -> Result<String, xdg::Error> {
 
 /// Default path for the macOS Application Support configuration file.
 #[cfg(target_os = "macos")]
-pub fn default_app_support_path() -> Result<String, xdg::Error> {
+pub fn default_app_support_path() -> Result<EncodedOs, xdg::Error> {
     app_support_dir("config.ghostty")
 }
 
 /// Ghostty <1.3.0 default path for the macOS Application Support
 /// configuration file.
 #[cfg(target_os = "macos")]
-pub fn legacy_default_app_support_path() -> Result<String, xdg::Error> {
+pub fn legacy_default_app_support_path() -> Result<EncodedOs, xdg::Error> {
     app_support_dir("config")
 }
 
 #[cfg(target_os = "macos")]
-fn app_support_dir(sub_path: &str) -> Result<String, xdg::Error> {
+fn app_support_dir(sub_path: &str) -> Result<EncodedOs, xdg::Error> {
     ghostty_os::macos::app_support_dir(sub_path)
-        .map(|p| ghostty_os::osbytes::path_to_config_string(&p))
+        .map(|p| EncodedOs::from_path(&p))
         .map_err(|_| xdg::Error::AppleApiFailed)
 }
 
 /// Preferred default path for the macOS Application Support configuration
 /// file.
 #[cfg(target_os = "macos")]
-pub fn preferred_app_support_path() -> Result<String, xdg::Error> {
+pub fn preferred_app_support_path() -> Result<EncodedOs, xdg::Error> {
     Ok(preferred_of(
         default_app_support_path()?,
         legacy_default_app_support_path()?,
@@ -76,7 +76,7 @@ pub fn preferred_app_support_path() -> Result<String, xdg::Error> {
 /// Pick between a new path and its legacy path: the new one if it exists,
 /// else the legacy one if it exists, else the new one.
 #[cfg(any(target_os = "macos", test))]
-fn preferred_of(new: String, legacy: String) -> String {
+fn preferred_of(new: EncodedOs, legacy: EncodedOs) -> EncodedOs {
     // If the new path exists, use that.
     if open(&new).is_ok() {
         return new;
@@ -95,9 +95,9 @@ fn preferred_of(new: String, legacy: String) -> String {
 /// one if it exists, else Application Support.
 #[cfg(any(target_os = "macos", test))]
 fn preferred_macos(
-    app_support_path: String,
-    xdg_path: &dyn Fn() -> Result<String, xdg::Error>,
-) -> Result<String, xdg::Error> {
+    app_support_path: EncodedOs,
+    xdg_path: &dyn Fn() -> Result<EncodedOs, xdg::Error>,
+) -> Result<EncodedOs, xdg::Error> {
     // macOS prefers the Application Support directory if it exists.
     if open(&app_support_path).is_ok() {
         return Ok(app_support_path);
@@ -119,7 +119,7 @@ fn preferred_macos(
 /// This doesn't create or populate the file with any default
 /// contents; downstream callers must handle this.
 #[cfg(target_os = "macos")]
-pub fn preferred_default_file_path() -> Result<String, xdg::Error> {
+pub fn preferred_default_file_path() -> Result<EncodedOs, xdg::Error> {
     preferred_macos(preferred_app_support_path()?, &preferred_xdg_path)
 }
 
@@ -129,7 +129,7 @@ pub fn preferred_default_file_path() -> Result<String, xdg::Error> {
 /// This doesn't create or populate the file with any default
 /// contents; downstream callers must handle this.
 #[cfg(not(target_os = "macos"))]
-pub fn preferred_default_file_path() -> Result<String, xdg::Error> {
+pub fn preferred_default_file_path() -> Result<EncodedOs, xdg::Error> {
     // All other platforms use XDG only
     preferred_xdg_path()
 }
@@ -158,21 +158,24 @@ impl std::error::Error for OpenFileError {}
 /// Opens the file at the given path and returns the file handle
 /// if it exists and is non-empty. This also constrains the possible
 /// errors to a smaller set that we can explicitly handle.
-pub fn open(path: &str) -> Result<File, OpenFileError> {
-    assert!(ghostty_os::osbytes::config_str_to_path(path).is_absolute());
+pub fn open(path: &EncodedOs) -> Result<File, OpenFileError> {
+    let real = path.to_path();
+    assert!(real.is_absolute());
 
-    // `path` may carry the reversible byte escape of non-UTF-8 names.
-    let file = File::open(ghostty_os::osbytes::config_str_to_os(path)).map_err(|err| {
+    let file = File::open(&real).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             OpenFileError::FileNotFound
         } else {
-            log::warn!("unexpected file open error path={path} err={err}");
+            log::warn!(
+                "unexpected file open error path={} err={err}",
+                real.display()
+            );
             OpenFileError::FileOpenFailed
         }
     })?;
 
     let meta = file.metadata().map_err(|err| {
-        log::warn!("error getting file stat path={path} err={err}");
+        log::warn!("error getting file stat path={} err={err}", real.display());
         OpenFileError::FileOpenFailed
     })?;
     if !meta.is_file() {
@@ -190,21 +193,25 @@ pub fn open(path: &str) -> Result<File, OpenFileError> {
 mod tests {
     use super::*;
 
+    fn e(s: &str) -> EncodedOs {
+        EncodedOs::from_encoded(s)
+    }
+
     #[test]
     fn open_missing_dir_and_empty() {
         assert_eq!(
-            open("/nonexistent/ghostty/file").unwrap_err(),
+            open(&e("/nonexistent/ghostty/file")).unwrap_err(),
             OpenFileError::FileNotFound
         );
-        assert_eq!(open("/tmp").unwrap_err(), OpenFileError::NotAFile);
+        assert_eq!(open(&e("/tmp")).unwrap_err(), OpenFileError::NotAFile);
         let p = std::env::temp_dir().join(format!("ghostty-file-load-{}", std::process::id()));
         std::fs::write(&p, "").unwrap();
         assert_eq!(
-            open(p.to_str().unwrap()).unwrap_err(),
+            open(&EncodedOs::from_path(&p)).unwrap_err(),
             OpenFileError::FileIsEmpty
         );
         std::fs::write(&p, "a=b").unwrap();
-        assert!(open(p.to_str().unwrap()).is_ok());
+        assert!(open(&EncodedOs::from_path(&p)).is_ok());
         std::fs::remove_file(&p).unwrap();
     }
 
@@ -212,18 +219,18 @@ mod tests {
     fn preferred_of_prefers_existing_new_then_legacy() {
         let dir = std::env::temp_dir().join(format!("ghostty-pref-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let new = dir.join("config.ghostty").to_str().unwrap().to_owned();
-        let legacy = dir.join("config").to_str().unwrap().to_owned();
-        let _ = std::fs::remove_file(&new);
-        let _ = std::fs::remove_file(&legacy);
+        let new = EncodedOs::from_path(&dir.join("config.ghostty"));
+        let legacy = EncodedOs::from_path(&dir.join("config"));
+        let _ = std::fs::remove_file(new.to_path());
+        let _ = std::fs::remove_file(legacy.to_path());
 
         // Neither exists: the new one.
         assert_eq!(preferred_of(new.clone(), legacy.clone()), new);
         // Only legacy exists: the legacy one.
-        std::fs::write(&legacy, "a=b").unwrap();
+        std::fs::write(legacy.to_path(), "a=b").unwrap();
         assert_eq!(preferred_of(new.clone(), legacy.clone()), legacy);
         // Both exist: the new one.
-        std::fs::write(&new, "a=b").unwrap();
+        std::fs::write(new.to_path(), "a=b").unwrap();
         assert_eq!(preferred_of(new.clone(), legacy.clone()), new);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -232,19 +239,19 @@ mod tests {
     fn preferred_macos_order() {
         let dir = std::env::temp_dir().join(format!("ghostty-pref-mac-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let app = dir.join("app").to_str().unwrap().to_owned();
-        let xdg_p = dir.join("xdg").to_str().unwrap().to_owned();
-        let _ = std::fs::remove_file(&app);
-        let _ = std::fs::remove_file(&xdg_p);
+        let app = EncodedOs::from_path(&dir.join("app"));
+        let xdg_p = EncodedOs::from_path(&dir.join("xdg"));
+        let _ = std::fs::remove_file(app.to_path());
+        let _ = std::fs::remove_file(xdg_p.to_path());
         let xdg_fn = || Ok(xdg_p.clone());
 
         // Neither exists: app support.
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), app);
         // XDG exists only: XDG.
-        std::fs::write(&xdg_p, "a=b").unwrap();
+        std::fs::write(xdg_p.to_path(), "a=b").unwrap();
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), xdg_p);
         // App support exists: app support wins.
-        std::fs::write(&app, "a=b").unwrap();
+        std::fs::write(app.to_path(), "a=b").unwrap();
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), app);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -252,8 +259,8 @@ mod tests {
     #[test]
     fn default_paths_end_with_expected_names() {
         if let (Ok(a), Ok(b)) = (default_xdg_path(), legacy_default_xdg_path()) {
-            assert!(a.ends_with("ghostty/config.ghostty"));
-            assert!(b.ends_with("ghostty/config"));
+            assert!(a.ends_with_plain("ghostty/config.ghostty"));
+            assert!(b.ends_with_plain("ghostty/config"));
         }
     }
 }

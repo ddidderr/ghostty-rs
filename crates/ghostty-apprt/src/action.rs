@@ -650,16 +650,14 @@ impl std::fmt::Display for SetTitle {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pwd {
     /// The working directory as reported by OSC 7. Zig keeps raw bytes; here
-    /// non-UTF-8 bytes are carried with the reversible escape of
-    /// `ghostty_os::osbytes` (valid UTF-8 is unchanged). Decode with
-    /// `osbytes::config_str_to_bytes` / `config_str_to_os` before using it
-    /// as a path or handing it to C.
-    pub pwd: String,
+    /// they are carried as an [`EncodedOs`](ghostty_os::osbytes::EncodedOs)
+    /// that must be decoded (`to_path`/`to_bytes`) at the OS/C boundary.
+    pub pwd: ghostty_os::osbytes::EncodedOs,
 }
 
 impl std::fmt::Display for Pwd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Pwd{{ {} }}", self.pwd)
+        write!(f, "Pwd{{ {} }}", self.pwd.as_encoded())
     }
 }
 
@@ -752,8 +750,10 @@ pub struct OpenUrl {
     /// The type of data that the URL refers to.
     pub kind: OpenUrlKind,
 
-    /// The URL.
-    pub url: String,
+    /// The URL or path to open, as raw bytes (Zig `[]const u8`). Plain text
+    /// URLs are wrapped with `EncodedOs::from_plain_text`, file names with
+    /// `EncodedOs::from_path`/`from_bytes`; the opener decodes it.
+    pub url: ghostty_os::osbytes::EncodedOs,
 }
 
 /// The type of the data at the URL to open. This is used as a hint to
@@ -870,7 +870,13 @@ mod tests {
     #[test]
     fn display_formats() {
         assert_eq!(SetTitle { title: "x".into() }.to_string(), "SetTitle{ x }");
-        assert_eq!(Pwd { pwd: "/a".into() }.to_string(), "Pwd{ /a }");
+        assert_eq!(
+            Pwd {
+                pwd: ghostty_os::osbytes::EncodedOs::from_encoded("/a")
+            }
+            .to_string(),
+            "Pwd{ /a }"
+        );
         assert_eq!(
             DesktopNotification {
                 title: "t".into(),

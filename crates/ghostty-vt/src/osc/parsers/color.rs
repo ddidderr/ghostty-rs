@@ -1,6 +1,8 @@
 //! OSC color operations: 4, 5, 10-19, 104, 105, 110-119
 //! (ZIG/src/terminal/osc/parsers/color.zig).
 
+use std::borrow::Cow;
+
 use crate::{
     color::{Dynamic as DynamicColor, Rgb, Special as SpecialColor},
     osc::{ByteStorage, Command, Parser, State, Terminator},
@@ -49,11 +51,7 @@ pub fn parse<S: ByteStorage>(
     if parser.has_writer() {
         parser.buffered()?;
     }
-    let data: &[u8] = if parser.has_writer() {
-        parser.payload()
-    } else {
-        &[]
-    };
+    let has_writer = parser.has_writer();
     // Check and make sure that we're parsing the correct OSCs
     let op = match parser.state {
         State::S4 => Operation::Osc4,
@@ -84,11 +82,58 @@ pub fn parse<S: ByteStorage>(
             return None;
         }
     };
+    // The request list is built in the parser's own (allocator-backed)
+    // auxiliary storage, not on the global allocator.
+    let (payload, aux) = parser.payload_and_aux();
+    let data: &[u8] = if has_writer { payload } else { &[] };
+    aux.reset();
+    let mut sink = StorageSink { aux, failed: false };
+    parse_color_into(op, data, &mut sink);
+    if sink.failed {
+        // Allocation failure: the OSC cannot be represented.
+        log::warn!("unable to allocate the color request list");
+        parser.state = State::Invalid;
+        return None;
+    }
     Some(Command::ColorOperation {
         op,
-        requests: parse_color(op, data),
+        requests: List::from_encoded(parser.aux_bytes()),
         terminator: Terminator::init(terminator_ch),
     })
+}
+
+/// Where parsed requests go: a `Vec` (tests, [`parse_color`]) or the
+/// parser's storage ([`StorageSink`]).
+pub trait Sink {
+    fn push(&mut self, request: Request);
+    fn is_empty(&self) -> bool;
+}
+
+impl Sink for Vec<Request> {
+    fn push(&mut self, request: Request) {
+        Vec::push(self, request);
+    }
+    fn is_empty(&self) -> bool {
+        Vec::is_empty(self)
+    }
+}
+
+/// Appends encoded request records to a [`ByteStorage`]. An allocation
+/// failure is remembered in `failed` (later pushes are dropped).
+pub struct StorageSink<'s, S: ByteStorage> {
+    aux: &'s mut S,
+    failed: bool,
+}
+
+impl<S: ByteStorage> Sink for StorageSink<'_, S> {
+    fn push(&mut self, request: Request) {
+        if !self.failed && self.aux.try_extend(&request.encode()).is_err() {
+            self.failed = true;
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.aux.is_empty()
+    }
 }
 
 /// Zig `std.mem.tokenizeScalar(u8, buf, ';')`: skips empty tokens.
@@ -132,33 +177,88 @@ fn parse_u9(s: &[u8]) -> Option<u16> {
 /// request) but grants us an easier to understand and testable implementation.
 ///
 /// If color changing ends up being a bottleneck we can optimize this later.
-pub fn parse_color(op: Operation, buf: &[u8]) -> List {
+pub fn parse_color(op: Operation, buf: &[u8]) -> Vec<Request> {
+    let mut out = Vec::new();
+    parse_color_into(op, buf, &mut out);
+    out
+}
+
+/// [`parse_color`] into any [`Sink`].
+pub fn parse_color_into(op: Operation, buf: &[u8], out: &mut impl Sink) {
     let mut it = tokenize(buf);
     match op {
-        Operation::Osc4 => parse_get_set_ansi_color(Operation::Osc4, &mut it),
-        Operation::Osc5 => parse_get_set_ansi_color(Operation::Osc5, &mut it),
-        Operation::Osc104 => parse_reset_ansi_color(Operation::Osc104, &mut it),
-        Operation::Osc105 => parse_reset_ansi_color(Operation::Osc105, &mut it),
-        Operation::Osc10 => parse_get_set_dynamic_color(DynamicColor::Foreground, &mut it),
-        Operation::Osc11 => parse_get_set_dynamic_color(DynamicColor::Background, &mut it),
-        Operation::Osc12 => parse_get_set_dynamic_color(DynamicColor::Cursor, &mut it),
-        Operation::Osc13 => parse_get_set_dynamic_color(DynamicColor::PointerForeground, &mut it),
-        Operation::Osc14 => parse_get_set_dynamic_color(DynamicColor::PointerBackground, &mut it),
-        Operation::Osc15 => parse_get_set_dynamic_color(DynamicColor::TektronixForeground, &mut it),
-        Operation::Osc16 => parse_get_set_dynamic_color(DynamicColor::TektronixBackground, &mut it),
-        Operation::Osc17 => parse_get_set_dynamic_color(DynamicColor::HighlightBackground, &mut it),
-        Operation::Osc18 => parse_get_set_dynamic_color(DynamicColor::TektronixCursor, &mut it),
-        Operation::Osc19 => parse_get_set_dynamic_color(DynamicColor::HighlightForeground, &mut it),
-        Operation::Osc110 => parse_reset_dynamic_color(DynamicColor::Foreground, &mut it),
-        Operation::Osc111 => parse_reset_dynamic_color(DynamicColor::Background, &mut it),
-        Operation::Osc112 => parse_reset_dynamic_color(DynamicColor::Cursor, &mut it),
-        Operation::Osc113 => parse_reset_dynamic_color(DynamicColor::PointerForeground, &mut it),
-        Operation::Osc114 => parse_reset_dynamic_color(DynamicColor::PointerBackground, &mut it),
-        Operation::Osc115 => parse_reset_dynamic_color(DynamicColor::TektronixForeground, &mut it),
-        Operation::Osc116 => parse_reset_dynamic_color(DynamicColor::TektronixBackground, &mut it),
-        Operation::Osc117 => parse_reset_dynamic_color(DynamicColor::HighlightBackground, &mut it),
-        Operation::Osc118 => parse_reset_dynamic_color(DynamicColor::TektronixCursor, &mut it),
-        Operation::Osc119 => parse_reset_dynamic_color(DynamicColor::HighlightForeground, &mut it),
+        Operation::Osc4 => {
+            parse_get_set_ansi_color(Operation::Osc4, &mut it, out);
+        }
+        Operation::Osc5 => {
+            parse_get_set_ansi_color(Operation::Osc5, &mut it, out);
+        }
+        Operation::Osc104 => {
+            parse_reset_ansi_color(Operation::Osc104, &mut it, out);
+        }
+        Operation::Osc105 => {
+            parse_reset_ansi_color(Operation::Osc105, &mut it, out);
+        }
+        Operation::Osc10 => {
+            parse_get_set_dynamic_color(DynamicColor::Foreground, &mut it, out);
+        }
+        Operation::Osc11 => {
+            parse_get_set_dynamic_color(DynamicColor::Background, &mut it, out);
+        }
+        Operation::Osc12 => {
+            parse_get_set_dynamic_color(DynamicColor::Cursor, &mut it, out);
+        }
+        Operation::Osc13 => {
+            parse_get_set_dynamic_color(DynamicColor::PointerForeground, &mut it, out);
+        }
+        Operation::Osc14 => {
+            parse_get_set_dynamic_color(DynamicColor::PointerBackground, &mut it, out);
+        }
+        Operation::Osc15 => {
+            parse_get_set_dynamic_color(DynamicColor::TektronixForeground, &mut it, out);
+        }
+        Operation::Osc16 => {
+            parse_get_set_dynamic_color(DynamicColor::TektronixBackground, &mut it, out);
+        }
+        Operation::Osc17 => {
+            parse_get_set_dynamic_color(DynamicColor::HighlightBackground, &mut it, out);
+        }
+        Operation::Osc18 => {
+            parse_get_set_dynamic_color(DynamicColor::TektronixCursor, &mut it, out);
+        }
+        Operation::Osc19 => {
+            parse_get_set_dynamic_color(DynamicColor::HighlightForeground, &mut it, out);
+        }
+        Operation::Osc110 => {
+            parse_reset_dynamic_color(DynamicColor::Foreground, &mut it, out);
+        }
+        Operation::Osc111 => {
+            parse_reset_dynamic_color(DynamicColor::Background, &mut it, out);
+        }
+        Operation::Osc112 => {
+            parse_reset_dynamic_color(DynamicColor::Cursor, &mut it, out);
+        }
+        Operation::Osc113 => {
+            parse_reset_dynamic_color(DynamicColor::PointerForeground, &mut it, out);
+        }
+        Operation::Osc114 => {
+            parse_reset_dynamic_color(DynamicColor::PointerBackground, &mut it, out);
+        }
+        Operation::Osc115 => {
+            parse_reset_dynamic_color(DynamicColor::TektronixForeground, &mut it, out);
+        }
+        Operation::Osc116 => {
+            parse_reset_dynamic_color(DynamicColor::TektronixBackground, &mut it, out);
+        }
+        Operation::Osc117 => {
+            parse_reset_dynamic_color(DynamicColor::HighlightBackground, &mut it, out);
+        }
+        Operation::Osc118 => {
+            parse_reset_dynamic_color(DynamicColor::TektronixCursor, &mut it, out);
+        }
+        Operation::Osc119 => {
+            parse_reset_dynamic_color(DynamicColor::HighlightForeground, &mut it, out);
+        }
     }
 }
 
@@ -179,29 +279,32 @@ fn ansi_target(color: u16, special_only: bool) -> Option<Target> {
 }
 
 /// OSC 4/5
-fn parse_get_set_ansi_color<'a>(op: Operation, it: &mut impl Iterator<Item = &'a [u8]>) -> List {
+fn parse_get_set_ansi_color<'a>(
+    op: Operation,
+    it: &mut impl Iterator<Item = &'a [u8]>,
+    result: &mut impl Sink,
+) {
     // Note: in ANY error scenario below we return the accumulated results.
     // This matches the xterm behavior (see misc.c ChangeAnsiColorRequest)
 
-    let mut result = List::new();
     loop {
         // We expect a `c; spec` pair. If either doesn't exist then
         // we return the results up to this point.
         let Some(color_str) = it.next() else {
-            return result;
+            return;
         };
         let Some(spec_str) = it.next() else {
-            return result;
+            return;
         };
 
         // Color must be numeric. u9 because that'll fit our palette + special
         let Some(color) = parse_u9(color_str) else {
-            return result;
+            return;
         };
 
         // Parse the color.
         let Some(target) = ansi_target(color, op == Operation::Osc5) else {
-            return result;
+            return;
         };
 
         // "?" always results in a query.
@@ -211,20 +314,23 @@ fn parse_get_set_ansi_color<'a>(op: Operation, it: &mut impl Iterator<Item = &'a
         }
 
         let Ok(rgb) = Rgb::parse_bytes(spec_str) else {
-            return result;
+            return;
         };
         result.push(Request::Set(ColoredTarget { target, color: rgb }));
     }
 }
 
 /// OSC 104/105: Reset ANSI Colors
-fn parse_reset_ansi_color<'a>(op: Operation, it: &mut impl Iterator<Item = &'a [u8]>) -> List {
+fn parse_reset_ansi_color<'a>(
+    op: Operation,
+    it: &mut impl Iterator<Item = &'a [u8]>,
+    result: &mut impl Sink,
+) {
     // Note: xterm stops parsing the reset list on any error, but we're
     // more flexible and try the next value. This matches the behavior of
     // Kitty and I don't see a downside to being more flexible here. Hopefully
     // no one depends on the exact behavior of xterm.
 
-    let mut result = List::new();
     loop {
         let Some(color_str) = it.next() else {
             // If no parameters are given, we reset the full table.
@@ -235,7 +341,7 @@ fn parse_reset_ansi_color<'a>(op: Operation, it: &mut impl Iterator<Item = &'a [
                     _ => unreachable!(),
                 });
             }
-            return result;
+            return;
         };
 
         // Empty color strings are ignored, not treated as an error.
@@ -261,22 +367,22 @@ fn parse_reset_ansi_color<'a>(op: Operation, it: &mut impl Iterator<Item = &'a [
 fn parse_get_set_dynamic_color<'a>(
     start: DynamicColor,
     it: &mut impl Iterator<Item = &'a [u8]>,
-) -> List {
+    result: &mut impl Sink,
+) {
     // Note: in ANY error scenario below we return the accumulated results.
     // This matches the xterm behavior (see misc.c ChangeColorsRequest)
 
-    let mut result = List::new();
     let mut color = start;
     loop {
         let Some(spec_str) = it.next() else {
-            return result;
+            return;
         };
 
         if spec_str == b"?" {
             result.push(Request::Query(Target::Dynamic(color)));
         } else {
             let Ok(rgb) = Rgb::parse_bytes(spec_str) else {
-                return result;
+                return;
             };
             result.push(Request::Set(ColoredTarget {
                 target: Target::Dynamic(color),
@@ -287,7 +393,7 @@ fn parse_get_set_dynamic_color<'a>(
         // Each successive value uses the next color so long as it exists.
         match color.next() {
             Some(n) => color = n,
-            None => return result,
+            None => return,
         }
     }
 }
@@ -296,18 +402,117 @@ fn parse_get_set_dynamic_color<'a>(
 fn parse_reset_dynamic_color<'a>(
     color: DynamicColor,
     it: &mut impl Iterator<Item = &'a [u8]>,
-) -> List {
-    let mut result = List::new();
+    result: &mut impl Sink,
+) {
     if it.next().is_some() {
-        return result;
+        return;
     }
     result.push(Request::Reset(Target::Dynamic(color)));
-    result
 }
 
-/// The list of requests in a color OSC. (Zig uses a SegmentedList to
-/// avoid copying; a `Vec` is equivalent.)
-pub type List = Vec<Request>;
+/// Size of one encoded [`Request`] record.
+pub const RECORD_LEN: usize = 8;
+
+/// The list of requests in a color OSC. (Zig uses a SegmentedList on the
+/// parser's allocator.) The requests are stored as fixed size encoded
+/// records ([`Request::encode`]) in the parser's own storage, so with a
+/// caller-provided allocator (C API) the list is allocated by that allocator
+/// and borrowed by the command, like Zig's.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct List<'a>(Cow<'a, [u8]>);
+
+impl<'a> List<'a> {
+    /// View records encoded with [`Request::encode`].
+    #[must_use]
+    pub fn from_encoded(bytes: &'a [u8]) -> List<'a> {
+        debug_assert_eq!(bytes.len() % RECORD_LEN, 0);
+        List(Cow::Borrowed(bytes))
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len() / RECORD_LEN
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    #[must_use]
+    pub fn get(&self, i: usize) -> Option<Request> {
+        Request::decode(self.0.get(i * RECORD_LEN..(i + 1) * RECORD_LEN)?)
+    }
+
+    /// Iterate the requests (by value).
+    pub fn iter(&self) -> impl Iterator<Item = Request> + '_ {
+        self.0
+            .as_chunks::<RECORD_LEN>()
+            .0
+            .iter()
+            .filter_map(|rec| Request::decode(rec))
+    }
+
+    /// Copy into a `Vec` (allocates; for tests and diagnostics).
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<Request> {
+        self.iter().collect()
+    }
+
+    /// Detach from the parser storage.
+    #[must_use]
+    pub fn into_owned(self) -> List<'static> {
+        List(Cow::Owned(self.0.into_owned()))
+    }
+}
+
+impl Request {
+    /// Encode as a fixed size record: `[tag, target class, target value, r,
+    /// g, b, 0, 0]`.
+    #[must_use]
+    pub fn encode(&self) -> [u8; RECORD_LEN] {
+        fn target(t: Target) -> (u8, u8) {
+            match t {
+                Target::Palette(p) => (0, p),
+                Target::Special(s) => (1, s as u8),
+                Target::Dynamic(d) => (2, d as u8),
+            }
+        }
+        let (tag, (class, value), c) = match *self {
+            Request::Set(ColoredTarget { target: t, color }) => (0, target(t), color),
+            Request::Query(t) => (1, target(t), Rgb::default()),
+            Request::Reset(t) => (2, target(t), Rgb::default()),
+            Request::ResetPalette => (3, (0, 0), Rgb::default()),
+            Request::ResetSpecial => (4, (0, 0), Rgb::default()),
+        };
+        [tag, class, value, c.r, c.g, c.b, 0, 0]
+    }
+
+    /// Inverse of [`Request::encode`].
+    #[must_use]
+    pub fn decode(rec: &[u8]) -> Option<Request> {
+        let [tag, class, value, r, g, b, ..] = *rec else {
+            return None;
+        };
+        let target = match class {
+            0 => Target::Palette(value),
+            1 => Target::Special(SpecialColor::from_u8(value)?),
+            2 => Target::Dynamic(DynamicColor::from_u8(value)?),
+            _ => return None,
+        };
+        Some(match tag {
+            0 => Request::Set(ColoredTarget {
+                target,
+                color: Rgb { r, g, b },
+            }),
+            1 => Request::Query(target),
+            2 => Request::Reset(target),
+            3 => Request::ResetPalette,
+            4 => Request::ResetSpecial,
+            _ => return None,
+        })
+    }
+}
 
 /// A single operation related to the terminal color palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,6 +653,32 @@ mod tests {
     }
 
     #[test]
+    fn request_records_round_trip() {
+        let mut reqs = vec![Request::ResetPalette, Request::ResetSpecial];
+        for t in [
+            Target::Palette(0),
+            Target::Palette(255),
+            Target::Special(SpecialColor::Italic),
+            Target::Dynamic(DynamicColor::HighlightForeground),
+        ] {
+            reqs.push(Request::Query(t));
+            reqs.push(Request::Reset(t));
+            reqs.push(Request::Set(ColoredTarget {
+                target: t,
+                color: Rgb { r: 9, g: 8, b: 7 },
+            }));
+        }
+        let bytes: Vec<u8> = reqs.iter().flat_map(Request::encode).collect();
+        let list = List::from_encoded(&bytes);
+        assert_eq!(list.len(), reqs.len());
+        assert_eq!(list.to_vec(), reqs);
+        assert_eq!(list.iter().count(), reqs.len());
+        assert_eq!(list.into_owned().to_vec(), reqs);
+        assert_eq!(Request::decode(&[7, 0, 0, 0, 0, 0, 0, 0]), None);
+        assert_eq!(Request::decode(&[1, 2, 99, 0, 0, 0, 0, 0]), None);
+    }
+
+    #[test]
     fn osc_4_multiple_requests() {
         let list = parse_color(Operation::Osc4, b"0;red;1;blue");
         assert_eq!(
@@ -566,7 +797,7 @@ mod tests {
         assert_eq!(Operation::Osc112, op);
         assert_eq!(
             vec![Request::Reset(Target::Dynamic(DynamicColor::Cursor))],
-            requests
+            requests.to_vec()
         );
     }
 }

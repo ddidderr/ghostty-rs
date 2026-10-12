@@ -2,48 +2,61 @@
 //! the benchmark and synthetic CLIs).
 use std::{
     collections::HashMap,
+    ffi::{OsStr, OsString},
     fs::File,
     io::{self, Read},
+    path::{Path, PathBuf},
     str::FromStr,
 };
+
+use ghostty_os::osbytes::{os_bytes, os_from_bytes};
 
 /// Parsed `--key[=value]` arguments.
 #[derive(Debug, Default)]
 pub struct Args {
-    map: HashMap<String, Option<String>>,
+    // Values are OS strings: file names (`--data=...`) need not be UTF-8.
+    map: HashMap<String, Option<OsString>>,
+}
+
+/// The action name of a `+action` argument, if `arg` is one.
+#[must_use]
+pub fn action_name(arg: &OsStr) -> Option<String> {
+    let bytes = os_bytes(arg);
+    let name = bytes.strip_prefix(b"+")?;
+    Some(String::from_utf8_lossy(name).into_owned())
 }
 
 impl Args {
     /// Parse arguments (skipping `+action` words and the program name).
-    pub fn parse<I: IntoIterator<Item = String>>(iter: I) -> Result<Args, String> {
+    pub fn parse<I, S>(iter: I) -> Result<Args, String>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
         let mut map = HashMap::new();
         for arg in iter {
-            if arg.starts_with('+') {
+            let bytes = os_bytes(&arg.into());
+            if bytes.starts_with(b"+") {
                 continue;
             }
-            let Some(rest) = arg.strip_prefix("--") else {
-                return Err(format!("unexpected argument: {arg}"));
+            let Some(rest) = bytes.strip_prefix(b"--") else {
+                return Err(format!(
+                    "unexpected argument: {}",
+                    String::from_utf8_lossy(&bytes)
+                ));
             };
-            match rest.split_once('=') {
-                Some((k, v)) => map.insert(k.to_owned(), Some(v.to_owned())),
-                None => map.insert(rest.to_owned(), None),
+            let (key, value) = match rest.iter().position(|b| *b == b'=') {
+                Some(i) => (&rest[..i], Some(os_from_bytes(rest[i + 1..].to_vec()))),
+                None => (rest, None),
             };
+            let key = String::from_utf8(key.to_vec())
+                .map_err(|_| "option names must be valid UTF-8".to_owned())?;
+            map.insert(key, value);
         }
         Ok(Args { map })
     }
 
-    /// Take a typed value, falling back to `default`.
-    pub fn take<T: FromStr>(&mut self, key: &str, default: T) -> Result<T, String> {
-        match self.map.remove(key) {
-            None => Ok(default),
-            Some(None) => Err(format!("option --{key} requires a value")),
-            Some(Some(v)) => v
-                .parse()
-                .map_err(|_| format!("invalid value for --{key}: {v}")),
-        }
-    }
-
-    pub fn take_opt_string(&mut self, key: &str) -> Result<Option<String>, String> {
+    fn take_os(&mut self, key: &str) -> Result<Option<OsString>, String> {
         match self.map.remove(key) {
             None => Ok(None),
             Some(None) => Err(format!("option --{key} requires a value")),
@@ -51,15 +64,44 @@ impl Args {
         }
     }
 
+    /// Take a typed value, falling back to `default`.
+    pub fn take<T: FromStr>(&mut self, key: &str, default: T) -> Result<T, String> {
+        match self.take_os(key)? {
+            None => Ok(default),
+            Some(v) => v
+                .to_str()
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| format!("invalid value for --{key}: {}", v.to_string_lossy())),
+        }
+    }
+
+    pub fn take_opt_string(&mut self, key: &str) -> Result<Option<String>, String> {
+        match self.take_os(key)? {
+            None => Ok(None),
+            Some(v) => v
+                .into_string()
+                .map(Some)
+                .map_err(|v| format!("invalid value for --{key}: {}", v.to_string_lossy())),
+        }
+    }
+
+    /// Take a file path value (any bytes are allowed).
+    pub fn take_opt_path(&mut self, key: &str) -> Result<Option<PathBuf>, String> {
+        Ok(self.take_os(key)?.map(PathBuf::from))
+    }
+
     /// Take a boolean flag (`--key`, `--key=true`, `--key=false`).
     pub fn take_flag(&mut self, key: &str) -> Result<bool, String> {
         match self.map.remove(key) {
             None => Ok(false),
             Some(None) => Ok(true),
-            Some(Some(v)) => match v.as_str() {
+            Some(Some(v)) => match v.to_str().unwrap_or_default() {
                 "true" | "t" | "1" | "yes" => Ok(true),
                 "false" | "f" | "0" | "no" => Ok(false),
-                _ => Err(format!("invalid value for --{key}: {v}")),
+                _ => Err(format!(
+                    "invalid value for --{key}: {}",
+                    v.to_string_lossy()
+                )),
             },
         }
     }
@@ -75,10 +117,10 @@ impl Args {
 
 /// Returns the data source for the path: `None` if unset, stdin for `-`,
 /// otherwise the opened file (mirrors `benchmark/options.zig`).
-pub fn data_file(path: Option<&str>) -> io::Result<Option<Box<dyn Read>>> {
+pub fn data_file(path: Option<&Path>) -> io::Result<Option<Box<dyn Read>>> {
     match path {
         None => Ok(None),
-        Some("-") => Ok(Some(Box::new(io::stdin()))),
+        Some(p) if p == Path::new("-") => Ok(Some(Box::new(io::stdin()))),
         Some(p) => Ok(Some(Box::new(File::open(p)?))),
     }
 }
@@ -95,4 +137,26 @@ pub fn read_short(r: &mut dyn Read, buf: &mut [u8]) -> io::Result<usize> {
         }
     }
     Ok(n)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+    use super::*;
+
+    #[test]
+    fn data_path_keeps_non_utf8_bytes() {
+        let arg = OsString::from_vec(b"--data=/tmp/a\xffb".to_vec());
+        let mut args = Args::parse([arg]).unwrap();
+        let p = args.take_opt_path("data").unwrap().unwrap();
+        assert_eq!(p.as_os_str().as_bytes(), b"/tmp/a\xffb");
+        args.finish().unwrap();
+    }
+
+    #[test]
+    fn action_name_extracts_plus_words() {
+        assert_eq!(action_name(OsStr::new("+ascii")).as_deref(), Some("ascii"));
+        assert_eq!(action_name(OsStr::new("--x")), None);
+    }
 }

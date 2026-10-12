@@ -62,52 +62,127 @@ pub fn config_str_to_bytes(s: &str) -> Vec<u8> {
     out
 }
 
-/// The raw bytes of an OS string (Unix; lossless). On other platforms the
-/// string is converted via its UTF-8 (WTF-8) form.
+/// The raw bytes of an OS string. Lossless on every platform: Unix returns
+/// the bytes, Windows returns WTF-8 (unpaired UTF-16 surrogates are encoded
+/// as 3-byte sequences, like Zig's Windows argument/environment handling).
 #[cfg(unix)]
 pub fn os_bytes(s: &OsStr) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     s.as_bytes().to_vec()
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 pub fn os_bytes(s: &OsStr) -> Vec<u8> {
-    s.to_string_lossy().into_owned().into_bytes()
+    use std::os::windows::ffi::OsStrExt;
+    wide_to_wtf8(&s.encode_wide().collect::<Vec<u16>>())
 }
 
-/// Build an OS string from raw bytes.
+#[cfg(not(any(unix, windows)))]
+pub fn os_bytes(s: &OsStr) -> Vec<u8> {
+    s.to_str().map_or_else(Vec::new, |s| s.as_bytes().to_vec())
+}
+
+/// Build an OS string from raw bytes (WTF-8 on Windows; bytes that are not
+/// well-formed WTF-8 become U+FFFD, like Zig's `wtf8ToWtf16Le`/`utf8ToUtf16`).
 #[cfg(unix)]
 pub fn os_from_bytes(b: Vec<u8>) -> OsString {
     use std::os::unix::ffi::OsStringExt;
     OsString::from_vec(b)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+#[allow(clippy::needless_pass_by_value)] // same signature as the Unix variant
 pub fn os_from_bytes(b: Vec<u8>) -> OsString {
-    // Windows OS strings are WTF-16; valid UTF-8 converts losslessly and is
-    // reused without copying, anything else is replaced like Zig's utf8ToUtf16.
-    OsString::from(
-        String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
-    )
+    use std::os::windows::ffi::OsStringExt;
+    OsString::from_wide(&wtf8_to_wide(&b))
 }
 
-/// OS string to reversible `String` (see the module docs).
+#[cfg(not(any(unix, windows)))]
+#[allow(clippy::needless_pass_by_value)]
+pub fn os_from_bytes(b: Vec<u8>) -> OsString {
+    OsString::from(String::from_utf8_lossy(&b).into_owned())
+}
+
+/// Encode UTF-16 code units (possibly with unpaired surrogates) as WTF-8.
+/// Platform independent so the Windows logic is testable everywhere.
+pub fn wide_to_wtf8(wide: &[u16]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(wide.len());
+    for r in char::decode_utf16(wide.iter().copied()) {
+        match r {
+            Ok(c) => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+            Err(e) => {
+                let u = u32::from(e.unpaired_surrogate());
+                out.push(0xE0 | (u >> 12) as u8);
+                out.push(0x80 | ((u >> 6) & 0x3F) as u8);
+                out.push(0x80 | (u & 0x3F) as u8);
+            }
+        }
+    }
+    out
+}
+
+/// Decode WTF-8 into UTF-16 code units. Surrogate code points encoded as
+/// 3-byte sequences are kept as lone surrogates; anything not well-formed
+/// WTF-8 yields U+FFFD for each offending byte.
+pub fn wtf8_to_wide(b: &[u8]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    let cont = |j: usize| {
+        b.get(j)
+            .filter(|c| (**c & 0xC0) == 0x80)
+            .map(|c| u32::from(*c & 0x3F))
+    };
+    while i < b.len() {
+        let lead = b[i];
+        let (cp, len) = match lead {
+            0x00..=0x7F => (u32::from(lead), 1),
+            0xC2..=0xDF => match cont(i + 1) {
+                Some(c1) => ((u32::from(lead & 0x1F) << 6) | c1, 2),
+                None => (0xFFFD, 1),
+            },
+            0xE0..=0xEF => match (cont(i + 1), cont(i + 2)) {
+                (Some(c1), Some(c2)) if !(lead == 0xE0 && b[i + 1] < 0xA0) => {
+                    ((u32::from(lead & 0x0F) << 12) | (c1 << 6) | c2, 3)
+                }
+                _ => (0xFFFD, 1),
+            },
+            0xF0..=0xF4 => match (cont(i + 1), cont(i + 2), cont(i + 3)) {
+                (Some(c1), Some(c2), Some(c3)) => {
+                    let cp = (u32::from(lead & 0x07) << 18) | (c1 << 12) | (c2 << 6) | c3;
+                    if (0x1_0000..=0x10_FFFF).contains(&cp) {
+                        (cp, 4)
+                    } else {
+                        (0xFFFD, 1)
+                    }
+                }
+                _ => (0xFFFD, 1),
+            },
+            _ => (0xFFFD, 1),
+        };
+        i += len;
+        if cp >= 0x1_0000 {
+            let c = cp - 0x1_0000;
+            out.push(0xD800 | (c >> 10) as u16);
+            out.push(0xDC00 | (c & 0x3FF) as u16);
+        } else {
+            out.push(cp as u16);
+        }
+    }
+    out
+}
+
+/// OS string to reversible `String` (see the module docs). Lossless on every
+/// platform (Windows goes through WTF-8).
 pub fn os_to_config_string(s: &OsStr) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        bytes_to_config_string(s.as_bytes())
-    }
-    #[cfg(not(unix))]
-    {
-        valid_str_to_config_string(&s.to_string_lossy())
-    }
+    bytes_to_config_string(&os_bytes(s))
 }
 
-/// Encode a string that is already valid UTF-8 (e.g. the WTF-8 to UTF-8
-/// conversion of a non-Unix OS string). The only thing that needs escaping is
-/// a literal escape character, so decoding stays a bijection on every
-/// platform. Shared (not cfg gated) so it is testable everywhere.
+/// Encode a string that is already valid UTF-8 (plain text, e.g. a URL). The
+/// only thing that needs escaping is a literal escape character, so decoding
+/// stays a bijection on every platform.
 pub fn valid_str_to_config_string(s: &str) -> String {
     bytes_to_config_string(s.as_bytes())
 }
@@ -115,6 +190,189 @@ pub fn valid_str_to_config_string(s: &str) -> String {
 /// Inverse of [`os_to_config_string`].
 pub fn config_str_to_os(s: &str) -> OsString {
     os_from_bytes(config_str_to_bytes(s))
+}
+
+/// An OS string (path, environment value, home directory, ...) carried as a
+/// `String` through the reversible escape encoding of this module.
+///
+/// This is deliberately a distinct type: it cannot be used as text or passed
+/// to filesystem/exec APIs without an explicit [`EncodedOs::to_os`] /
+/// [`EncodedOs::to_path`] decode, and plain text (URLs, regex matches, ...)
+/// never becomes an `EncodedOs` except through [`EncodedOs::from_plain_text`],
+/// which escapes instead of decoding.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct EncodedOs(String);
+
+impl EncodedOs {
+    /// Empty value.
+    #[must_use]
+    pub const fn new() -> Self {
+        EncodedOs(String::new())
+    }
+
+    /// Encode an OS string.
+    #[must_use]
+    pub fn from_os(s: &OsStr) -> Self {
+        EncodedOs(os_to_config_string(s))
+    }
+
+    /// Encode a path.
+    #[must_use]
+    pub fn from_path(p: &std::path::Path) -> Self {
+        Self::from_os(p.as_os_str())
+    }
+
+    /// Encode raw bytes.
+    #[must_use]
+    pub fn from_bytes(b: &[u8]) -> Self {
+        EncodedOs(bytes_to_config_string(b))
+    }
+
+    /// Adopt a string that is *already* in the escape encoding (config
+    /// values, CLI arguments collected with `args::collect_config_strings`).
+    #[must_use]
+    pub fn from_encoded(s: impl Into<String>) -> Self {
+        EncodedOs(s.into())
+    }
+
+    /// Wrap plain text (not previously encoded): a literal escape character
+    /// is escaped so decoding returns exactly the same text.
+    #[must_use]
+    pub fn from_plain_text(s: &str) -> Self {
+        EncodedOs(valid_str_to_config_string(s))
+    }
+
+    /// The encoded text (config files, `+show-config`, display of config
+    /// values). Never pass this to the OS; decode first.
+    #[must_use]
+    pub fn as_encoded(&self) -> &str {
+        &self.0
+    }
+
+    /// Consume into the encoded string.
+    #[must_use]
+    pub fn into_encoded(self) -> String {
+        self.0
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// Whether the decoded value ends with the given plain suffix.
+    #[must_use]
+    pub fn ends_with_plain(&self, suffix: &str) -> bool {
+        self.0.ends_with(suffix)
+    }
+
+    /// Decode to the raw bytes.
+    #[must_use]
+    pub fn to_bytes(&self) -> Vec<u8> {
+        config_str_to_bytes(&self.0)
+    }
+
+    /// Decode to an OS string.
+    #[must_use]
+    pub fn to_os(&self) -> OsString {
+        config_str_to_os(&self.0)
+    }
+
+    /// Decode to UTF-16 code units (WTF-16: lone surrogates round-trip).
+    /// This is the Windows API form; it is platform independent so the
+    /// Windows logic is testable everywhere.
+    #[must_use]
+    pub fn to_wide(&self) -> Vec<u16> {
+        wtf8_to_wide(&self.to_bytes())
+    }
+
+    /// [`EncodedOs::to_wide`] plus a trailing NUL.
+    #[must_use]
+    pub fn to_wide_nul(&self) -> Vec<u16> {
+        let mut w = self.to_wide();
+        w.push(0);
+        w
+    }
+
+    /// Encode UTF-16 code units (possibly with lone surrogates).
+    #[must_use]
+    pub fn from_wide(w: &[u16]) -> Self {
+        Self::from_bytes(&wide_to_wtf8(w))
+    }
+
+    /// Decode to a path.
+    #[must_use]
+    pub fn to_path(&self) -> std::path::PathBuf {
+        config_str_to_path(&self.0)
+    }
+
+    /// Whether the decoded value starts with the given plain prefix.
+    #[must_use]
+    pub fn starts_with_plain(&self, prefix: &str) -> bool {
+        // Valid UTF-8 prefixes (without the escape char) encode to themselves.
+        self.0.starts_with(prefix)
+    }
+
+    /// Join plain-text components like `std.fs.path.join` (empty components
+    /// skipped, exactly one separator in between). Separators are ASCII and
+    /// never part of an escape, so joining the encoded text is exact.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn join_plain(&self, parts: &[&str]) -> Self {
+        let esc: Vec<String> = parts
+            .iter()
+            .map(|p| valid_str_to_config_string(p))
+            .collect();
+        let mut all: Vec<&str> = Vec::with_capacity(parts.len() + 1);
+        all.push(&self.0);
+        all.extend(esc.iter().map(String::as_str));
+        EncodedOs(crate::path_join(&all))
+    }
+
+    /// Join another encoded path (same rules as [`EncodedOs::join_plain`]).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn join(&self, other: &EncodedOs) -> Self {
+        EncodedOs(crate::path_join(&[&self.0, &other.0]))
+    }
+}
+
+/// Compares the *encoded* form with a literal (for plain ASCII/UTF-8 text
+/// without the escape character the two are identical).
+impl PartialEq<str> for EncodedOs {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for EncodedOs {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl From<&OsStr> for EncodedOs {
+    fn from(s: &OsStr) -> Self {
+        Self::from_os(s)
+    }
+}
+
+impl From<OsString> for EncodedOs {
+    fn from(s: OsString) -> Self {
+        Self::from_os(&s)
+    }
+}
+
+impl From<&std::path::Path> for EncodedOs {
+    fn from(p: &std::path::Path) -> Self {
+        Self::from_path(p)
+    }
+}
+
+impl From<std::path::PathBuf> for EncodedOs {
+    fn from(p: std::path::PathBuf) -> Self {
+        Self::from_path(&p)
+    }
 }
 
 /// Path to reversible `String` (see the module docs).
@@ -235,6 +493,59 @@ mod tests {
                 assert_eq!(enc, s);
             }
         }
+    }
+
+    #[test]
+    fn wtf8_round_trips_unpaired_surrogates() {
+        // "a", lone high, "b", valid pair (U+1F600), lone low.
+        let wide = [0x61u16, 0xD800, 0x62, 0xD83D, 0xDE00, 0xDC00];
+        let b = wide_to_wtf8(&wide);
+        assert_eq!(&b[..1], b"a");
+        assert_eq!(&b[1..4], &[0xED, 0xA0, 0x80]);
+        assert_eq!(wtf8_to_wide(&b), wide);
+        // Through the reversible string encoding too.
+        let s = bytes_to_config_string(&b);
+        assert_eq!(wtf8_to_wide(&config_str_to_bytes(&s)), wide);
+    }
+
+    #[test]
+    fn wtf8_invalid_bytes_become_replacement() {
+        assert_eq!(wtf8_to_wide(b"a\xffb"), vec![0x61, 0xFFFD, 0x62]);
+        assert_eq!(wtf8_to_wide(b"\xe0\x80\x80"), vec![0xFFFD; 3]);
+        assert_eq!(
+            wtf8_to_wide("\u{e9}\u{1F600}".as_bytes()),
+            vec![0xE9, 0xD83D, 0xDE00]
+        );
+    }
+
+    #[test]
+    fn encoded_os_plain_text_is_not_decoded() {
+        let plain = "http://x/\u{fdd0}\u{ff}";
+        let e = EncodedOs::from_plain_text(plain);
+        assert_eq!(e.to_bytes(), plain.as_bytes());
+        // Adopting the same text as "already encoded" would decode to 0xFF.
+        assert_ne!(EncodedOs::from_encoded(plain).to_bytes(), plain.as_bytes());
+    }
+
+    #[test]
+    fn encoded_os_wide_round_trips_lone_surrogates() {
+        let wide = [0x43u16, 0x3A, 0x5C, 0xD800, 0x61, 0xD83D, 0xDE00, 0xDFFF];
+        let e = EncodedOs::from_wide(&wide);
+        assert_eq!(e.to_wide(), wide);
+        assert_eq!(*e.to_wide_nul().last().unwrap(), 0);
+        // A literal escape char in a Windows name is still preserved.
+        let w2: Vec<u16> = "a\u{fdd0}\u{ff}".encode_utf16().collect();
+        assert_eq!(EncodedOs::from_wide(&w2).to_wide(), w2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn encoded_os_unix_round_trip() {
+        let o = os_from_bytes(vec![b'/', 0xff, b'x']);
+        let e = EncodedOs::from_os(&o);
+        assert_eq!(e.to_os(), o);
+        assert_eq!(e.to_path(), std::path::PathBuf::from(&o));
+        assert_eq!(e.join_plain(&["a", "", "b"]).to_bytes(), b"/\xffx/a/b");
     }
 
     #[cfg(unix)]

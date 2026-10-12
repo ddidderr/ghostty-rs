@@ -64,7 +64,8 @@ impl Surface {
             log::info!("application sent invalid base64 data for OSC 52");
             return;
         };
-        let text = String::from_utf8_lossy(&decoded).into_owned();
+        // OSC 52 data is written as the application sent it (bytes).
+        let text = decoded;
 
         // When clipboard-write is "ask" a prompt is displayed to the user
         // asking them to confirm the clipboard access. Each app runtime
@@ -111,11 +112,11 @@ impl Surface {
             }
         };
 
-        let mut contents: Vec<(String, String)> = Vec::new();
+        let mut contents: Vec<(String, Vec<u8>)> = Vec::new();
         match format {
             CopyToClipboard::Plain => {
                 let Some(s) = run(opts) else { return };
-                contents.push(("text/plain".to_owned(), s));
+                contents.push(("text/plain".to_owned(), s.into_bytes()));
             }
 
             CopyToClipboard::Vt => {
@@ -125,7 +126,7 @@ impl Surface {
                 // it contains escape sequences that should be preserved
                 // as-is
                 let Some(s) = run(o) else { return };
-                contents.push(("text/plain".to_owned(), s));
+                contents.push(("text/plain".to_owned(), s.into_bytes()));
             }
 
             CopyToClipboard::Html => {
@@ -135,7 +136,7 @@ impl Surface {
                 // since HTML has its own character encoding and entity
                 // system
                 let Some(s) = run(o) else { return };
-                contents.push(("text/html".to_owned(), s));
+                contents.push(("text/html".to_owned(), s.into_bytes()));
             }
 
             CopyToClipboard::Mixed => {
@@ -143,7 +144,7 @@ impl Surface {
                 let Some(plain) = run(opts.clone()) else {
                     return;
                 };
-                contents.push(("text/plain".to_owned(), plain));
+                contents.push(("text/plain".to_owned(), plain.into_bytes()));
 
                 // Second, generate HTML without codepoint mappings
                 let mut o = opts;
@@ -154,7 +155,7 @@ impl Surface {
                 o.background = None;
                 o.foreground = None;
                 let Some(html) = run(o) else { return };
-                contents.push(("text/html".to_owned(), html));
+                contents.push(("text/html".to_owned(), html.into_bytes()));
             }
         }
 
@@ -207,7 +208,7 @@ impl Surface {
             ClipboardRequest::Osc52Write(clipboard) => {
                 self.rt_surface.set_clipboard(
                     clipboard,
-                    &[("text/plain".to_owned(), data.to_owned())],
+                    &[("text/plain".to_owned(), data.as_bytes().to_vec())],
                     !confirmed,
                 );
                 Ok(())

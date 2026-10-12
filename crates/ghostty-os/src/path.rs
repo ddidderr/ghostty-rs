@@ -27,9 +27,8 @@ pub enum Error {
 
 /// Search for "cmd" in the PATH and return the absolute path. Non-UTF-8
 /// bytes are carried via [`crate::osbytes`]; see [`expand_os`].
-pub fn expand(cmd: &str) -> Result<Option<String>, Error> {
-    let cmd = crate::osbytes::config_str_to_os(cmd);
-    Ok(expand_os(&cmd)?.map(|p| crate::osbytes::os_to_config_string(p.as_os_str())))
+pub fn expand(cmd: &crate::osbytes::EncodedOs) -> Result<Option<crate::osbytes::EncodedOs>, Error> {
+    Ok(expand_os(&cmd.to_os())?.map(crate::osbytes::EncodedOs::from))
 }
 
 /// Byte-preserving [`expand`]: `$PATH` and the command are handled as raw
@@ -104,6 +103,12 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Plain-text wrapper over [`expand`] for the literals used below.
+    fn expand(cmd: &str) -> Result<Option<String>, Error> {
+        super::expand(&crate::osbytes::EncodedOs::from_plain_text(cmd))
+            .map(|o| o.map(crate::osbytes::EncodedOs::into_encoded))
+    }
 
     // `uname -n` is the *nix equivalent of `hostname.exe` on Windows
     #[test]

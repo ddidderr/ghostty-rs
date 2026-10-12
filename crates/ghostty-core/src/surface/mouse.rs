@@ -394,15 +394,20 @@ fn drag_left_click_triple_selection(
 /// Resolve a relative file path to an absolute path using `pwd` (Zig
 /// `resolvePathForOpening`). Returns `None` for absolute paths (use as-is),
 /// when there's no pwd, or when the resolved path doesn't exist.
-fn resolve_path_for_opening(pwd: Option<&str>, path: &str) -> Option<String> {
+///
+/// `pwd` is the raw OSC 7 byte string; `path` is plain terminal text.
+fn resolve_path_for_opening(
+    pwd: Option<&[u8]>,
+    path: &str,
+) -> Option<ghostty_os::osbytes::EncodedOs> {
     use std::path::{Component, Path, PathBuf};
 
     if Path::new(path).is_absolute() {
         return None;
     }
 
-    let pwd = pwd?;
-    let joined = Path::new(pwd).join(path);
+    let pwd = ghostty_os::osbytes::os_from_bytes(pwd?.to_vec());
+    let joined = Path::new(&pwd).join(path);
 
     // Lexically normalize (std.fs.path.resolve).
     let mut out = PathBuf::new();
@@ -419,7 +424,16 @@ fn resolve_path_for_opening(pwd: Option<&str>, path: &str) -> Option<String> {
     if !out.exists() {
         return None;
     }
-    Some(out.to_string_lossy().into_owned())
+    Some(ghostty_os::osbytes::EncodedOs::from_path(&out))
+}
+
+/// What to hand to the opener for a matched `open` link: a relative path
+/// that resolves against the terminal's pwd becomes that (OS) path, anything
+/// else (a URL, an absolute path) is the matched *plain text*, wrapped so it
+/// is never mistaken for an escaped OS string.
+fn open_link_target(pwd: Option<&[u8]>, text: &str) -> ghostty_os::osbytes::EncodedOs {
+    resolve_path_for_opening(pwd, text)
+        .unwrap_or_else(|| ghostty_os::osbytes::EncodedOs::from_plain_text(text))
 }
 
 impl Surface {
@@ -1603,7 +1617,7 @@ impl Surface {
 
     /// Return the URI for an OSC8 hyperlink at the given position or `None`
     /// if there is no hyperlink.
-    fn osc8_uri(screen: &Screen, pin: Pin) -> Option<String> {
+    fn osc8_uri(screen: &Screen, pin: Pin) -> Option<Vec<u8>> {
         let node = screen.pages.node(pin.node)?;
         let page = &node.data;
         let idx = page
@@ -1611,13 +1625,13 @@ impl Surface {
             .ok()?;
         let id = page.lookup_hyperlink(idx)?;
         let entry = page.hyperlink_set.get(id)?;
-        Some(String::from_utf8_lossy(&entry.uri).into_owned())
+        Some(entry.uri.clone())
     }
 
     /// The URL of the link (`open` regex link or OSC8) under the current
     /// cursor position, if the mouse is over a link (Zig
     /// `copy_url_to_clipboard`). Takes the renderer lock.
-    pub(crate) fn link_url_at_cursor(&self) -> Option<String> {
+    pub(crate) fn link_url_at_cursor(&self) -> Option<Vec<u8>> {
         // If the mouse isn't over a link, nothing we can do.
         if !self.mouse.borrow().over_link {
             return None;
@@ -1632,10 +1646,14 @@ impl Surface {
         let link = self.link_at_pos(&t, vp, mods)?;
         let screen = t.screen();
         match link.action {
-            LinkAction::Open => Some(screen.selection_string(SelectionString {
-                sel: link.selection,
-                trim,
-            })),
+            LinkAction::Open => Some(
+                screen
+                    .selection_string(SelectionString {
+                        sel: link.selection,
+                        trim,
+                    })
+                    .into_bytes(),
+            ),
             LinkAction::_OpenOsc8 => {
                 let uri = Self::osc8_uri(screen, link.selection.start(&screen.pages));
                 if uri.is_none() {
@@ -1664,8 +1682,9 @@ impl Surface {
                         sel: link.selection,
                         trim: false,
                     });
-                    let pwd = t.get_pwd().map(ghostty_os::osbytes::bytes_to_config_string);
-                    resolve_path_for_opening(pwd.as_deref(), &str).unwrap_or(str)
+                    // The matched text is plain terminal text (a URL or a
+                    // path), never an escaped OS string.
+                    open_link_target(t.get_pwd(), &str)
                 }
 
                 LinkAction::_OpenOsc8 => {
@@ -1674,7 +1693,7 @@ impl Surface {
                         log::warn!("failed to get URI for OSC8 hyperlink");
                         return Ok(false);
                     };
-                    uri
+                    ghostty_os::osbytes::EncodedOs::from_bytes(&uri)
                 }
             }
         };
@@ -1703,7 +1722,7 @@ impl Surface {
             OpenUrlKind::Text => ghostty_os::open::OpenUrlKind::Text,
             OpenUrlKind::Html => ghostty_os::open::OpenUrlKind::Html,
         };
-        ghostty_os::open::open(kind, &url)?;
+        ghostty_os::open::open(kind, &url.to_os())?;
         Ok(())
     }
 
@@ -1795,7 +1814,10 @@ impl Surface {
                         break 'link (None, false);
                     };
                     (
-                        Some(MouseOverLink { url: uri }),
+                        // Display-only text for the status bar.
+                        Some(MouseOverLink {
+                            url: String::from_utf8_lossy(&uri).into_owned(),
+                        }),
                         cfg.link_previews != LinkPreviews::False,
                     )
                 }
@@ -2484,19 +2506,53 @@ mod tests {
     #[test]
     fn resolve_path_for_opening_semantics() {
         // Absolute paths are used as-is.
-        assert_eq!(resolve_path_for_opening(Some("/tmp"), "/etc/passwd"), None);
+        assert_eq!(resolve_path_for_opening(Some(b"/tmp"), "/etc/passwd"), None);
         // No pwd, no resolution.
         assert_eq!(resolve_path_for_opening(None, "foo"), None);
         // Non-existent relative paths are not resolved.
         assert_eq!(
-            resolve_path_for_opening(Some("/tmp"), "does-not-exist-xyz"),
+            resolve_path_for_opening(Some(b"/tmp"), "does-not-exist-xyz"),
             None
         );
         // Existing relative path resolves, including `..`.
         assert_eq!(
-            resolve_path_for_opening(Some("/tmp"), "../etc"),
-            Some("/etc".to_owned())
+            resolve_path_for_opening(Some(b"/tmp"), "../etc"),
+            Some(ghostty_os::osbytes::EncodedOs::from_plain_text("/etc"))
         );
+    }
+
+    #[test]
+    fn open_link_plain_text_is_never_decoded() {
+        // Regex-matched text is ordinary text: the escape character followed
+        // by U+00FF must not turn into the byte 0xFF.
+        let text = "https://example.com/\u{fdd0}\u{ff}";
+        let t = open_link_target(Some(b"/tmp"), text);
+        assert_eq!(t.to_bytes(), text.as_bytes());
+        let abs = open_link_target(None, "/etc/\u{fdd0}\u{ff}");
+        assert_eq!(abs.to_bytes(), "/etc/\u{fdd0}\u{ff}".as_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_link_resolves_against_non_utf8_pwd() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = ghostty_os::TempDir::init().unwrap();
+        let dir = td.path().join(std::ffi::OsStr::from_bytes(b"d\xffir"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("file.txt"), "x").unwrap();
+        // The OSC 7 pwd is raw bytes.
+        let pwd = dir.as_os_str().as_bytes().to_vec();
+        let t = open_link_target(Some(&pwd), "file.txt");
+        assert_eq!(t.to_path(), dir.join("file.txt"));
+        assert!(t.to_path().exists());
+    }
+
+    #[test]
+    fn osc8_uri_bytes_are_carried_unchanged() {
+        let uri = b"https://example.com/a\xffb".to_vec();
+        let t = ghostty_os::osbytes::EncodedOs::from_bytes(&uri);
+        assert_eq!(t.to_bytes(), uri);
+        assert_ne!(t.as_encoded().as_bytes(), uri.as_slice());
     }
 
     #[test]

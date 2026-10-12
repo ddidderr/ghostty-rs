@@ -16,7 +16,7 @@ use ghostty_config::{
 use ghostty_input::binding::{Action as BindingAction, TriggerC, TriggerCTag};
 
 use crate::{
-    main_c::{EMPTY_STRING, string_from_owned},
+    main_c::{EMPTY_STRING, string_from_bytes},
     types::{
         ghostty_command_s,
         ghostty_config_color_list_s,
@@ -103,6 +103,15 @@ fn cstring(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap_or_default()
 }
 
+/// A C string for a config *value*: config strings carry non-UTF-8 bytes in
+/// the reversible [`ghostty_os::osbytes`] encoding, so the embedder gets the
+/// decoded bytes (Zig hands out the original byte slice).
+fn cstring_value(s: &str) -> CString {
+    let mut bytes = ghostty_os::osbytes::config_str_to_bytes(s);
+    bytes.retain(|b| *b != 0);
+    CString::new(bytes).unwrap_or_default()
+}
+
 /// Intern a string for the lifetime of the process (enum tag names).
 fn intern(s: &str) -> *const c_char {
     static POOL: OnceLock<Mutex<HashSet<Box<CStr>>>> = OnceLock::new();
@@ -122,8 +131,8 @@ fn intern(s: &str) -> *const c_char {
 fn build_backing(value: &CValue) -> Backing {
     let mut b = Backing::default();
     match value {
-        CValue::String(s) => b.strings.push(cstring(s)),
-        CValue::Path { path, .. } => b.strings.push(cstring(path)),
+        CValue::String(s) => b.strings.push(cstring_value(s)),
+        CValue::Path { path, .. } => b.strings.push(cstring_value(path)),
         CValue::ColorList(list) => {
             b.colors = list
                 .iter()
@@ -136,10 +145,10 @@ fn build_backing(value: &CValue) -> Backing {
         }
         CValue::Commands(cmds) => {
             for c in cmds {
-                b.strings.push(cstring(&c.action_key));
-                b.strings.push(cstring(&c.action));
-                b.strings.push(cstring(&c.title));
-                b.strings.push(cstring(&c.description));
+                b.strings.push(cstring_value(&c.action_key));
+                b.strings.push(cstring_value(&c.action));
+                b.strings.push(cstring_value(&c.title));
+                b.strings.push(cstring_value(&c.description));
             }
             // The CStrings' heap buffers don't move when the Vec grows.
             b.commands = b
@@ -252,9 +261,12 @@ pub unsafe extern "C" fn ghostty_config_load_file(ptr: ghostty_config_t, path: *
     // Non-UTF-8 file names are valid on Unix; keep the bytes (reversible
     // escape understood by the config file loader).
     let path =
-        ghostty_os::osbytes::bytes_to_config_string(unsafe { CStr::from_ptr(path) }.to_bytes());
+        ghostty_os::osbytes::EncodedOs::from_bytes(unsafe { CStr::from_ptr(path) }.to_bytes());
     if let Err(err) = c.config.load_file(&path) {
-        log::error!("error loading config from file path={path} err={err}");
+        log::error!(
+            "error loading config from file path={} err={err}",
+            path.as_encoded()
+        );
     }
 }
 
@@ -574,7 +586,8 @@ pub unsafe extern "C" fn ghostty_config_get_diagnostic(
 #[unsafe(no_mangle)]
 pub extern "C" fn ghostty_config_open_path() -> ghostty_string_s {
     match ghostty_config::edit::open_path() {
-        Ok(path) => string_from_owned(&path),
+        // The embedder gets the real bytes of the path.
+        Ok(path) => string_from_bytes(&path.to_bytes()),
         Err(err) => {
             log::error!("error opening config in editor err={err}");
             EMPTY_STRING
@@ -587,6 +600,23 @@ mod tests {
     use std::ffi::c_uint;
 
     use super::*;
+
+    #[test]
+    fn config_values_reach_c_as_decoded_bytes() {
+        use ghostty_os::osbytes::EncodedOs;
+        let enc = EncodedOs::from_bytes(b"/a\xffb");
+        assert_ne!(enc.as_encoded().as_bytes(), b"/a\xffb");
+        let b = build_backing(&CValue::Path {
+            path: enc.as_encoded().to_owned(),
+            optional: false,
+        });
+        assert_eq!(b.strings[0].as_bytes(), b"/a\xffb");
+        let b = build_backing(&CValue::String(enc.into_encoded()));
+        assert_eq!(b.strings[0].as_bytes(), b"/a\xffb");
+        // Plain text (even with the escape char) is unchanged.
+        let b = build_backing(&CValue::String("h\u{e9}llo".to_owned()));
+        assert_eq!(b.strings[0].to_str().unwrap(), "h\u{e9}llo");
+    }
 
     fn get<T: Copy>(cfg: ghostty_config_t, key: &str, init: T) -> (bool, T) {
         let mut out = init;

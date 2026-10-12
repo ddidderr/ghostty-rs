@@ -110,29 +110,30 @@ impl CssProviders {
 
         for p in &config.gtk_custom_css.value {
             let (path, optional) = match p {
-                Path::Optional(path) => (path, true),
-                Path::Required(path) => (path, false),
+                Path::Optional(path) => (path.to_path(), true),
+                Path::Required(path) => (path.to_path(), false),
             };
-            let meta = match std::fs::metadata(path) {
+            let shown = path.display();
+            let meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
                 Err(e) => {
                     if e.kind() != std::io::ErrorKind::NotFound || !optional {
-                        log::warn!("error opening gtk-custom-css file {path}: {e}");
+                        log::warn!("error opening gtk-custom-css file {shown}: {e}");
                     }
                     continue;
                 }
             };
-            log::info!("loading gtk-custom-css path={path}");
+            log::info!("loading gtk-custom-css path={shown}");
             if meta.len() > CSS_FILE_SIZE_LIMIT {
                 log::warn!(
-                    "gtk-custom-css file {path} was larger than {CSS_FILE_SIZE_LIMIT} bytes"
+                    "gtk-custom-css file {shown} was larger than {CSS_FILE_SIZE_LIMIT} bytes"
                 );
                 continue;
             }
-            let contents = match std::fs::read(path) {
+            let contents = match std::fs::read(&path) {
                 Ok(c) => c,
                 Err(e) => {
-                    log::warn!("error reading gtk-custom-css file {path}: {e}");
+                    log::warn!("error reading gtk-custom-css file {shown}: {e}");
                     continue;
                 }
             };

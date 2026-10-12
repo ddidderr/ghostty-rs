@@ -147,7 +147,7 @@ pub enum WorkingDirectory {
 
     /// Use an explicit working directory path. This may be not be
     /// expanded until finalize is called.
-    Path(String),
+    Path(ghostty_os::osbytes::EncodedOs),
 }
 
 impl ConfigField for WorkingDirectory {
@@ -169,7 +169,7 @@ impl ConfigField for WorkingDirectory {
         *self = match input {
             "home" => WorkingDirectory::Home,
             "inherit" => WorkingDirectory::Inherit,
-            _ => WorkingDirectory::Path(input.to_string()),
+            _ => WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_encoded(input)),
         };
         Ok(())
     }
@@ -178,7 +178,7 @@ impl ConfigField for WorkingDirectory {
         match self {
             WorkingDirectory::Home => write_str(f, "home"),
             WorkingDirectory::Inherit => write_str(f, "inherit"),
-            WorkingDirectory::Path(p) => write_str(f, p),
+            WorkingDirectory::Path(p) => write_str(f, p.as_encoded()),
         }
     }
 }
@@ -190,7 +190,7 @@ impl WorkingDirectory {
             return;
         };
 
-        if !path.starts_with("~/") {
+        if !path.starts_with_plain("~/") {
             return;
         }
 
@@ -198,7 +198,8 @@ impl WorkingDirectory {
             Ok(e) => e,
             Err(err) => {
                 log::warn!(
-                    "error expanding home directory for working-directory path={path}: {err}"
+                    "error expanding home directory for working-directory path={}: {err}",
+                    path.as_encoded()
                 );
                 return;
             }
@@ -211,7 +212,7 @@ impl WorkingDirectory {
     }
 
     #[must_use]
-    pub fn value(&self) -> Option<&str> {
+    pub fn value(&self) -> Option<&ghostty_os::osbytes::EncodedOs> {
         match self {
             WorkingDirectory::Path(p) => Some(p),
             WorkingDirectory::Home | WorkingDirectory::Inherit => None,
@@ -1044,6 +1045,8 @@ impl ConfigField for RepeatableLink {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use ghostty_os::osbytes::EncodedOs;
+
     use super::*;
     use crate::cli_args::ConfigField;
 
@@ -1069,18 +1072,28 @@ mod tests {
             parse(&mut wd, "home").unwrap();
             assert_eq!(wd, WorkingDirectory::Home);
             parse(&mut wd, "~/projects/ghostty").unwrap();
-            assert_eq!(wd, WorkingDirectory::Path("~/projects/ghostty".into()));
+            assert_eq!(
+                wd,
+                WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_encoded(
+                    "~/projects/ghostty"
+                ))
+            );
             parse(&mut wd, "\"/tmp path\"").unwrap();
-            assert_eq!(wd, WorkingDirectory::Path("/tmp path".into()));
+            assert_eq!(
+                wd,
+                WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_encoded("/tmp path"))
+            );
         }
 
         #[test]
         fn working_directory_finalize() {
-            let mut wd = WorkingDirectory::Path("~/projects/ghostty".into());
+            let mut wd = WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_encoded(
+                "~/projects/ghostty",
+            ));
             wd.finalize();
-            let expected = ghostty_os::expand_home("~/projects/ghostty")
-                .unwrap_or_else(|_| "~/projects/ghostty".to_string());
-            assert_eq!(wd.value().unwrap(), expected);
+            let expected = ghostty_os::expand_home(&EncodedOs::from_encoded("~/projects/ghostty"))
+                .unwrap_or_else(|_| EncodedOs::from_encoded("~/projects/ghostty"));
+            assert_eq!(wd.value().unwrap(), &expected);
         }
     }
 

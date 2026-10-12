@@ -82,13 +82,13 @@ pub enum Command<'a> {
     /// 4, 5, 10-19, 104, 105, 110-119
     ColorOperation {
         op: color::Operation,
-        requests: color::List,
+        requests: color::List<'a>,
         terminator: Terminator,
     },
 
     /// Kitty color protocol, OSC 21
     /// https://sw.kovidgoyal.net/kitty/color-stack/#id1
-    KittyColorProtocol(kitty_color::OSC),
+    KittyColorProtocol(kitty_color::OSC<'a>),
 
     /// Show a desktop notification (OSC 9 or OSC 777)
     ShowDesktopNotification {
@@ -228,10 +228,10 @@ impl Command<'_> {
                 terminator,
             } => Command::ColorOperation {
                 op,
-                requests,
+                requests: requests.into_owned(),
                 terminator,
             },
-            Command::KittyColorProtocol(v) => Command::KittyColorProtocol(v),
+            Command::KittyColorProtocol(v) => Command::KittyColorProtocol(v.into_owned()),
             Command::ShowDesktopNotification { title, body } => Command::ShowDesktopNotification {
                 title: own(title),
                 body: own(body),
@@ -486,6 +486,10 @@ pub struct Parser<S: ByteStorage = Vec<u8>> {
 
     /// Buffer for temporary storage of OSC data
     buffer: S,
+    /// Auxiliary storage for the encoded request lists of the color OSCs
+    /// (Zig: a `SegmentedList` on the parser's allocator). Same allocator as
+    /// `buffer`.
+    aux: S,
     writer: Writer,
 }
 
@@ -501,6 +505,7 @@ impl Parser {
             alloc,
             state: State::Start,
             buffer: Vec::new(),
+            aux: Vec::new(),
             writer: Writer::None,
         }
     }
@@ -512,11 +517,16 @@ impl<S: ByteStorage> Parser<S> {
 
     /// Like [`Parser::init`] with an allocator-backed payload buffer
     /// (`alloc` is true: an allocator is available).
-    pub fn with_storage(storage: S) -> Parser<S> {
+    ///
+    /// `aux` holds the request lists of the color OSCs; give it the same
+    /// allocator as `storage` (a capacity of a few [`color::RECORD_LEN`]
+    /// records avoids allocating for common color commands).
+    pub fn with_storage(storage: S, aux: S) -> Parser<S> {
         Parser {
             alloc: true,
             state: State::Start,
             buffer: storage,
+            aux,
             writer: Writer::None,
         }
     }
@@ -525,6 +535,7 @@ impl<S: ByteStorage> Parser<S> {
     pub fn reset(&mut self) {
         self.state = State::Start;
         self.buffer.reset();
+        self.aux.reset();
         self.writer = Writer::None;
     }
 
@@ -606,6 +617,18 @@ impl<S: ByteStorage> Parser<S> {
     /// why producing a command never allocates.
     pub fn payload(&self) -> &[u8] {
         self.buffer.bytes()
+    }
+
+    /// The payload and the auxiliary request storage at once (disjoint
+    /// borrows, so a color parser can read the former while filling the
+    /// latter).
+    pub(crate) fn payload_and_aux(&mut self) -> (&[u8], &mut S) {
+        (self.buffer.bytes(), &mut self.aux)
+    }
+
+    /// The encoded records written to the auxiliary storage.
+    pub(crate) fn aux_bytes(&self) -> &[u8] {
+        self.aux.bytes()
     }
 
     /// Whether any payload writer has been set up (Zig `parser.writer != null`).
@@ -977,10 +1000,16 @@ mod next_slice_tests {
 
     #[test]
     fn storage_failure_invalidates_osc() {
-        let mut p = Parser::with_storage(Limited {
-            data: Vec::new(),
-            cap: 8,
-        });
+        let mut p = Parser::with_storage(
+            Limited {
+                data: Vec::new(),
+                cap: 8,
+            },
+            Limited {
+                data: Vec::new(),
+                cap: 64,
+            },
+        );
         for b in b"0;abcdefghijkl" {
             p.next(*b);
         }

@@ -6,8 +6,12 @@
 
 use std::io;
 
+use crate::osbytes::EncodedOs;
+
 /// `homedir.zig` is unavailable: nothing can be expanded.
 pub mod homedir {
+    use crate::osbytes::EncodedOs;
+
     #[derive(Debug, thiserror::Error, PartialEq, Eq)]
     pub enum ExpandError {
         #[error("home detection failed")]
@@ -17,11 +21,11 @@ pub mod homedir {
     }
 
     /// Paths without a leading `~/` pass through; others fail.
-    pub fn expand_home(path: &str) -> Result<String, ExpandError> {
-        if path.starts_with("~/") {
+    pub fn expand_home(path: &EncodedOs) -> Result<EncodedOs, ExpandError> {
+        if path.starts_with_plain("~/") {
             Err(ExpandError::HomeDetectionFailed)
         } else {
-            Ok(path.to_owned())
+            Ok(path.clone())
         }
     }
 }
@@ -29,9 +33,9 @@ pub mod homedir {
 pub mod passwd {
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct Entry {
-        pub shell: Option<String>,
-        pub home: Option<String>,
-        pub name: Option<String>,
+        pub shell: Option<crate::osbytes::EncodedOs>,
+        pub home: Option<crate::osbytes::EncodedOs>,
+        pub name: Option<crate::osbytes::EncodedOs>,
     }
 
     /// Zig: `@compileError("passwd is not available for wasm")`.
@@ -49,7 +53,7 @@ pub mod xdg {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct Options<'a> {
         pub subdir: Option<&'a str>,
-        pub home: Option<&'a str>,
+        pub home: Option<&'a crate::osbytes::EncodedOs>,
     }
 
     #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -58,15 +62,15 @@ pub mod xdg {
         Unavailable,
     }
 
-    pub fn config(_: &Options<'_>) -> Result<String, Error> {
+    pub fn config(_: &Options<'_>) -> Result<crate::osbytes::EncodedOs, Error> {
         Err(Error::Unavailable)
     }
 
-    pub fn cache(_: &Options<'_>) -> Result<String, Error> {
+    pub fn cache(_: &Options<'_>) -> Result<crate::osbytes::EncodedOs, Error> {
         Err(Error::Unavailable)
     }
 
-    pub fn state(_: &Options<'_>) -> Result<String, Error> {
+    pub fn state(_: &Options<'_>) -> Result<crate::osbytes::EncodedOs, Error> {
         Err(Error::Unavailable)
     }
 
@@ -78,17 +82,17 @@ pub mod xdg {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourcesDir {
-    pub app_path: Option<String>,
-    pub host_path: Option<String>,
+    pub app_path: Option<EncodedOs>,
+    pub host_path: Option<EncodedOs>,
 }
 
 impl ResourcesDir {
-    pub fn app(&self) -> Option<&str> {
-        self.app_path.as_deref()
+    pub fn app(&self) -> Option<&EncodedOs> {
+        self.app_path.as_ref()
     }
 
-    pub fn host(&self) -> Option<&str> {
-        self.host_path.as_deref()
+    pub fn host(&self) -> Option<&EncodedOs> {
+        self.host_path.as_ref()
     }
 }
 

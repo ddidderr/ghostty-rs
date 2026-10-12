@@ -307,7 +307,9 @@ pub trait RtSurface {
     /// `CoreSurface::complete_clipboard_request`. Returns true if started.
     fn clipboard_request(&self, clipboard: Clipboard, state: ClipboardRequest) -> bool;
     /// `setClipboard(type, contents, confirm)`; contents are (mime, data).
-    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, String)], confirm: bool);
+    /// The data is raw bytes like Zig's `[:0]const u8` (a copied file name
+    /// need not be valid UTF-8).
+    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, Vec<u8>)], confirm: bool);
     /// `defaultTermioEnv`: env vars to set for the child (GDK/GTK related
     /// cleanups).
     fn default_termio_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)>;

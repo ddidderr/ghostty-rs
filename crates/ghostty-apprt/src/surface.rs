@@ -222,7 +222,11 @@ pub fn should_inherit_working_directory(context: NewSurfaceContext, config: &Con
 /// `app.focusedSurface()?.pwd()`), which the caller (core) must look up.
 // TODO(integration): core could wrap this to resolve the focused surface.
 #[must_use]
-pub fn new_config(config: &Config, context: NewSurfaceContext, prev_pwd: Option<String>) -> Config {
+pub fn new_config(
+    config: &Config,
+    context: NewSurfaceContext,
+    prev_pwd: Option<ghostty_os::osbytes::EncodedOs>,
+) -> Config {
     let mut copy = config.clone();
     if let Some(pwd) = prev_pwd
         && should_inherit_working_directory(context, config)
@@ -237,6 +241,10 @@ mod tests {
     use std::cell::RefCell;
 
     use super::*;
+
+    fn tmp() -> ghostty_os::osbytes::EncodedOs {
+        ghostty_os::osbytes::EncodedOs::from_encoded("/tmp")
+    }
 
     struct Rec(RefCell<Vec<(u32, bool)>>);
     impl AppMailbox<u32> for Rec {
@@ -277,12 +285,9 @@ mod tests {
             NewSurfaceContext::Tab,
             &c
         ));
-        let n = new_config(&c, NewSurfaceContext::Window, Some("/tmp".into()));
-        assert_eq!(
-            n.working_directory,
-            Some(WorkingDirectory::Path("/tmp".into()))
-        );
-        let n = new_config(&c, NewSurfaceContext::Tab, Some("/tmp".into()));
+        let n = new_config(&c, NewSurfaceContext::Window, Some(tmp()));
+        assert_eq!(n.working_directory, Some(WorkingDirectory::Path(tmp())));
+        let n = new_config(&c, NewSurfaceContext::Tab, Some(tmp()));
         assert_eq!(n.working_directory, None);
     }
 }

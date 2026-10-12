@@ -29,7 +29,7 @@ const MAX_PATH_BYTES: usize = 4096;
 ///
 /// Non-UTF-8 bytes are preserved through [`crate::osbytes`]; use
 /// [`home_os`] for the raw OS string.
-pub fn home() -> Result<Option<String>, Error> {
+pub fn home() -> Result<Option<osbytes::EncodedOs>, Error> {
     home_with_capacity(MAX_PATH_BYTES)
 }
 
@@ -40,8 +40,8 @@ pub fn home_os() -> Result<Option<OsString>, Error> {
 
 /// Like [`home`] but emulates the fixed output buffer of the Zig version:
 /// errors with `BufferTooSmall` if the result is longer than `cap` bytes.
-pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
-    Ok(home_os_with_capacity(cap)?.map(|h| osbytes::os_to_config_string(&h)))
+pub fn home_with_capacity(cap: usize) -> Result<Option<osbytes::EncodedOs>, Error> {
+    Ok(home_os_with_capacity(cap)?.map(|h| osbytes::EncodedOs::from_os(&h)))
 }
 
 /// Byte-preserving [`home_with_capacity`].
@@ -98,25 +98,29 @@ pub fn home_os_with_capacity(cap: usize) -> Result<Option<OsString>, Error> {
 /// either variable is missing.
 #[cfg(windows)]
 pub fn home_os_with_capacity(cap: usize) -> Result<Option<OsString>, Error> {
-    let drive = std::env::var_os("HOMEDRIVE").map(|v| v.to_string_lossy().into_owned());
-    let path = std::env::var_os("HOMEPATH").map(|v| v.to_string_lossy().into_owned());
-    Ok(home_windows(drive.as_deref(), path.as_deref(), cap)?.map(OsString::from))
+    let drive = std::env::var_os("HOMEDRIVE");
+    let path = std::env::var_os("HOMEPATH");
+    home_windows(drive.as_deref(), path.as_deref(), cap)
 }
 
 /// Pure part of [`home_with_capacity`] on Windows.
 #[cfg(any(windows, test))]
 fn home_windows(
-    drive: Option<&str>,
-    path: Option<&str>,
+    drive: Option<&OsStr>,
+    path: Option<&OsStr>,
     cap: usize,
-) -> Result<Option<String>, Error> {
+) -> Result<Option<OsString>, Error> {
     let (Some(drive), Some(path)) = (drive, path) else {
         return Ok(None);
     };
-    if cap < drive.len() + path.len() {
+    // Lossless (WTF-16 safe) concatenation; the size is measured in WTF-8
+    // bytes like the Zig buffer.
+    if cap < osbytes::os_bytes(drive).len() + osbytes::os_bytes(path).len() {
         return Err(Error::BufferTooSmall);
     }
-    Ok(Some(format!("{drive}{path}")))
+    let mut home = drive.to_owned();
+    home.push(path);
+    Ok(Some(home))
 }
 
 #[cfg(unix)]
@@ -135,7 +139,7 @@ fn trim_space(input: &[u8]) -> &[u8] {
 ///
 /// Errors if `home` fails or if the size of the expanded path is larger
 /// than the maximum path length.
-pub fn expand_home(path: &str) -> Result<String, ExpandError> {
+pub fn expand_home(path: &osbytes::EncodedOs) -> Result<osbytes::EncodedOs, ExpandError> {
     expand_home_with_capacity(path, MAX_PATH_BYTES)
 }
 
@@ -146,9 +150,11 @@ pub fn expand_home_os(path: &OsStr) -> Result<OsString, ExpandError> {
 
 /// Like [`expand_home`] with an explicit output capacity (emulating the
 /// caller-provided buffer of the Zig version).
-pub fn expand_home_with_capacity(path: &str, cap: usize) -> Result<String, ExpandError> {
-    expand_home_os_with_capacity(&osbytes::config_str_to_os(path), cap)
-        .map(|p| osbytes::os_to_config_string(&p))
+pub fn expand_home_with_capacity(
+    path: &osbytes::EncodedOs,
+    cap: usize,
+) -> Result<osbytes::EncodedOs, ExpandError> {
+    expand_home_os_with_capacity(&path.to_os(), cap).map(osbytes::EncodedOs::from)
 }
 
 /// Windows: `~/` is not an idiom generally used on Windows.
@@ -183,13 +189,17 @@ mod tests {
     #[test]
     fn home_windows_joins_drive_and_path() {
         assert_eq!(
-            home_windows(Some("C:"), Some("\\Users\\me"), 4096),
-            Ok(Some("C:\\Users\\me".to_owned()))
+            home_windows(
+                Some(OsStr::new("C:")),
+                Some(OsStr::new("\\Users\\me")),
+                4096
+            ),
+            Ok(Some(OsString::from("C:\\Users\\me")))
         );
-        assert_eq!(home_windows(None, Some("\\x"), 4096), Ok(None));
-        assert_eq!(home_windows(Some("C:"), None, 4096), Ok(None));
+        assert_eq!(home_windows(None, Some(OsStr::new("\\x")), 4096), Ok(None));
+        assert_eq!(home_windows(Some(OsStr::new("C:")), None, 4096), Ok(None));
         assert_eq!(
-            home_windows(Some("C:"), Some("\\Users"), 3),
+            home_windows(Some(OsStr::new("C:")), Some(OsStr::new("\\Users")), 3),
             Err(Error::BufferTooSmall)
         );
     }
@@ -204,28 +214,30 @@ mod tests_unix {
     fn expand_home_unix() {
         with_env_lock(|| {
             let cap = MAX_PATH_BYTES;
-            let home_dir = expand_home_with_capacity("~/", cap).unwrap();
+            let ex =
+                |s: &str| expand_home_with_capacity(&osbytes::EncodedOs::from_plain_text(s), cap);
+            let home_dir = ex("~/").unwrap();
             // Joining the home directory `~` with the path `/`
             // the result should end with a separator here. (e.g. `/home/user/`)
-            assert!(home_dir.ends_with('/'));
+            assert!(home_dir.ends_with_plain("/"));
 
-            let downloads = expand_home_with_capacity("~/Downloads/shader.glsl", cap).unwrap();
-            let expected_downloads = format!("{home_dir}Downloads/shader.glsl");
-            assert_eq!(expected_downloads, downloads);
+            let downloads = ex("~/Downloads/shader.glsl").unwrap();
+            let expected_downloads = format!("{}Downloads/shader.glsl", home_dir.as_encoded());
+            assert_eq!(downloads, expected_downloads.as_str());
 
-            assert_eq!("~", expand_home_with_capacity("~", cap).unwrap());
-            assert_eq!("~abc/", expand_home_with_capacity("~abc/", cap).unwrap());
-            assert_eq!(
-                "/home/user",
-                expand_home_with_capacity("/home/user", cap).unwrap()
-            );
-            assert_eq!("", expand_home_with_capacity("", cap).unwrap());
+            assert_eq!(ex("~").unwrap(), "~");
+            assert_eq!(ex("~abc/").unwrap(), "~abc/");
+            assert_eq!(ex("/home/user").unwrap(), "/home/user");
+            assert_eq!(ex("").unwrap(), "");
 
             // Expect an error if the buffer is large enough to hold the home directory,
             // but not the expanded path
             assert_eq!(
                 Err(ExpandError::BufferTooSmall),
-                expand_home_with_capacity("~/Downloads", home_dir.len())
+                expand_home_with_capacity(
+                    &osbytes::EncodedOs::from_plain_text("~/Downloads"),
+                    home_dir.as_encoded().len()
+                )
             );
         });
     }
@@ -248,16 +260,19 @@ mod tests_unix {
             let e = expand_home_os(OsStr::from_bytes(b"~/x\xfe")).unwrap();
             assert_eq!(e.as_bytes(), b"/home/\xffu/x\xfe");
             // The String API round-trips through the escape encoding.
-            let s = expand_home("~/y").unwrap();
-            assert_eq!(osbytes::config_str_to_bytes(&s), b"/home/\xffu/y");
+            let s = expand_home(&osbytes::EncodedOs::from_plain_text("~/y")).unwrap();
+            assert_eq!(s.to_bytes(), b"/home/\xffu/y");
         });
     }
 
     #[test]
     fn home_prefers_env() {
         temp_env::with_var("HOME", Some("/some/home"), || {
-            assert_eq!(home().unwrap().as_deref(), Some("/some/home"));
-            assert_eq!(expand_home("~/x").unwrap(), "/some/home/x");
+            assert_eq!(home().unwrap().unwrap(), "/some/home");
+            assert_eq!(
+                expand_home(&osbytes::EncodedOs::from_plain_text("~/x")).unwrap(),
+                "/some/home/x"
+            );
             assert_eq!(home_with_capacity(3), Err(Error::BufferTooSmall));
         });
     }

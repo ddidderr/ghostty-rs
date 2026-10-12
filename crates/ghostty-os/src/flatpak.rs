@@ -101,7 +101,7 @@ pub struct FlatpakHostCommand {
 
     /// The cwd for the new process. If this is not set then it will use
     /// the current cwd of the calling process.
-    pub cwd: Option<String>,
+    pub cwd: Option<crate::osbytes::EncodedOs>,
 
     /// Environment variables for the child process. If this is None, this
     /// does not send any environment variables.
@@ -298,15 +298,15 @@ impl FlatpakSignalHandle {
 
 /// Decode a reversible config string to the original bytes plus NUL, the
 /// D-Bus `ay` form of a path/argument.
-fn nul_terminated_bytes(s: &str) -> Vec<u8> {
-    let mut v = crate::osbytes::config_str_to_bytes(s);
+fn nul_terminated_bytes(s: &crate::osbytes::EncodedOs) -> Vec<u8> {
+    let mut v = s.to_bytes();
     v.push(0);
     v
 }
 
 struct Request {
     argv: Vec<String>,
-    cwd: Option<String>,
+    cwd: Option<crate::osbytes::EncodedOs>,
     env: HashMap<String, String>,
     fds: [OwnedFd; 3],
 }
@@ -443,8 +443,8 @@ fn wait_for_exit(shared: &Shared, iter: MessageIterator, pid: u32) {
 mod tests {
     #[test]
     fn dbus_bytes_are_decoded() {
-        let enc = crate::osbytes::bytes_to_config_string(b"/tmp/\xff\xfe");
-        assert_ne!(enc.as_bytes(), b"/tmp/\xff\xfe");
+        let enc = crate::osbytes::EncodedOs::from_bytes(b"/tmp/\xff\xfe");
+        assert_ne!(enc.as_encoded().as_bytes(), b"/tmp/\xff\xfe");
         assert_eq!(super::nul_terminated_bytes(&enc), b"/tmp/\xff\xfe\0");
     }
 

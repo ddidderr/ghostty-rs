@@ -6,7 +6,11 @@ use std::{
     ptr::NonNull,
 };
 
-use ghostty_vt::osc::{Command, Parser};
+use ghostty_vt::osc::{Command, Parser, color::RECORD_LEN};
+
+/// Records the color request list holds without growing (Zig:
+/// `SegmentedList(Request, 4)`).
+const COLOR_LIST_INLINE_RECORDS: usize = 4;
 
 use crate::{
     alloc::{Alloc, Allocator, CBlock, CByteStorage},
@@ -70,9 +74,16 @@ pub unsafe extern "C" fn ghostty_osc_new(
     let Some(storage) = CByteStorage::new(alloc, ghostty_vt::osc::MAX_BUF) else {
         return GhosttyResult::OutOfMemory;
     };
+    // Request lists of the color OSCs live in a second block from the same
+    // allocator (Zig: a `SegmentedList(Request, 4)` on the parser's
+    // allocator). Four inline records, like Zig, so short color commands
+    // never allocate after creation; longer lists grow via the allocator.
+    let Some(aux) = CByteStorage::new(alloc, COLOR_LIST_INLINE_RECORDS * RECORD_LEN) else {
+        return GhosttyResult::OutOfMemory;
+    };
     let Some(p) = alloc.create(OscParser {
         alloc,
-        parser: Parser::with_storage(storage),
+        parser: Parser::with_storage(storage, aux),
         command: OscCommand {
             key: 0,
             title_z: None,
@@ -320,6 +331,16 @@ mod tests {
                 ("66;s=2;hi", false),
                 ("3008;start=abc;type=shell", false),
                 ("5522;type=read;data", false),
+                // Color commands: the request lists live in the parser's
+                // storage, which comes from the caller's allocator.
+                ("4;1;rgb:ff/00/00;2;?", false),
+                ("5;0;rgb:00/00/00", false),
+                ("10;rgb:ff/ff/ff;?", false),
+                ("11;?", false),
+                ("104;1;2;3;4", false),
+                ("104", false),
+                ("112", false),
+                ("21;foreground=?;background=rgb:f0/f8/ff;cursor", false),
                 ("0;a title", true),
             ] {
                 ghostty_osc_reset(p);
@@ -340,6 +361,40 @@ mod tests {
                     caller_allocs.load(Ordering::SeqCst) - caller_before,
                     usize::from(title),
                     "caller allocations ending {osc}"
+                );
+            }
+            ghostty_osc_free(p);
+        }
+    }
+
+    #[test]
+    fn long_color_lists_grow_via_the_caller_allocator() {
+        let caller_allocs = AtomicUsize::new(0);
+        let a = Allocator {
+            ctx: (&raw const caller_allocs).cast_mut().cast(),
+            vtable: &raw const VT,
+        };
+        let mut p = std::ptr::null_mut();
+        // SAFETY: valid allocator and out pointer.
+        assert_eq!(
+            unsafe { ghostty_osc_new(&raw const a, &mut p) },
+            GhosttyResult::Success
+        );
+        // SAFETY: `p` is live for the whole block.
+        unsafe {
+            for osc in ["4;0;?;1;?;2;?;3;?;4;?;5;?", "21;1=?;2=?;3=?;4=?;5=?;6=?"] {
+                ghostty_osc_reset(p);
+                for b in osc.bytes() {
+                    ghostty_osc_next(p, b);
+                }
+                let global_before = global_allocs();
+                let caller_before = caller_allocs.load(Ordering::SeqCst);
+                let cmd = ghostty_osc_end(p, 0x07);
+                assert_ne!(ghostty_osc_command_type(cmd), 0, "{osc}");
+                assert_eq!(global_allocs(), global_before, "global allocation: {osc}");
+                assert!(
+                    caller_allocs.load(Ordering::SeqCst) > caller_before,
+                    "list did not grow through the caller allocator: {osc}"
                 );
             }
             ghostty_osc_free(p);

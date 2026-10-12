@@ -71,7 +71,7 @@ int main(void) {
     GhosttyAllocator a = {.ctx = &c, .vtable = &VT};
     GhosttyOscParser p;
     assert(ghostty_osc_new(&a, &p) == GHOSTTY_SUCCESS);
-    assert(c.allocs >= 2);            // the parser object and its buffer
+    assert(c.allocs >= 3);            // the parser object, its buffer and request storage
     assert(c.live >= 2048);           // the fixed payload buffer is ours
     feed(p, "0;hello", 7);
     GhosttyOscCommand cmd = ghostty_osc_end(p, 0x07);
@@ -88,7 +88,7 @@ int main(void) {
 
   // 2. Creation failure at each allocation point is OUT_OF_MEMORY and leaks
   //    nothing.
-  for (size_t fail_after = 0; fail_after < 2; fail_after++) {
+  for (size_t fail_after = 0; fail_after < 3; fail_after++) {
     Counter c = counter(0, fail_after);
     GhosttyAllocator a = {.ctx = &c, .vtable = &VT};
     GhosttyOscParser p = NULL;
@@ -175,6 +175,16 @@ int main(void) {
       {"9;4;1;50", GHOSTTY_OSC_COMMAND_CONEMU_PROGRESS_REPORT},
       {"22;pointer", GHOSTTY_OSC_COMMAND_MOUSE_SHAPE},
       {"66;s=2;hi", GHOSTTY_OSC_COMMAND_KITTY_TEXT_SIZING},
+      // Color commands keep their request lists in the parser's storage
+      // (the caller's allocator), up to 4 requests without growing.
+      {"4;1;rgb:ff/00/00;2;?", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"5;0;rgb:00/00/00", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"10;rgb:ff/ff/ff;?", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"11;?", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"104;1;2;3;4", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"104", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"112", GHOSTTY_OSC_COMMAND_COLOR_OPERATION},
+      {"21;foreground=?;background=rgb:f0/f8/ff;cursor", GHOSTTY_OSC_COMMAND_KITTY_COLOR_PROTOCOL},
     };
     Counter c = counter(0, SIZE_MAX);
     GhosttyAllocator a = {.ctx = &c, .vtable = &VT};
@@ -200,6 +210,35 @@ int main(void) {
     ghostty_osc_free(p);
     assert(c.live == 0);
     assert(c.allocs == c.frees);
+  }
+
+  // 7. Longer color request lists grow through the caller's allocator (one
+  //    more block here), and fail like Zig's allocation failure (invalid
+  //    command) when the allocator refuses: the global allocator is never
+  //    used as a fallback.
+  {
+    static const char *const LONG4 = "4;0;?;1;?;2;?;3;?;4;?;5;?";
+    static const char *const LONG21 = "21;1=?;2=?;3=?;4=?;5=?;6=?";
+    for (int k = 0; k < 2; k++) {
+      const char *osc = k ? LONG21 : LONG4;
+      int type = k ? GHOSTTY_OSC_COMMAND_KITTY_COLOR_PROTOCOL : GHOSTTY_OSC_COMMAND_COLOR_OPERATION;
+      Counter c = counter(0, SIZE_MAX);
+      GhosttyAllocator a = {.ctx = &c, .vtable = &VT};
+      GhosttyOscParser p;
+      assert(ghostty_osc_new(&a, &p) == GHOSTTY_SUCCESS);
+      size_t base = c.allocs;
+      feed(p, osc, strlen(osc));
+      assert(ghostty_osc_command_type(ghostty_osc_end(p, 0x07)) == type);
+      assert(c.allocs > base);        // the list grew via the caller's allocator
+
+      ghostty_osc_reset(p);
+      c.fail_after = c.allocs;        // refuse any further allocation
+      feed(p, osc, strlen(osc));
+      assert(ghostty_osc_command_type(ghostty_osc_end(p, 0x07)) == GHOSTTY_OSC_COMMAND_INVALID);
+      ghostty_osc_free(p);
+      assert(c.live == 0);
+      assert(c.allocs == c.frees);
+    }
   }
 
   puts("ok");

@@ -78,7 +78,7 @@ pub enum QuitTimer {
 #[derive(Debug, Default, Clone)]
 pub struct WindowOverrides {
     pub command: Option<Command>,
-    pub working_directory: Option<String>,
+    pub working_directory: Option<ghostty_os::osbytes::EncodedOs>,
     pub title: Option<String>,
 }
 
@@ -1141,7 +1141,7 @@ impl Application {
     fn action_new_window(&self, parameter: Option<&glib::Variant>) {
         log::debug!("received new window action");
 
-        let mut working_directory: Option<String> = None;
+        let mut working_directory: Option<ghostty_os::osbytes::EncodedOs> = None;
         let mut title: Option<String> = None;
         let mut command: Option<Command> = None;
         let mut args: Vec<String> = Vec::new();
@@ -1180,7 +1180,9 @@ impl Application {
                     continue;
                 }
                 if let Some(v) = s.strip_prefix("--working-directory=") {
-                    working_directory = Some(v.trim().to_owned());
+                    // IPC carries the encoded form of the OS string.
+                    working_directory =
+                        Some(ghostty_os::osbytes::EncodedOs::from_encoded(v.trim()));
                     continue;
                 }
                 if let Some(v) = s.strip_prefix("--title=") {
@@ -1791,7 +1793,7 @@ impl Application {
             action::OpenUrlKind::Text => ghostty_os::open::OpenUrlKind::Text,
             action::OpenUrlKind::Html => ghostty_os::open::OpenUrlKind::Html,
         };
-        if let Err(err) = ghostty_os::open::open(kind, &value.url) {
+        if let Err(err) = ghostty_os::open::open(kind, &value.url.to_os()) {
             log::warn!("unable to open url: {err}");
         }
     }

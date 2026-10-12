@@ -8,6 +8,7 @@ use std::sync::OnceLock;
 
 use ghostty_apprt::ipc;
 use ghostty_config::cli_args::{ArgError, ArgIter, CliTarget};
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::error::Error;
 
@@ -56,15 +57,15 @@ impl Options {
             if stripped == "home" || stripped == "inherit" {
                 return Ok(Some(arg.to_string()));
             }
-            let expanded =
-                ghostty_os::expand_home(stripped).map_err(|e| ArgError::Other(e.to_string()))?;
-            let realpath =
-                std::fs::canonicalize(ghostty_os::osbytes::config_str_to_path(&expanded))
-                    .map_err(|e| ArgError::Other(e.to_string()))?;
+            // The CLI argument is an encoded OS string.
+            let expanded = ghostty_os::expand_home(&EncodedOs::from_encoded(stripped))
+                .map_err(|e| ArgError::Other(e.to_string()))?;
+            let realpath = std::fs::canonicalize(expanded.to_path())
+                .map_err(|e| ArgError::Other(e.to_string()))?;
             self.working_directory_seen = true;
             return Ok(Some(format!(
                 "--working-directory={}",
-                ghostty_os::osbytes::path_to_config_string(&realpath)
+                EncodedOs::from_path(&realpath).as_encoded()
             )));
         }
 

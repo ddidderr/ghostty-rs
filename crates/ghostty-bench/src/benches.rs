@@ -40,12 +40,12 @@ fn warn(what: &str, e: &dyn std::fmt::Display) -> BenchmarkFailed {
 
 /// Shared data-file handling: opened in setup, closed in teardown.
 struct Data {
-    path: Option<String>,
+    path: Option<std::path::PathBuf>,
     f: Option<Box<dyn Read>>,
 }
 
 impl Data {
-    fn new(path: Option<String>) -> Data {
+    fn new(path: Option<std::path::PathBuf>) -> Data {
         Data { path, f: None }
     }
 
@@ -103,7 +103,7 @@ impl TerminalStream {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
         let rows = args.take("terminal-rows", 80u16)?;
         let cols = args.take("terminal-cols", 120u16)?;
-        let data = args.take_opt_string("data")?;
+        let data = args.take_opt_path("data")?;
         let full = match args.take_opt_string("handler")?.as_deref() {
             None | Some("print") => false,
             Some("full") => true,
@@ -160,7 +160,7 @@ pub struct TerminalParser {
 impl TerminalParser {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
         Ok(TerminalParser {
-            data: Data::new(args.take_opt_string("data")?),
+            data: Data::new(args.take_opt_path("data")?),
         })
     }
 }
@@ -196,7 +196,7 @@ pub struct OscParser {
 impl OscParser {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
         Ok(OscParser {
-            data: Data::new(args.take_opt_string("data")?),
+            data: Data::new(args.take_opt_path("data")?),
             parser: osc::Parser::init(true),
         })
     }
@@ -267,7 +267,7 @@ impl CodepointWidth {
             Some(m) => return Err(format!("invalid value for --mode: {m}")),
         };
         Ok(CodepointWidth {
-            data: Data::new(args.take_opt_string("data")?),
+            data: Data::new(args.take_opt_path("data")?),
             mode,
         })
     }
@@ -390,7 +390,7 @@ impl GraphemeBreak {
             Some(m) => return Err(format!("invalid value for --mode: {m}")),
         };
         Ok(GraphemeBreak {
-            data: Data::new(args.take_opt_string("data")?),
+            data: Data::new(args.take_opt_path("data")?),
             noop,
         })
     }
@@ -479,7 +479,7 @@ impl IsSymbol {
             Some(m) => return Err(format!("invalid value for --mode: {m}")),
         };
         Ok(IsSymbol {
-            data: Data::new(args.take_opt_string("data")?),
+            data: Data::new(args.take_opt_path("data")?),
             mode,
         })
     }
@@ -544,7 +544,7 @@ impl ScreenClone {
         };
         let rows = args.take("terminal-rows", 80u16)?;
         let cols = args.take("terminal-cols", 120u16)?;
-        let data = args.take_opt_string("data")?;
+        let data = args.take_opt_path("data")?;
         let terminal = Terminal::new(TermOptions::new(cols, rows)).map_err(|e| format!("{e:?}"))?;
         Ok(ScreenClone {
             data: Data::new(data),
@@ -674,9 +674,13 @@ mod tests {
 
     fn run(action: &str, mode: &str, data: &std::path::Path) -> Result {
         let mut args = Args::parse([
-            format!("+{action}"),
-            format!("--mode={mode}"),
-            format!("--data={}", data.display()),
+            std::ffi::OsString::from(format!("+{action}")),
+            std::ffi::OsString::from(format!("--mode={mode}")),
+            {
+                let mut a = std::ffi::OsString::from("--data=");
+                a.push(data);
+                a
+            },
         ])
         .unwrap();
         match action {

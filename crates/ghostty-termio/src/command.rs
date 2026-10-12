@@ -177,7 +177,7 @@ pub struct Command {
     /// Working directory to change to in the child process. If not set, the
     /// working directory of the calling process is preserved. Failure to
     /// change directory is ignored (as in Ghostty).
-    pub cwd: Option<String>,
+    pub cwd: Option<ghostty_os::osbytes::EncodedOs>,
 
     /// The file handle to set for stdin/out/err. If this isn't set, we do
     /// nothing explicitly so it is up to the behavior of the operating system.
@@ -317,8 +317,8 @@ impl Command {
         let prep = self.prepare()?;
         let cwd = self
             .cwd
-            .as_deref()
-            .and_then(|c| CString::new(config_str_to_bytes(c)).ok());
+            .as_ref()
+            .and_then(|c| CString::new(c.to_bytes()).ok());
 
         let mut argv_ptrs: Vec<*const c_char> = prep.argv.iter().map(|c| c.as_ptr()).collect();
         argv_ptrs.push(std::ptr::null());
@@ -872,7 +872,7 @@ mod tests {
 
         let mut cmd = sh("pwd");
         cmd.stdout = Some(stdout.try_clone().unwrap().into());
-        cmd.cwd = Some("/tmp".to_owned());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/tmp"));
         cmd.start().unwrap();
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
 
@@ -894,7 +894,7 @@ mod tests {
         let mut cmd = Command::new("/bin/sh", &["/bin/sh", "-c", "pwd -P; printf %s \"$0\""]);
         cmd.args.push(bytes_to_config_string(b"a\xffb"));
         cmd.stdout = Some(stdout.try_clone().unwrap().into());
-        cmd.cwd = Some(bytes_to_config_string(&raw));
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_bytes(&raw));
         cmd.start().unwrap();
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
 
@@ -915,7 +915,9 @@ mod tests {
 
         let mut cmd = sh("echo ok");
         cmd.stdout = Some(stdout.try_clone().unwrap().into());
-        cmd.cwd = Some("/definitely/not/a/dir".to_owned());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded(
+            "/definitely/not/a/dir",
+        ));
         cmd.start().unwrap();
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
         assert_eq!("ok\n", read_all(stdout));
@@ -933,7 +935,7 @@ mod tests {
         let mut cmd = Command::new("/not/a/binary", &["/not/a/binary", ""]);
         cmd.stdout = Some(stdout.try_clone().unwrap().into());
         cmd.stderr = Some(stderr.try_clone().unwrap().into());
-        cmd.cwd = Some("/bin".to_owned());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/bin"));
         cmd.start().unwrap();
         assert!(cmd.pid.is_some());
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(1));

@@ -186,6 +186,11 @@ impl Pattern {
     }
 
     pub fn add_string(&mut self, prop: Property, v: &str) -> bool {
+        self.add_string_bytes(prop, v.as_bytes())
+    }
+
+    /// [`Pattern::add_string`] for arbitrary bytes (file names).
+    pub fn add_string_bytes(&mut self, prop: Property, v: &[u8]) -> bool {
         let Ok(c) = CString::new(v) else {
             return false;
         };
@@ -205,8 +210,31 @@ impl Pattern {
         unsafe { sys::FcPatternAddCharSet(self.as_ptr(), prop.cstr().as_ptr(), cs.0.as_ptr()) != 0 }
     }
 
-    /// Get the string value at index `id`.
+    /// Get the string value at index `id` as the raw OS string. Use this for
+    /// file names: they are arbitrary bytes, not necessarily UTF-8.
+    pub fn get_os_string(&self, prop: Property, id: u32) -> Result<std::ffi::OsString, Error> {
+        let bytes = self.get_string_bytes(prop, id)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            Ok(std::ffi::OsString::from_vec(bytes))
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(std::ffi::OsString::from(
+                String::from_utf8_lossy(&bytes).into_owned(),
+            ))
+        }
+    }
+
+    /// Get the string value at index `id` as text. Only for properties that
+    /// fontconfig defines as UTF-8 (family/style/full names); invalid bytes
+    /// are replaced. File names use [`Pattern::get_os_string`].
     pub fn get_string(&self, prop: Property, id: u32) -> Result<String, Error> {
+        Ok(String::from_utf8_lossy(&self.get_string_bytes(prop, id)?).into_owned())
+    }
+
+    fn get_string_bytes(&self, prop: Property, id: u32) -> Result<Vec<u8>, Error> {
         let mut out: *mut sys::FcChar8 = ptr::null_mut();
         // SAFETY: valid pattern; out is a valid out pointer.
         let r = unsafe {
@@ -223,7 +251,7 @@ impl Pattern {
         }
         // SAFETY: fontconfig returned a NUL-terminated string owned by the pattern.
         let s = unsafe { CStr::from_ptr(out.cast()) };
-        Ok(s.to_string_lossy().into_owned())
+        Ok(s.to_bytes().to_vec())
     }
 
     pub fn get_integer(&self, prop: Property, id: u32) -> Result<i32, Error> {
@@ -418,6 +446,22 @@ mod tests {
         assert!(emoji.add_lang("und-zsye"));
         assert!(emoji.has_lang("und-zsye"));
         assert!(!emoji.has_lang("en-US"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_name_keeps_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let mut p = Pattern::create();
+        assert!(p.add_string_bytes(Property::File, b"/fonts/a\xffb.ttf"));
+        let f = p.get_os_string(Property::File, 0).unwrap();
+        assert_eq!(f.as_bytes(), b"/fonts/a\xffb.ttf");
+        // The text accessor is for UTF-8 names only and is lossy.
+        assert!(
+            p.get_string(Property::File, 0)
+                .unwrap()
+                .contains('\u{fffd}')
+        );
     }
 
     #[test]

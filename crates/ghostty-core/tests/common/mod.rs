@@ -50,7 +50,7 @@ impl Waker for NopWaker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardWrite {
     pub clipboard: Clipboard,
-    pub contents: Vec<(String, String)>,
+    pub contents: Vec<(String, Vec<u8>)>,
     pub confirm: bool,
 }
 
@@ -131,13 +131,15 @@ impl RtSurface for FakeRt {
         self.pending.borrow_mut().push_back((clipboard, state));
         true
     }
-    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, String)], confirm: bool) {
+    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, Vec<u8>)], confirm: bool) {
         self.writes.borrow_mut().push(ClipboardWrite {
             clipboard,
             contents: contents.to_vec(),
             confirm,
         });
-        if let Some((_, text)) = contents.iter().find(|(m, _)| m == "text/plain") {
+        if let Some((_, bytes)) = contents.iter().find(|(m, _)| m == "text/plain") {
+            // Test harness: the fake clipboard stores text.
+            let text = &String::from_utf8_lossy(bytes).into_owned();
             // Like GTK, a confirm=true write shows a dialog first; the
             // harness only stores unconfirmed writes.
             if confirm {

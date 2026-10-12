@@ -21,9 +21,15 @@ static ARGS: OnceLock<Vec<String>> = OnceLock::new();
 /// Build the `ghostty_string_s` for an owned string (Zig:
 /// `String.fromSlice` of an allocated `[:0]const u8`). Free with
 /// `ghostty_string_free`.
+#[cfg(test)]
 pub(crate) fn string_from_owned(s: &str) -> ghostty_string_s {
+    string_from_bytes(s.as_bytes())
+}
+
+/// [`string_from_owned`] for raw bytes (paths need not be UTF-8).
+pub(crate) fn string_from_bytes(s: &[u8]) -> ghostty_string_s {
     let mut bytes = Vec::with_capacity(s.len() + 1);
-    bytes.extend_from_slice(s.as_bytes());
+    bytes.extend_from_slice(s);
     bytes.push(0);
     let boxed = bytes.into_boxed_slice();
     let len = boxed.len() - 1;

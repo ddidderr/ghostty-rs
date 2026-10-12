@@ -37,6 +37,7 @@ windows-sys = { version = "0.61", features = [
 [dev-dependencies]
 minidump = "0.27.0"
 tempfile = "3.27.0"
+temp-env = "0.3.6"
 
 # The fatal-signal handler needs sigaction/sigaltstack/raw syscalls. Unsafe is
 # denied crate-wide and only allowed in `signal.rs` with SAFETY comments.

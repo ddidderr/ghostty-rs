@@ -151,7 +151,7 @@ define_actions! {
     MouseShape(MouseShape),
     ConfigureCharset(ConfigureCharset),
     SetAttribute(sgr::Attribute<'a>),
-    KittyColorReport(&'a kitty::color::OSC),
+    KittyColorReport(&'a kitty::color::OSC<'a>),
     ColorOperation(ColorOperation<'a>),
     SemanticPrompt(&'a osc::SemanticPrompt<'a>),
 }
@@ -248,7 +248,7 @@ pub struct ConfigureCharset {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorOperation<'a> {
     pub op: osc::color::Operation,
-    pub requests: &'a osc::color::List,
+    pub requests: &'a osc::color::List<'a>,
     pub terminator: osc::Terminator,
 }
 

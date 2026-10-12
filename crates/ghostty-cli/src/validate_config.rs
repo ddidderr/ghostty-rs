@@ -3,6 +3,7 @@
 use std::io::Write;
 
 use ghostty_config::{config::Config, config_struct};
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::error::Error;
 
@@ -41,8 +42,8 @@ fn run_inner(opts: &Options, stdout: &mut dyn Write) -> Result<u8, Error> {
     if let Some(config_path) = &opts.config_file {
         // Byte-preserving: the option string carries non-UTF-8 bytes via the
         // reversible `osbytes` escape and the canonical path may too.
-        let abs_path = std::fs::canonicalize(ghostty_os::osbytes::config_str_to_path(config_path))?;
-        cfg.load_file(&ghostty_os::osbytes::path_to_config_string(&abs_path))?;
+        let abs_path = std::fs::canonicalize(EncodedOs::from_encoded(config_path).to_path())?;
+        cfg.load_file(&EncodedOs::from_path(&abs_path))?;
         cfg.load_recursive_files()?;
     } else {
         cfg = Config::load()?;

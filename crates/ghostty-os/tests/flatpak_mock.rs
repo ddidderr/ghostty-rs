@@ -53,7 +53,7 @@ fn host_command_spawn_exit_status_and_signal() {
             w,
             devnull(),
         );
-        cmd.cwd = Some("/".into());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/"));
         let mut env = ghostty_os::env::EnvMap::default();
         env.insert("FOO", "bar");
         cmd.env = Some(env);
@@ -84,7 +84,7 @@ fn host_command_spawn_exit_status_and_signal() {
             devnull(),
             devnull(),
         );
-        cmd.cwd = Some("/".into());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/"));
         cmd.spawn().unwrap();
         let (tx, rx) = std::sync::mpsc::channel();
         cmd.wait_callback(move |r| tx.send(r).unwrap()).unwrap();
@@ -99,7 +99,7 @@ fn host_command_spawn_exit_status_and_signal() {
             devnull(),
             devnull(),
         );
-        cmd.cwd = Some("/".into());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/"));
         assert_eq!(cmd.spawn(), Err(Error::FlatpakSpawnFail));
     }
 
@@ -113,7 +113,7 @@ fn host_command_spawn_exit_status_and_signal() {
             devnull(),
             devnull(),
         );
-        cmd.cwd = Some("/".into());
+        cmd.cwd = Some(ghostty_os::osbytes::EncodedOs::from_encoded("/"));
         let pid = cmd.spawn().unwrap();
         let handle = cmd.signal_handle();
         let (tx, rx) = std::sync::mpsc::channel();

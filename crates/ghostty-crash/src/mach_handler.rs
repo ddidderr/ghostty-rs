@@ -10,7 +10,9 @@
 //! sends a `mach_exception_raise` message; the handler thread (which runs on
 //! its own healthy stack, so stack overflows work) then:
 //!
-//! 1. suspends all other threads,
+//! 1. suspends all other threads (and resumes *all* of them, the faulting one
+//!    included, before replying; otherwise the process hangs instead of
+//!    dying),
 //! 2. reads the crashed thread's registers with `thread_get_state` for the
 //!    event's stack trace,
 //! 3. writes a minidump with `minidump-writer` for the whole task and attaches
@@ -20,9 +22,11 @@
 //!    the process dies as usual (Apple's crash reporter included). The signal
 //!    path (`signal.rs`) sees `BUSY` set and writes nothing more.
 //!
-//! Signals that are not Mach exceptions (`SIGABRT` from `abort()`) keep going
-//! through the signal handler. A watchdog `alarm(2)` kills the process if the
-//! dump hangs (e.g. a suspended thread held the allocator lock).
+//! `SIGABRT` from `abort()` is not a Mach exception. Like Breakpad, the signal
+//! handler asks this handler thread for the dump (`request_abort_dump`: a
+//! message to the exception port, then it waits on a reply port), so
+//! `abort()` gets a minidump too. A watchdog `alarm(2)` kills the process if
+//! the dump hangs (e.g. a suspended thread held the allocator lock).
 //!
 //! Unlike Breakpad this does not forward the exception to previously
 //! registered handlers; it restores them, which only matters for debuggers
@@ -53,12 +57,14 @@ use mach2::{
     mach_types::{thread_act_t, thread_t},
     message::{
         MACH_MSG_TIMEOUT_NONE,
+        MACH_MSG_TYPE_COPY_SEND,
         MACH_MSG_TYPE_MAKE_SEND,
         MACH_MSGH_BITS,
         MACH_MSGH_BITS_REMOTE_MASK,
         MACH_RCV_LARGE,
         MACH_RCV_MSG,
         MACH_RCV_PORT_DIED,
+        MACH_RCV_TIMEOUT,
         MACH_SEND_MSG,
         mach_msg,
         mach_msg_header_t,
@@ -77,6 +83,7 @@ use crate::{
     native::Native,
     sentry,
     signal::BUSY,
+    suspend::{SuspendGuard, Threads},
 };
 
 /// Maximum number of registered exception handlers (`EXC_TYPES_COUNT`).
@@ -99,6 +106,11 @@ struct Previous {
 
 static PREVIOUS: OnceLock<Previous> = OnceLock::new();
 static PORT: AtomicU32 = AtomicU32::new(MACH_PORT_NULL);
+/// Receive port the signal handler waits on while the handler thread dumps.
+static REPLY_PORT: AtomicU32 = AtomicU32::new(MACH_PORT_NULL);
+
+/// How long the signal handler waits for the dump (a bit above the watchdog).
+const ABORT_WAIT_MS: u32 = (WATCHDOG_SECS + 10) * 1000;
 
 #[cfg(target_arch = "x86_64")]
 type ThreadState = mach2::structs::x86_thread_state64_t;
@@ -134,6 +146,21 @@ pub(crate) fn install() -> bool {
         {
             mach2::mach_port::mach_port_destroy(task, port);
             return false;
+        }
+
+        // Reply port for the SIGABRT path (best effort: without it SIGABRT
+        // keeps the event-only report).
+        let mut reply: mach_port_t = MACH_PORT_NULL;
+        if mach2::mach_port::mach_port_allocate(task, MACH_PORT_RIGHT_RECEIVE, &raw mut reply)
+            == KERN_SUCCESS
+        {
+            if mach2::mach_port::mach_port_insert_right(task, reply, reply, MACH_MSG_TYPE_MAKE_SEND)
+                == KERN_SUCCESS
+            {
+                REPLY_PORT.store(reply, Ordering::Release);
+            } else {
+                mach2::mach_port::mach_port_destroy(task, reply);
+            }
         }
 
         let mut prev = Previous {
@@ -237,6 +264,9 @@ fn handler_thread(port: mach_port_t) {
             continue;
         }
         let Some(req) = exception::parse_raise(&buf.0) else {
+            if let Some((thread, signo)) = exception::parse_abort(&buf.0) {
+                handle_abort(thread, signo, handler);
+            }
             continue;
         };
         handle_exception(&req, handler);
@@ -273,22 +303,39 @@ fn handler_thread(port: mach_port_t) {
     }
 }
 
-/// Suspend every thread of the task except `keep` (the handler thread).
-fn suspend_other_threads(keep: thread_act_t) {
-    // SAFETY: task_threads returns a vm-allocated array we only read.
-    unsafe {
-        let task = mach2::traps::mach_task_self();
-        let mut list: mach2::mach_types::thread_act_array_t = std::ptr::null_mut();
-        let mut n: u32 = 0;
-        if mach2::task::task_threads(task, &raw mut list, &raw mut n) != KERN_SUCCESS {
-            return;
-        }
-        for i in 0..n as usize {
-            let t = *list.add(i);
-            if t != keep {
-                mach2::thread_act::thread_suspend(t);
+/// The Mach threads of this task (for [`SuspendGuard`]).
+struct MachThreads;
+
+impl Threads for MachThreads {
+    type Id = thread_act_t;
+
+    fn list(&self) -> Vec<thread_act_t> {
+        // SAFETY: task_threads returns a vm-allocated array we copy and free.
+        unsafe {
+            let task = mach2::traps::mach_task_self();
+            let mut list: mach2::mach_types::thread_act_array_t = std::ptr::null_mut();
+            let mut n: u32 = 0;
+            if mach2::task::task_threads(task, &raw mut list, &raw mut n) != KERN_SUCCESS {
+                return Vec::new();
             }
+            let threads = std::slice::from_raw_parts(list, n as usize).to_vec();
+            mach2::vm::mach_vm_deallocate(
+                task,
+                list as mach2::vm_types::mach_vm_address_t,
+                u64::from(n) * size_of::<thread_act_t>() as u64,
+            );
+            threads
         }
+    }
+
+    fn suspend(&self, t: thread_act_t) {
+        // SAFETY: plain Mach call on a thread port of this task.
+        unsafe { mach2::thread_act::thread_suspend(t) };
+    }
+
+    fn resume(&self, t: thread_act_t) {
+        // SAFETY: as above.
+        unsafe { mach2::thread_act::thread_resume(t) };
     }
 }
 
@@ -299,17 +346,141 @@ fn handle_exception(req: &exception::RaiseRequest, handler: thread_t) {
         // SAFETY: alarm has no preconditions. SIGALRM's default action ends
         // the process if the dump below hangs.
         unsafe { libc::alarm(WATCHDOG_SECS) };
-        suspend_other_threads(handler);
-        write_report(st, req, handler);
+        {
+            // Every thread (the faulting one included) is resumed when the
+            // guard drops, before the exception is handed back to the kernel.
+            let _threads = SuspendGuard::suspend_all_except(&MachThreads, handler);
+            write_report(st, req.exception, req.thread, req.task, handler);
+        }
         // SAFETY: as above.
         unsafe { libc::alarm(0) };
     }
     restore_ports();
 }
 
-fn write_report(st: &sentry::State, req: &exception::RaiseRequest, handler: thread_t) {
-    let ex: MachException = req.exception;
+/// A `SIGABRT` dump request from the signal handler: dump the whole task with
+/// `thread` as the crashed thread, then wake the waiting signal handler.
+fn handle_abort(thread: u32, signo: i32, handler: thread_t) {
+    if let Some(st) = sentry::state()
+        && !BUSY.swap(true, Ordering::Acquire)
+    {
+        // SAFETY: as in `handle_exception`.
+        unsafe { libc::alarm(WATCHDOG_SECS) };
+        {
+            let _threads = SuspendGuard::suspend_all_except(&MachThreads, handler);
+            // SAFETY: plain Mach trap.
+            let task = unsafe { mach2::traps::mach_task_self() };
+            write_report(st, MachException::from_signal(signo), thread, task, handler);
+        }
+        // SAFETY: as above.
+        unsafe { libc::alarm(0) };
+    }
+    notify_signal_handler();
+}
 
+/// Wake the signal handler waiting in [`request_abort_dump`].
+fn notify_signal_handler() {
+    let reply = REPLY_PORT.load(Ordering::Acquire);
+    if reply == MACH_PORT_NULL {
+        return;
+    }
+    let mut head = mach_msg_header_t {
+        msgh_bits: MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0),
+        msgh_size: size_of::<mach_msg_header_t>() as u32,
+        msgh_remote_port: reply,
+        msgh_local_port: MACH_PORT_NULL,
+        msgh_voucher_port: 0,
+        msgh_id: exception::ABORT_MSG_ID + 1,
+    };
+    // SAFETY: `head` is a complete message with no body.
+    unsafe {
+        mach_msg(
+            &raw mut head,
+            MACH_SEND_MSG,
+            size_of::<mach_msg_header_t>() as u32,
+            0,
+            MACH_PORT_NULL,
+            MACH_MSG_TIMEOUT_NONE,
+            MACH_PORT_NULL,
+        );
+    }
+}
+
+#[repr(C, packed(4))]
+struct Request {
+    head: mach_msg_header_t,
+    body: [u8; exception::ABORT_BODY_LEN],
+}
+
+/// Called from the `SIGABRT` signal handler: ask the exception handler thread
+/// to write the report with a minidump and wait for it. Returns false if the
+/// handler thread is unavailable (the caller then writes the event-only
+/// report itself).
+pub(crate) fn request_abort_dump(signo: libc::c_int) -> bool {
+    let port = PORT.load(Ordering::Acquire);
+    let reply = REPLY_PORT.load(Ordering::Acquire);
+    if port == MACH_PORT_NULL || reply == MACH_PORT_NULL || sentry::state().is_none() {
+        return false;
+    }
+    if BUSY.load(Ordering::Acquire) {
+        // Another crash is already being written.
+        return false;
+    }
+
+    // SAFETY: mach_thread_self has no preconditions.
+    let thread = unsafe { mach2::mach_init::mach_thread_self() };
+    let mut req = Request {
+        head: mach_msg_header_t {
+            msgh_bits: MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0),
+            msgh_size: size_of::<Request>() as u32,
+            msgh_remote_port: port,
+            msgh_local_port: MACH_PORT_NULL,
+            msgh_voucher_port: 0,
+            msgh_id: exception::ABORT_MSG_ID,
+        },
+        body: exception::abort_body(thread, signo),
+    };
+    // SAFETY: `req` is a fully initialized message of the given size.
+    let sent = unsafe {
+        mach_msg(
+            (&raw mut req).cast(),
+            MACH_SEND_MSG,
+            size_of::<Request>() as u32,
+            0,
+            MACH_PORT_NULL,
+            MACH_MSG_TIMEOUT_NONE,
+            MACH_PORT_NULL,
+        )
+    };
+    if sent != 0 {
+        return false;
+    }
+
+    // Block until the handler thread has finished (it resumes this thread's
+    // suspension before replying). Bounded, in case the dump hangs.
+    let mut buf = Buffer([0; 1024]);
+    // SAFETY: `buf` is a writable 1024 byte aligned buffer.
+    unsafe {
+        mach_msg(
+            buf.0.as_mut_ptr().cast(),
+            MACH_RCV_MSG | MACH_RCV_TIMEOUT,
+            0,
+            buf.0.len() as u32,
+            reply,
+            ABORT_WAIT_MS,
+            MACH_PORT_NULL,
+        );
+    }
+    true
+}
+
+fn write_report(
+    st: &sentry::State,
+    ex: MachException,
+    thread: thread_t,
+    task: mach_port_t,
+    handler: thread_t,
+) {
     // Registers and frame-pointer walk of the faulting thread.
     let mut native = Box::new(Native::new());
     (native.signo, native.code) = ex.signal();
@@ -319,7 +490,7 @@ fn write_report(st: &sentry::State, req: &exception::RaiseRequest, handler: thre
     // SAFETY: `state` is a writable thread state of the requested flavor.
     let kr = unsafe {
         mach2::thread_act::thread_get_state(
-            req.thread,
+            thread,
             state_flavor(),
             (&raw mut state).cast(),
             &raw mut count,
@@ -331,8 +502,8 @@ fn write_report(st: &sentry::State, req: &exception::RaiseRequest, handler: thre
     }
 
     let cc = CrashContext {
-        task: req.task,
-        thread: req.thread,
+        task,
+        thread,
         handler_thread: handler,
         exception: Some(ExceptionInfo {
             kind: ex.kind,

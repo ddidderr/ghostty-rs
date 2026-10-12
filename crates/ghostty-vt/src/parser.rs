@@ -892,8 +892,10 @@ mod tests {
         assert_eq!(op, osc::color::Operation::Osc112);
         assert_eq!(requests.len(), 1);
         assert_eq!(
-            requests[0],
-            osc::color::Request::Reset(osc::color::Target::Dynamic(crate::color::Dynamic::Cursor))
+            requests.get(0),
+            Some(osc::color::Request::Reset(osc::color::Target::Dynamic(
+                crate::color::Dynamic::Cursor
+            )))
         );
     }
 
@@ -921,7 +923,7 @@ mod tests {
         assert_eq!(terminator, osc::Terminator::Bel);
         assert_eq!(op, osc::color::Operation::Osc104);
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0], osc::color::Request::ResetPalette);
+        assert_eq!(requests.get(0), Some(osc::color::Request::ResetPalette));
     }
 
     #[test]

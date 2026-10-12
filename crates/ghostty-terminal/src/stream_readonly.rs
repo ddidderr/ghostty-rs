@@ -185,9 +185,9 @@ impl<'a> Handler<'a> {
         Ok(())
     }
 
-    fn color_operation(&mut self, requests: &osc_color::List) {
-        for req in requests {
-            match *req {
+    fn color_operation(&mut self, requests: &osc_color::List<'_>) {
+        for req in requests.iter() {
+            match req {
                 Request::Set(set) => match set.target {
                     Target::Palette(i) => {
                         self.terminal.flags.dirty.palette = true;
@@ -231,10 +231,10 @@ impl<'a> Handler<'a> {
         }
     }
 
-    fn kitty_color_operation(&mut self, request: &kitty::color::OSC) {
+    fn kitty_color_operation(&mut self, request: &kitty::color::OSC<'_>) {
         use kitty::color::{Kind, Request as KReq, Special};
-        for item in &request.list {
-            match item {
+        for item in request.list.iter() {
+            match &item {
                 KReq::Set { key, color } => match key {
                     Kind::Palette(palette) => {
                         self.terminal.flags.dirty.palette = true;

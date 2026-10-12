@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use ghostty_os::{env::prepend_env_os, homedir, shell::ShellCommandBuilder};
+use ghostty_os::{env::prepend_env_os, homedir, osbytes::EncodedOs, shell::ShellCommandBuilder};
 
 /// The environment passed to the child (Zig `std.process.EnvMap`).
 pub type EnvMap = ghostty_os::EnvMap;
@@ -65,8 +65,8 @@ pub struct ShellIntegration {
 /// `<resource_dir>/<rel>` as an OS string. `resource_dir` carries the
 /// reversible config-string encoding (it may hold non-UTF-8 bytes), so it is
 /// decoded before reaching the filesystem or the child environment.
-fn resource_path(resource_dir: &str, rel: &str) -> std::ffi::OsString {
-    let mut p = ghostty_os::osbytes::config_str_to_os(resource_dir);
+fn resource_path(resource_dir: &EncodedOs, rel: &str) -> std::ffi::OsString {
+    let mut p = resource_dir.to_os();
     p.push("/");
     p.push(rel);
     p
@@ -77,7 +77,7 @@ fn resource_path(resource_dir: &str, rel: &str) -> std::ffi::OsString {
 /// struct describing the integration.  If integration fails
 /// (shell type couldn't be detected, etc.), this will return None.
 pub fn setup(
-    resource_dir: &str,
+    resource_dir: &EncodedOs,
     command: &Command,
     env: &mut EnvMap,
     force_shell: Option<Shell>,
@@ -185,7 +185,7 @@ pub fn setup_features(env: &mut EnvMap, features: ShellIntegrationFeatures, curs
 /// or None if integration failed.
 fn setup_bash(
     command: &Command,
-    resource_dir: &str,
+    resource_dir: &EncodedOs,
     env: &mut EnvMap,
 ) -> Result<Option<Command>, Error> {
     let mut cmd = ShellCommandBuilder::new();
@@ -271,7 +271,10 @@ fn setup_bash(
     if !env.contains_key("HISTFILE")
         && let Some(home) = homedir::home()?
     {
-        env.insert("HISTFILE", format!("{home}/.bash_history"));
+        // `home` is an encoded OS string: build the real OS value.
+        let mut histfile = home.to_os();
+        histfile.push("/.bash_history");
+        env.insert("HISTFILE", histfile);
         env.insert("GHOSTTY_BASH_UNEXPORT_HISTFILE", "1");
     }
 
@@ -286,7 +289,7 @@ fn setup_bash(
 /// It is also saved in the `GHOSTTY_SHELL_INTEGRATION_XDG_DIR` variable
 /// so that the shell can refer to it and safely remove this directory
 /// from `XDG_DATA_DIRS` when integration is complete.
-fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
+fn setup_xdg_data_dirs(resource_dir: &EncodedOs, env: &mut EnvMap) -> bool {
     // Get our path to the shell integration directory.
     let integ_path = resource_path(resource_dir, "shell-integration");
     if let Err(err) = std::fs::read_dir(&integ_path) {
@@ -319,7 +322,7 @@ fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
 ///
 /// We then add `--execute 'use ghostty ...'` to the nu command line to
 /// automatically enable our shell features.
-fn setup_nushell(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<Command> {
+fn setup_nushell(command: &Command, resource_dir: &EncodedOs, env: &mut EnvMap) -> Option<Command> {
     // Add our XDG_DATA_DIRS entry (for nushell/vendor/autoload/). This
     // makes our 'ghostty' module automatically available, even if any
     // of the later checks abort the rest of our automatic integration.
@@ -377,7 +380,7 @@ fn setup_nushell(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Opt
 /// Setup the zsh automatic shell integration. This works by setting
 /// ZDOTDIR to our resources dir so that zsh will load our config. This
 /// config then loads the true user config.
-fn setup_zsh(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<Command> {
+fn setup_zsh(command: &Command, resource_dir: &EncodedOs, env: &mut EnvMap) -> Option<Command> {
     // Preserve an existing ZDOTDIR value. We're about to overwrite it.
     if let Some(old) = env.get("ZDOTDIR").map(std::ffi::OsStr::to_owned) {
         env.insert("GHOSTTY_ZSH_ZDOTDIR", old);
@@ -419,6 +422,10 @@ mod tests {
     }
 
     impl TmpResourcesDir {
+        fn enc(&self) -> EncodedOs {
+            EncodedOs::from_plain_text(&self.path)
+        }
+
         fn new(shell: Shell) -> Self {
             let tmp = TempDir::init().unwrap();
             let path = std::fs::canonicalize(tmp.path())
@@ -455,7 +462,7 @@ mod tests {
         let mut env = EnvMap::new();
         for shell in Shell::ALL {
             let res = TmpResourcesDir::new(shell);
-            let result = setup(&res.path, &sh("sh"), &mut env, Some(shell)).unwrap();
+            let result = setup(&res.enc(), &sh("sh"), &mut env, Some(shell)).unwrap();
             assert_eq!(shell, result.unwrap().shell);
         }
     }
@@ -463,7 +470,13 @@ mod tests {
     #[test]
     fn shell_integration_failure() {
         let mut env = EnvMap::new();
-        let result = setup("/nonexistent", &sh("sh"), &mut env, None).unwrap();
+        let result = setup(
+            &EncodedOs::from_encoded("/nonexistent"),
+            &sh("sh"),
+            &mut env,
+            None,
+        )
+        .unwrap();
         assert!(result.is_none());
         assert_eq!(0, env.len());
     }
@@ -585,7 +598,7 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Bash);
         let mut env = EnvMap::new();
 
-        let command = setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash"), &res.enc(), &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
         assert_eq!(
             "1",
@@ -609,7 +622,7 @@ mod tests {
         ] {
             let mut env = EnvMap::new();
             assert!(
-                setup_bash(&sh(cmdline), &res.path, &mut env)
+                setup_bash(&sh(cmdline), &res.enc(), &mut env)
                     .unwrap()
                     .is_none()
             );
@@ -622,7 +635,7 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Bash);
 
         let mut env = EnvMap::new();
-        let command = setup_bash(&sh("bash --norc"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash --norc"), &res.enc(), &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
         assert_eq!(
             "1 --norc",
@@ -630,7 +643,7 @@ mod tests {
         );
 
         let mut env = EnvMap::new();
-        let command = setup_bash(&sh("bash --noprofile"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash --noprofile"), &res.enc(), &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
         assert_eq!(
             "1 --noprofile",
@@ -643,14 +656,14 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Bash);
         let mut env = EnvMap::new();
 
-        let command = setup_bash(&sh("bash --rcfile profile.sh"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash --rcfile profile.sh"), &res.enc(), &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
         assert_eq!(
             "profile.sh",
             env.get("GHOSTTY_BASH_RCFILE").unwrap().to_str().unwrap()
         );
 
-        let command = setup_bash(&sh("bash --init-file profile.sh"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash --init-file profile.sh"), &res.enc(), &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
         assert_eq!(
             "profile.sh",
@@ -665,7 +678,7 @@ mod tests {
         // HISTFILE unset (needs a home dir; set HOME so it is deterministic)
         temp_env::with_var("HOME", Some("/home/test"), || {
             let mut env = EnvMap::new();
-            setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
+            setup_bash(&sh("bash"), &res.enc(), &mut env).unwrap();
             assert!(
                 env.get("HISTFILE")
                     .unwrap()
@@ -685,7 +698,7 @@ mod tests {
         // HISTFILE set
         let mut env = EnvMap::new();
         env.insert("HISTFILE", "my_history");
-        setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
+        setup_bash(&sh("bash"), &res.enc(), &mut env).unwrap();
         assert_eq!("my_history", env.get("HISTFILE").unwrap().to_str().unwrap());
         assert!(!env.contains_key("GHOSTTY_BASH_UNEXPORT_HISTFILE"));
     }
@@ -696,7 +709,7 @@ mod tests {
         let mut env = EnvMap::new();
         env.insert("ENV", "env.sh");
 
-        setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
+        setup_bash(&sh("bash"), &res.enc(), &mut env).unwrap();
         assert_eq!(
             "env.sh",
             env.get("GHOSTTY_BASH_ENV").unwrap().to_str().unwrap()
@@ -712,13 +725,13 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Bash);
         let mut env = EnvMap::new();
 
-        let command = setup_bash(&sh("bash - --arg file1 file2"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash - --arg file1 file2"), &res.enc(), &mut env).unwrap();
         assert_eq!(
             "bash --posix - --arg file1 file2",
             shell_str(command.as_ref())
         );
 
-        let command = setup_bash(&sh("bash -- --arg file1 file2"), &res.path, &mut env).unwrap();
+        let command = setup_bash(&sh("bash -- --arg file1 file2"), &res.enc(), &mut env).unwrap();
         assert_eq!(
             "bash --posix -- --arg file1 file2",
             shell_str(command.as_ref())
@@ -731,7 +744,7 @@ mod tests {
         let dir = std::fs::canonicalize(tmp.path()).unwrap();
         let mut env = EnvMap::new();
         assert!(
-            setup_bash(&sh("bash"), dir.to_str().unwrap(), &mut env)
+            setup_bash(&sh("bash"), &EncodedOs::from_path(&dir), &mut env)
                 .unwrap()
                 .is_none()
         );
@@ -743,7 +756,7 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Fish);
         let mut env = EnvMap::new();
 
-        assert!(setup_xdg_data_dirs(&res.path, &mut env));
+        assert!(setup_xdg_data_dirs(&res.enc(), &mut env));
         assert_eq!(
             format!("{}/shell-integration", res.path),
             env.get("GHOSTTY_SHELL_INTEGRATION_XDG_DIR")
@@ -763,7 +776,7 @@ mod tests {
         let mut env = EnvMap::new();
         env.insert("XDG_DATA_DIRS", "/opt/share");
 
-        assert!(setup_xdg_data_dirs(&res.path, &mut env));
+        assert!(setup_xdg_data_dirs(&res.enc(), &mut env));
         assert_eq!(
             format!("{}/shell-integration", res.path),
             env.get("GHOSTTY_SHELL_INTEGRATION_XDG_DIR")
@@ -782,7 +795,7 @@ mod tests {
         let tmp = TempDir::init().unwrap();
         let dir = std::fs::canonicalize(tmp.path()).unwrap();
         let mut env = EnvMap::new();
-        assert!(!setup_xdg_data_dirs(dir.to_str().unwrap(), &mut env));
+        assert!(!setup_xdg_data_dirs(&EncodedOs::from_path(&dir), &mut env));
         assert_eq!(0, env.len());
     }
 
@@ -791,7 +804,7 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Nushell);
         let mut env = EnvMap::new();
 
-        let command = setup_nushell(&sh("nu"), &res.path, &mut env);
+        let command = setup_nushell(&sh("nu"), &res.enc(), &mut env);
         assert_eq!("nu --execute 'use ghostty *'", shell_str(command.as_ref()));
         assert_eq!(
             format!("{}/shell-integration", res.path),
@@ -819,7 +832,7 @@ mod tests {
             "nu -ic script.sh",
         ] {
             let mut env = EnvMap::new();
-            assert!(setup_nushell(&sh(cmdline), &res.path, &mut env).is_none());
+            assert!(setup_nushell(&sh(cmdline), &res.enc(), &mut env).is_none());
             assert!(env.contains_key("XDG_DATA_DIRS"));
             assert!(env.contains_key("GHOSTTY_SHELL_INTEGRATION_XDG_DIR"));
         }
@@ -830,7 +843,7 @@ mod tests {
         let tmp = TempDir::init().unwrap();
         let dir = std::fs::canonicalize(tmp.path()).unwrap();
         let mut env = EnvMap::new();
-        assert!(setup_nushell(&sh("nu"), dir.to_str().unwrap(), &mut env).is_none());
+        assert!(setup_nushell(&sh("nu"), &EncodedOs::from_path(&dir), &mut env).is_none());
         assert_eq!(0, env.len());
     }
 
@@ -839,7 +852,7 @@ mod tests {
         let res = TmpResourcesDir::new(Shell::Zsh);
         let mut env = EnvMap::new();
 
-        let command = setup_zsh(&sh("zsh"), &res.path, &mut env);
+        let command = setup_zsh(&sh("zsh"), &res.enc(), &mut env);
         assert_eq!("zsh", shell_str(command.as_ref()));
         assert_eq!(
             res.shell_path,
@@ -854,7 +867,7 @@ mod tests {
         let mut env = EnvMap::new();
         env.insert("ZDOTDIR", "$HOME/.config/zsh");
 
-        let command = setup_zsh(&sh("zsh"), &res.path, &mut env);
+        let command = setup_zsh(&sh("zsh"), &res.enc(), &mut env);
         assert_eq!("zsh", shell_str(command.as_ref()));
         assert_eq!(
             res.shell_path,
@@ -871,7 +884,7 @@ mod tests {
         let tmp = TempDir::init().unwrap();
         let dir = std::fs::canonicalize(tmp.path()).unwrap();
         let mut env = EnvMap::new();
-        assert!(setup_zsh(&sh("zsh"), dir.to_str().unwrap(), &mut env).is_none());
+        assert!(setup_zsh(&sh("zsh"), &EncodedOs::from_path(&dir), &mut env).is_none());
         assert_eq!(0, env.len());
     }
 
@@ -879,9 +892,11 @@ mod tests {
     fn bundled_resources_exist() {
         // The shipped scripts that setup() points shells at.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../resources");
-        let root = root.to_str().unwrap();
+        let root_enc = EncodedOs::from_path(&root);
         let mut env = EnvMap::new();
-        let r = setup(root, &sh("bash"), &mut env, None).unwrap().unwrap();
+        let r = setup(&root_enc, &sh("bash"), &mut env, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(r.shell, Shell::Bash);
         assert!(
             env.get("ENV")
@@ -891,8 +906,7 @@ mod tests {
                 .ends_with("shell-integration/bash/ghostty.bash")
         );
         assert!(
-            Path::new(root)
-                .join("shell-integration/nushell/vendor/autoload/ghostty.nu")
+            root.join("shell-integration/nushell/vendor/autoload/ghostty.nu")
                 .is_file()
         );
     }

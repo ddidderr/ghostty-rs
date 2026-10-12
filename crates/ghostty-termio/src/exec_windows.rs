@@ -35,6 +35,7 @@ use ghostty_config::{
     types_b::{ShellIntegration, ShellIntegrationFeatures},
 };
 use ghostty_datastruct::blocking_queue::Timeout;
+use ghostty_os::osbytes::EncodedOs;
 use ghostty_renderer::size::{GridSize, ScreenSize};
 use ghostty_terminal::terminal::Terminal;
 use windows_sys::Win32::{
@@ -99,8 +100,8 @@ pub struct Config {
     pub shell_integration: ShellIntegration,
     pub shell_integration_features: ShellIntegrationFeatures,
     pub cursor_blink: Option<bool>,
-    pub working_directory: Option<String>,
-    pub resources_dir: Option<String>,
+    pub working_directory: Option<EncodedOs>,
+    pub resources_dir: Option<EncodedOs>,
     pub term: String,
 }
 
@@ -136,8 +137,8 @@ impl Exec {
     }
 
     /// The working directory the subprocess will be started in, if any.
-    pub fn cwd(&self) -> Option<&str> {
-        self.subprocess.cwd.as_deref()
+    pub fn cwd(&self) -> Option<&EncodedOs> {
+        self.subprocess.cwd.as_ref()
     }
 
     /// The argv that will be executed.
@@ -157,7 +158,7 @@ impl Exec {
         // set that on the terminal now. This allows rapidly initializing
         // new surfaces to use the proper pwd.
         if let Some(cwd) = &self.subprocess.cwd
-            && let Err(err) = term.set_pwd(cwd.as_bytes())
+            && let Err(err) = term.set_pwd(&cwd.to_bytes())
         {
             log::warn!("error setting initial pwd err={err:?}");
         }
@@ -583,7 +584,7 @@ fn write_thread_main(handle: &OwnedHandle, rx: &Receiver<Vec<u8>>) {
 // Subprocess
 
 struct Subprocess {
-    cwd: Option<String>,
+    cwd: Option<EncodedOs>,
     env: Option<EnvMap>,
     args: Vec<String>,
     grid_size: GridSize,
@@ -602,8 +603,10 @@ impl Subprocess {
 
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
-            log::info!("found Ghostty resources dir: {dir}");
-            env.insert("GHOSTTY_RESOURCES_DIR", dir.clone());
+            log::info!("found Ghostty resources dir: {}", dir.as_encoded());
+            // The resources dir is an encoded OS string: decode it for the
+            // child's environment.
+            env.insert("GHOSTTY_RESOURCES_DIR", dir.to_os());
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
@@ -615,10 +618,7 @@ impl Subprocess {
 
             // Assume that the resources directory is adjacent to the terminfo
             // database
-            let parent = std::path::Path::new(base)
-                .parent()
-                .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
-            env.insert("TERMINFO", format!("{parent}\\terminfo"));
+            env.insert("TERMINFO", terminfo_dir(base));
         } else {
             env.insert("TERM", "xterm-256color");
             env.insert("COLORTERM", "truecolor");
@@ -693,7 +693,10 @@ impl Subprocess {
 
         // Build our args list. If we fail to find the shell, we'd still like
         // to try to run something so Ghostty can launch.
-        let args = match exec_command(&shell_command, std::env::var("WINDIR").ok().as_deref()) {
+        // %WINDIR% may hold lone surrogates: carry it in the encoded form the
+        // argv strings use (decoded to WTF-16 when the process is created).
+        let windir = std::env::var_os("WINDIR").map(|v| EncodedOs::from_os(&v).into_encoded());
+        let args = match exec_command(&shell_command, windir.as_deref()) {
             Ok(args) => args,
             Err(Error::SystemError) => {
                 log::warn!("failed to get WINDIR, cannot run shell command");
@@ -708,7 +711,7 @@ impl Subprocess {
 
         // Propagate the current working directory (CWD) to the shell.
         if let Some(pwd) = &cwd {
-            env.insert("PWD", pwd.clone());
+            env.insert("PWD", pwd.to_os());
         }
 
         Ok(Subprocess {
@@ -777,9 +780,9 @@ impl Subprocess {
         // If we can't access the cwd, then don't set any cwd and inherit.
         // This is important because our cwd can be set by the shell (OSC 7)
         // and we don't want to break new windows.
-        let cwd: Option<String> = match &self.cwd {
+        let cwd: Option<EncodedOs> = match &self.cwd {
             None => None,
-            Some(proposed) => match std::fs::metadata(proposed) {
+            Some(proposed) => match std::fs::metadata(proposed.to_path()) {
                 Ok(_) => Some(proposed.clone()),
                 Err(err) => {
                     log::warn!("cannot access cwd, ignoring: {err}");
@@ -852,10 +855,17 @@ fn add_ghostty_path(env: &mut EnvMap) {
             return;
         }
     };
-    let Some(exe_dir) = exe.parent().map(|p| p.to_string_lossy().into_owned()) else {
+    add_ghostty_path_for(env, &exe);
+}
+
+/// [`add_ghostty_path`] for a given executable (testable with non-UTF-8
+/// directories).
+fn add_ghostty_path_for(env: &mut EnvMap, exe: &std::path::Path) {
+    // Keep the exact OS string (it may hold lone UTF-16 surrogates).
+    let Some(exe_dir) = exe.parent().map(|p| p.as_os_str().to_owned()) else {
         return;
     };
-    log::debug!("appending ghostty bin to path dir={exe_dir}");
+    log::debug!("appending ghostty bin to path dir={}", exe_dir.display());
 
     // We always set this so that if the shell overwrites the path
     // scripts still have a way to find the Ghostty binary when
@@ -868,17 +878,25 @@ fn add_ghostty_path(env: &mut EnvMap) {
     if let Some(path) = env.get("PATH").map(std::ffi::OsStr::to_owned) {
         // Verify that our path doesn't already contain this entry
         if std::env::split_paths(&path)
-            .any(|entry| !entry.as_os_str().is_empty() && entry.as_os_str() == exe_dir.as_str())
+            .any(|entry| !entry.as_os_str().is_empty() && entry.as_os_str() == exe_dir.as_os_str())
         {
             return;
         }
-        env.insert(
-            "PATH",
-            ghostty_os::env::append_env_os(&path, std::ffi::OsStr::new(&exe_dir)),
-        );
+        env.insert("PATH", ghostty_os::env::append_env_os(&path, &exe_dir));
     } else {
         env.insert("PATH", exe_dir);
     }
+}
+
+/// The `TERMINFO` value for a resources dir: `<parent of base>\\terminfo` as
+/// an OS string (the resources dir is an encoded OS string).
+fn terminfo_dir(base: &EncodedOs) -> std::ffi::OsString {
+    let base = base.to_path();
+    let mut out = base
+        .parent()
+        .map_or_else(std::ffi::OsString::new, |p| p.as_os_str().to_owned());
+    out.push("\\terminfo");
+    out
 }
 
 /// Terminate the underlying subprocess and wait for it to exit
@@ -908,6 +926,23 @@ pub fn exec_command(command: &ConfigCommand, windir: Option<&str>) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn terminfo_dir_is_sibling_of_resources_and_lossless() {
+        use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+        // C:\Users\<lone surrogate>\share\ghostty -> ...\share\terminfo
+        let mut wide: Vec<u16> = "C:\\Users\\".encode_utf16().collect();
+        wide.push(0xD800);
+        wide.extend("\\share\\ghostty".encode_utf16());
+        let base = EncodedOs::from_wide(&wide);
+        let got = super::terminfo_dir(&base);
+        let mut want: Vec<u16> = "C:\\Users\\".encode_utf16().collect();
+        want.push(0xD800);
+        want.extend("\\share\\terminfo".encode_utf16());
+        assert_eq!(got.encode_wide().collect::<Vec<_>>(), want);
+        assert_eq!(std::ffi::OsString::from_wide(&want), got);
+    }
+
     use super::*;
 
     #[test]

@@ -1359,6 +1359,7 @@ dependencies = [
  "ghostty-datastruct",
  "ghostty-input",
  "ghostty-inspector",
+ "ghostty-os",
  "ghostty-renderer",
  "ghostty-terminal",
  "ghostty-vt",
@@ -1404,6 +1405,7 @@ dependencies = [
 name = "ghostty-bench"
 version = "0.1.0"
 dependencies = [
+ "ghostty-os",
  "ghostty-terminal",
  "ghostty-unicode",
  "ghostty-vt",
@@ -1441,6 +1443,7 @@ dependencies = [
  "ghostty-vt",
  "log",
  "ratatui",
+ "temp-env",
  "tempfile",
  "termina",
  "thiserror 2.0.21",
@@ -1458,6 +1461,7 @@ dependencies = [
  "ghostty-vt",
  "log",
  "onig",
+ "temp-env",
  "thiserror 2.0.21",
 ]
 
@@ -1486,6 +1490,7 @@ dependencies = [
  "onig",
  "oslog",
  "png",
+ "temp-env",
  "thiserror 2.0.21",
 ]
 
@@ -1500,6 +1505,7 @@ dependencies = [
  "minidump",
  "minidump-writer",
  "serde_json",
+ "temp-env",
  "tempfile",
  "thiserror 2.0.21",
  "windows-sys",

@@ -6,6 +6,8 @@
 
 use std::collections::HashSet;
 
+use ghostty_os::osbytes::EncodedOs;
+
 use crate::{
     cli_args::{self, ArgError, ArgIter, CliTarget},
     command::Command,
@@ -3765,7 +3767,7 @@ pub enum ReplayStep {
     Arg(String),
 
     /// A base path to expand relative paths against.
-    Expand(String),
+    Expand(EncodedOs),
 
     /// A conditional argument. This arg is parsed only if all
     /// conditions match (an "AND"). An "OR" can be achieved by
@@ -3876,12 +3878,15 @@ impl Config {
     /// Load configuration from the target config file at `path`.
     ///
     /// `path` must be resolved and absolute.
-    pub fn load_file(&mut self, path: &str) -> Result<(), Error> {
-        assert!(ghostty_os::osbytes::config_str_to_path(path).is_absolute());
+    pub fn load_file(&mut self, path: &EncodedOs) -> Result<(), Error> {
+        assert!(path.to_path().is_absolute());
         let file = match crate::file_load::open(path) {
             Ok(f) => f,
             Err(crate::file_load::OpenFileError::NotAFile) => {
-                log::warn!("config-file {path}: not reading because it is not a file");
+                log::warn!(
+                    "config-file {}: not reading because it is not a file",
+                    path.as_encoded()
+                );
                 return Ok(());
             }
             Err(crate::file_load::OpenFileError::FileNotFound) => {
@@ -3894,8 +3899,8 @@ impl Config {
     }
 
     /// Load config from the given File.
-    fn load_fs_file(&mut self, file: std::fs::File, path: &str) -> Result<(), Error> {
-        log::info!("reading configuration file path={path}");
+    fn load_fs_file(&mut self, file: std::fs::File, path: &EncodedOs) -> Result<(), Error> {
+        log::info!("reading configuration file path={}", path.as_encoded());
         let mut reader = std::io::BufReader::with_capacity(2048, file);
         self.load_reader(&mut reader, path)
     }
@@ -3904,7 +3909,7 @@ impl Config {
     fn load_reader<R: std::io::BufRead>(
         &mut self,
         reader: &mut R,
-        path: &str,
+        path: &EncodedOs,
     ) -> Result<(), Error> {
         // If the file starts with a UTF-8 byte order mark, skip it.
         // https://en.wikipedia.org/wiki/Byte_order_mark#UTF-8
@@ -3914,11 +3919,12 @@ impl Config {
                 reader.consume(3);
             }
         }
-        let mut iter = cli_args::LineIterator::with_path(reader, path);
+        let mut iter = cli_args::LineIterator::with_path(reader, path.as_encoded());
         self.load_iter(&mut iter)?;
-        let dir = ghostty_os::osbytes::config_str_to_path(path)
+        let dir = path
+            .to_path()
             .parent()
-            .map(ghostty_os::osbytes::path_to_config_string)
+            .map(EncodedOs::from_path)
             .unwrap_or_default();
         self.expand_paths(&dir)?;
         Ok(())
@@ -3927,23 +3933,26 @@ impl Config {
     /// Load optional configuration file from `path`. All errors are ignored.
     ///
     /// Returns the action that was taken.
-    pub fn load_optional_file(&mut self, path: &str) -> OptionalFileAction {
+    pub fn load_optional_file(&mut self, path: &EncodedOs) -> OptionalFileAction {
         match self.load_file(path) {
             Ok(()) => OptionalFileAction::Loaded,
             Err(Error::Io(e)) if e.kind() == std::io::ErrorKind::NotFound => {
                 OptionalFileAction::NotFound
             }
             Err(err) => {
-                log::warn!("error reading optional config file, not loading err={err} path={path}");
+                log::warn!(
+                    "error reading optional config file, not loading err={err} path={}",
+                    path.as_encoded()
+                );
                 OptionalFileAction::Error
             }
         }
     }
 
     /// The default template with the (decoded, byte-exact) path substituted.
-    fn render_config_template(path: &str) -> Vec<u8> {
+    fn render_config_template(path: &EncodedOs) -> Vec<u8> {
         let tmpl = include_str!("config-template");
-        let path_bytes = ghostty_os::osbytes::config_str_to_bytes(path);
+        let path_bytes = path.to_bytes();
         let mut out = Vec::with_capacity(tmpl.len() + path_bytes.len());
         for (i, part) in tmpl.split("{[path]s}").enumerate() {
             if i > 0 {
@@ -3954,10 +3963,9 @@ impl Config {
         out
     }
 
-    fn write_config_template(path: &str) -> std::io::Result<()> {
-        log::info!("creating template config file: path={path}");
-        // `path` carries the reversible byte encoding; decode it for the OS.
-        let os_path = ghostty_os::osbytes::config_str_to_path(path);
+    fn write_config_template(path: &EncodedOs) -> std::io::Result<()> {
+        log::info!("creating template config file: path={}", path.as_encoded());
+        let os_path = path.to_path();
         if let Some(dir) = os_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -3982,7 +3990,11 @@ impl Config {
             if xdg_action != OptionalFileAction::NotFound
                 && legacy_xdg_action != OptionalFileAction::NotFound
             {
-                log::warn!("both config files `{legacy_xdg_path}` and `{xdg_path}` exist.");
+                log::warn!(
+                    "both config files `{}` and `{}` exist.",
+                    legacy_xdg_path.as_encoded(),
+                    xdg_path.as_encoded()
+                );
                 log::warn!("loading them both in that order");
                 true
             } else {
@@ -4014,7 +4026,9 @@ impl Config {
                     && legacy_app_support_action != OptionalFileAction::NotFound
                 {
                     log::warn!(
-                        "both config files `{legacy_app_support_path}` and `{app_support_path}` exist."
+                        "both config files `{}` and `{}` exist.",
+                        legacy_app_support_path.as_encoded(),
+                        app_support_path.as_encoded()
                     );
                     log::warn!("loading them both in that order");
                     true
@@ -4142,7 +4156,7 @@ impl Config {
         // Any paths referenced from the CLI are relative to the current working
         // directory.
         let cwd = std::fs::canonicalize(".")?;
-        self.expand_paths(&ghostty_os::osbytes::path_to_config_string(&cwd))?;
+        self.expand_paths(&EncodedOs::from_path(&cwd))?;
         Ok(())
     }
 
@@ -4153,7 +4167,7 @@ impl Config {
         }
 
         // Keeps track of loaded files to prevent cycles.
-        let mut loaded: HashSet<String> = HashSet::new();
+        let mut loaded: HashSet<EncodedOs> = HashSet::new();
 
         // We need to insert all of our loaded config-file values
         // PRIOR to the "-e" in our replay steps, since everything
@@ -4186,12 +4200,12 @@ impl Config {
 
             // All paths should already be absolute at this point because
             // they're fixed up after each load.
-            assert!(ghostty_os::osbytes::config_str_to_path(&path).is_absolute());
+            assert!(path.to_path().is_absolute());
 
             // We must only load a unique file once
             if !loaded.insert(path.clone()) {
                 let diag = Diagnostic {
-                    message: format!("config-file {path}: cycle detected"),
+                    message: format!("config-file {}: cycle detected", path.as_encoded()),
                     ..Diagnostic::default()
                 };
                 self.diagnostics.append(diag.clone());
@@ -4199,13 +4213,14 @@ impl Config {
                 continue;
             }
 
-            let file = match std::fs::File::open(ghostty_os::osbytes::config_str_to_path(&path)) {
+            let file = match std::fs::File::open(path.to_path()) {
                 Ok(f) => f,
                 Err(err) => {
                     if err.kind() != std::io::ErrorKind::NotFound || !optional {
                         let diag = Diagnostic {
                             message: format!(
-                                "error opening config-file {path}: {}",
+                                "error opening config-file {}: {}",
+                                path.as_encoded(),
                                 zig_io_error_name(&err)
                             ),
                             ..Diagnostic::default()
@@ -4221,7 +4236,8 @@ impl Config {
             if !meta.is_file() {
                 let diag = Diagnostic {
                     message: format!(
-                        "config-file {path}: not reading because file type is {}",
+                        "config-file {}: not reading because file type is {}",
+                        path.as_encoded(),
                         file_kind_name(&meta)
                     ),
                     ..Diagnostic::default()
@@ -4347,9 +4363,9 @@ impl Config {
 
     /// Expand the relative paths in config-files to be absolute paths
     /// relative to the base directory.
-    fn expand_paths(&mut self, base: &str) -> Result<(), Error> {
+    fn expand_paths(&mut self, base: &EncodedOs) -> Result<(), Error> {
         // Keep track of this step for replays
-        self.replay_steps.push(ReplayStep::Expand(base.to_string()));
+        self.replay_steps.push(ReplayStep::Expand(base.clone()));
 
         // Expand all of our paths
         if let Some(path) = &mut self.background_image {
@@ -4376,7 +4392,7 @@ impl Config {
         // Find our theme file and open it. See the open function for details.
         let resources_dir = ghostty_os::resources_dir().ok();
         let Some(themefile) = crate::theme::open(
-            name,
+            &EncodedOs::from_encoded(name),
             resources_dir.as_ref().and_then(|r| r.app()),
             &mut self.diagnostics,
         ) else {
@@ -4400,7 +4416,7 @@ impl Config {
 
         // Load our theme
         let mut reader = std::io::BufReader::with_capacity(2048, file);
-        let mut iter = cli_args::LineIterator::with_path(&mut reader, path);
+        let mut iter = cli_args::LineIterator::with_path(&mut reader, path.as_encoded());
         new_config.load_iter(&mut iter)?;
 
         // Setup our replay to be conditional.
@@ -4641,14 +4657,17 @@ impl Config {
         let pw = ghostty_os::passwd::get()?;
         if self.command.is_none() {
             if let Some(sh) = pw.shell {
-                log::info!("default shell src=passwd value={sh}");
-                self.command = Some(Command::Shell(sh));
+                log::info!("default shell src=passwd value={}", sh.as_encoded());
+                self.command = Some(Command::Shell(sh.into_encoded()));
             }
         }
 
         if *wd == WorkingDirectory::Home {
             if let Some(home) = pw.home {
-                log::info!("default working directory src=passwd value={home}");
+                log::info!(
+                    "default working directory src=passwd value={}",
+                    home.as_encoded()
+                );
                 *wd = WorkingDirectory::Path(home);
             } else {
                 *wd = WorkingDirectory::Inherit;
@@ -4951,7 +4970,7 @@ mod tests {
         let td = ghostty_os::TempDir::init().unwrap();
         let dir = td.path().join(std::ffi::OsStr::from_bytes(b"cfg\xff"));
         let file = dir.join("config.ghostty");
-        let enc = ghostty_os::osbytes::path_to_config_string(&file);
+        let enc = EncodedOs::from_path(&file);
         Config::write_config_template(&enc).unwrap();
         let data = std::fs::read(&file).unwrap();
         let raw = file.as_os_str().as_bytes();
@@ -4985,8 +5004,11 @@ mod tests {
             let data = "\u{feff}abnormal-command-exit-runtime = 2500\n";
             let mut reader = Cursor::new(data.as_bytes().to_vec());
             let mut cfg = Config::default();
-            cfg.load_reader(&mut reader, "/home/ghostty/.config/ghostty/config.ghostty")
-                .unwrap();
+            cfg.load_reader(
+                &mut reader,
+                &EncodedOs::from_encoded("/home/ghostty/.config/ghostty/config.ghostty"),
+            )
+            .unwrap();
             cfg.finalize().unwrap();
 
             assert!(cfg.diagnostics.empty());
@@ -4997,8 +5019,11 @@ mod tests {
             let data = "abnormal-command-exit-runtime = 2500\n";
             let mut reader = Cursor::new(data.as_bytes().to_vec());
             let mut cfg = Config::default();
-            cfg.load_reader(&mut reader, "/home/ghostty/.config/ghostty/config.ghostty")
-                .unwrap();
+            cfg.load_reader(
+                &mut reader,
+                &EncodedOs::from_encoded("/home/ghostty/.config/ghostty/config.ghostty"),
+            )
+            .unwrap();
             cfg.finalize().unwrap();
 
             assert!(cfg.diagnostics.empty());
@@ -5141,11 +5166,11 @@ mod tests {
         cfg.load_iter(&mut i).unwrap();
         cfg.finalize().unwrap();
 
-        let expected = ghostty_os::expand_home("~/projects/ghostty")
-            .unwrap_or_else(|_| "~/projects/ghostty".to_string());
+        let expected = ghostty_os::expand_home(&EncodedOs::from_encoded("~/projects/ghostty"))
+            .unwrap_or_else(|_| EncodedOs::from_encoded("~/projects/ghostty"));
         assert_eq!(
             cfg.working_directory.as_ref().unwrap().value().unwrap(),
-            expected
+            &expected
         );
     }
 
@@ -5420,7 +5445,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.load_iter(&mut it(&[&format!("--config-file={}", a.display())]))
             .unwrap();
-        cfg.expand_paths("/").unwrap();
+        cfg.expand_paths(&EncodedOs::from_encoded("/")).unwrap();
         cfg.load_recursive_files().unwrap();
         assert!(
             cfg.diagnostics
@@ -5435,7 +5460,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.load_iter(&mut it(&["--config-file=?/nonexistent/ghostty/file"]))
             .unwrap();
-        cfg.expand_paths("/").unwrap();
+        cfg.expand_paths(&EncodedOs::from_encoded("/")).unwrap();
         cfg.load_recursive_files().unwrap();
         assert!(cfg.diagnostics.empty());
     }

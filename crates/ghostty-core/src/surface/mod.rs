@@ -469,8 +469,8 @@ impl Surface {
                 .working_directory
                 .as_ref()
                 .and_then(|wd| wd.value())
-                .map(str::to_owned);
-            ecfg.resources_dir = global::state().resources_dir.host().map(str::to_owned);
+                .cloned();
+            ecfg.resources_dir = global::state().resources_dir.host().cloned();
             // The Windows exec backend has no pre-exec/post-fork hooks,
             // cgroup scopes or rlimits (Zig: Linux/POSIX only).
             #[cfg(unix)]
@@ -940,9 +940,8 @@ impl Surface {
             }
 
             Message::PwdChange(w) => {
-                // Keep the OSC 7 bytes (see `Pwd`): non-UTF-8 bytes are
-                // carried with the reversible byte escape.
-                let pwd = ghostty_os::osbytes::bytes_to_config_string(w.slice());
+                // Keep the OSC 7 bytes (see `Pwd`).
+                let pwd = ghostty_os::osbytes::EncodedOs::from_bytes(w.slice());
                 self.perform(RtAction::Pwd(Pwd { pwd }));
             }
 
@@ -1368,10 +1367,10 @@ impl Surface {
     /// Returns the pwd of the terminal, if any. This is always copied
     /// because the pwd can change at any point from termio.
     #[must_use]
-    pub fn pwd(&self) -> Option<String> {
+    pub fn pwd(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
         let t = self.lock_terminal();
         let pwd = t.get_pwd()?;
-        Some(ghostty_os::osbytes::bytes_to_config_string(pwd))
+        Some(ghostty_os::osbytes::EncodedOs::from_bytes(pwd))
     }
 
     /// The raw bytes of [`Surface::pwd`] (Zig returns the OSC 7 bytes as is).

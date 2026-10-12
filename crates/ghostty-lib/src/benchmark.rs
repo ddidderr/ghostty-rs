@@ -7,27 +7,27 @@ use ghostty_bench::{args::Args, benches};
 
 /// Split the argument string like `std.process.ArgIteratorGeneral(.{})`:
 /// whitespace separated, with double quotes grouping and backslash
-/// escapes inside quotes.
-fn split_args(s: &str) -> Vec<String> {
+/// escapes inside quotes. Works on raw bytes: file names need not be UTF-8.
+fn split_args(s: &[u8]) -> Vec<std::ffi::OsString> {
     let mut out = Vec::new();
-    let mut cur = String::new();
+    let mut cur: Vec<u8> = Vec::new();
     let mut have = false;
     let mut in_quote = false;
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
+    let mut bytes = s.iter().copied();
+    while let Some(c) = bytes.next() {
         match c {
-            '"' => {
+            b'"' => {
                 in_quote = !in_quote;
                 have = true;
             }
-            '\\' if in_quote => {
-                if let Some(n) = chars.next() {
+            b'\\' if in_quote => {
+                if let Some(n) = bytes.next() {
                     cur.push(n);
                 }
             }
-            c if c.is_whitespace() && !in_quote => {
+            c if c.is_ascii_whitespace() && !in_quote => {
                 if have {
-                    out.push(std::mem::take(&mut cur));
+                    out.push(ghostty_os::osbytes::os_from_bytes(std::mem::take(&mut cur)));
                     have = false;
                 }
             }
@@ -38,7 +38,7 @@ fn split_args(s: &str) -> Vec<String> {
         }
     }
     if have {
-        out.push(cur);
+        out.push(ghostty_os::osbytes::os_from_bytes(cur));
     }
     out
 }
@@ -62,7 +62,7 @@ pub unsafe extern "C" fn ghostty_benchmark_cli(
         log::warn!("unknown action={action}");
         return false;
     }
-    let argv = split_args(&args.to_string_lossy());
+    let argv = split_args(args.to_bytes());
     let parsed = match Args::parse(argv) {
         Ok(a) => a,
         Err(err) => {
@@ -85,9 +85,18 @@ mod tests {
 
     #[test]
     fn split_args_basic() {
-        assert_eq!(split_args("a b  c"), ["a", "b", "c"]);
-        assert_eq!(split_args("--x=\"a b\" c"), ["--x=a b", "c"]);
-        assert_eq!(split_args("   ").len(), 0);
+        assert_eq!(split_args(b"a b  c"), ["a", "b", "c"]);
+        assert_eq!(split_args(b"--x=\"a b\" c"), ["--x=a b", "c"]);
+        assert_eq!(split_args(b"   ").len(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn split_args_keeps_non_utf8_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let v = split_args(b"--data=/tmp/a\xffb x");
+        assert_eq!(v[0].as_bytes(), b"--data=/tmp/a\xffb");
+        assert_eq!(v[1], "x");
     }
 
     #[test]

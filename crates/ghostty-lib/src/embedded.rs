@@ -619,7 +619,7 @@ impl RtSurface for SurfaceRt {
         true
     }
 
-    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, String)], confirm: bool) {
+    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, Vec<u8>)], confirm: bool) {
         let Some(cb) = self.app.opts.write_clipboard_cb else {
             return;
         };
@@ -628,7 +628,8 @@ impl RtSurface for SurfaceRt {
             .map(|(m, d)| {
                 (
                     CString::new(m.replace('\0', "")).unwrap_or_default(),
-                    CString::new(d.replace('\0', "")).unwrap_or_default(),
+                    CString::new(d.iter().copied().filter(|b| *b != 0).collect::<Vec<u8>>())
+                        .unwrap_or_default(),
                 )
             })
             .collect();
@@ -889,7 +890,7 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
         && !wd.is_empty()
     {
         // Raw bytes are kept (reversible escape in the String based config).
-        let wd_str = osbytes::bytes_to_config_string(wd);
+        let wd_str = osbytes::EncodedOs::from_bytes(wd);
         let wd_os = osbytes::os_from_bytes(wd.to_vec());
         let wd_disp = String::from_utf8_lossy(wd);
         match std::fs::metadata(&wd_os) {
@@ -2207,7 +2208,7 @@ mod tests {
             .as_ref()
             .and_then(|w| w.value())
             .unwrap();
-        assert_eq!(osbytes::config_str_to_bytes(got_wd), dir);
+        assert_eq!(got_wd.to_bytes(), dir);
         let Some(Command::Shell(c)) = &config.command else {
             panic!("no command");
         };

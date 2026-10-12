@@ -132,7 +132,7 @@ pub enum DebugImKey {
 #[derive(Debug, Clone, Default)]
 pub struct SurfaceOverrides {
     pub command: Option<Command>,
-    pub working_directory: Option<String>,
+    pub working_directory: Option<ghostty_os::osbytes::EncodedOs>,
     pub title: Option<String>,
 }
 
@@ -268,7 +268,7 @@ impl Surface {
             if ghostty_apprt::surface::should_inherit_working_directory(context, &config_obj.get())
                 && let Some(pwd) = parent.get_pwd()
             {
-                imp.pwd.replace(Some(pwd));
+                imp.pwd.replace(Some(pwd.into_encoded()));
                 self.notify("pwd");
             }
         }
@@ -1500,7 +1500,7 @@ impl Surface {
     pub fn set_clipboard(
         &self,
         clipboard_type: Clipboard,
-        contents: &[(String, String)],
+        contents: &[(String, Vec<u8>)],
         confirm: bool,
     ) {
         clipboard::set(self, clipboard_type, contents, confirm);
@@ -1582,7 +1582,7 @@ impl Surface {
         }
         self.set_clipboard(
             Clipboard::Standard,
-            &[("text/plain".to_owned(), title)],
+            &[("text/plain".to_owned(), title.into_bytes())],
             false,
         );
         true
@@ -1608,13 +1608,22 @@ impl Surface {
     }
 
     /// Returns the pwd property.
-    pub fn get_pwd(&self) -> Option<String> {
-        self.imp().pwd.borrow().clone()
+    pub fn get_pwd(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
+        // The GObject `pwd` property is a (UTF-8) string, so it stores the
+        // encoded form of the OS string; this accessor is the only place it
+        // is converted back to the typed value.
+        self.imp()
+            .pwd
+            .borrow()
+            .clone()
+            .map(ghostty_os::osbytes::EncodedOs::from_encoded)
     }
 
     /// Set the pwd for this surface, copies the value.
-    pub fn set_pwd(&self, pwd: Option<&str>) {
-        self.imp().pwd.replace(pwd.map(str::to_owned));
+    pub fn set_pwd(&self, pwd: Option<&ghostty_os::osbytes::EncodedOs>) {
+        self.imp()
+            .pwd
+            .replace(pwd.map(|p| p.as_encoded().to_owned()));
         self.notify("pwd");
     }
 
@@ -1806,8 +1815,10 @@ impl Surface {
 
             let volume = config.bell_audio_volume.clamp(0.0, 1.0);
 
-            debug_assert!(std::path::Path::new(path).is_absolute());
-            let media_file = gtk::MediaFile::for_filename(path);
+            // The config path is an encoded OS string: decode it first.
+            let path = path.to_path();
+            debug_assert!(path.is_absolute());
+            let media_file = gtk::MediaFile::for_filename(&path);
 
             // If the audio file is marked as required, we'll emit an error if
             // there was a problem playing it. Otherwise there will be silence.
@@ -2125,7 +2136,7 @@ impl Surface {
 
     /// The first `focused` surface other than ourselves, used to inherit the
     /// working directory like `App.focusedSurface` does in the core.
-    fn focused_surface_pwd(&self) -> Option<String> {
+    fn focused_surface_pwd(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
         Surface::all()
             .into_iter()
             .find(|s| s != self && s.core().is_some() && s.get_focused())
@@ -2178,7 +2189,7 @@ impl Surface {
         if let Some(size) = *imp.font_size_request.borrow() {
             config.font_size = size.0.points;
         }
-        if let Some(pwd) = imp.pwd.borrow().clone() {
+        if let Some(pwd) = self.get_pwd() {
             let mut wd_val = WorkingDirectory::Path(pwd);
             wd_val.finalize();
             config.working_directory = Some(wd_val);
@@ -2421,7 +2432,7 @@ impl RtSurface for RtSurfaceHandle {
             .is_some_and(|s| s.clipboard_request(clipboard, state))
     }
 
-    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, String)], confirm: bool) {
+    fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, Vec<u8>)], confirm: bool) {
         if let Some(s) = self.gobj() {
             s.set_clipboard(clipboard, contents, confirm);
         }
@@ -2485,15 +2496,16 @@ mod clipboard {
     pub(super) fn set(
         surface: &Surface,
         clipboard_type: Clipboard,
-        contents: &[(String, String)],
+        contents: &[(String, Vec<u8>)],
         confirm: bool,
     ) {
         // Grab our plaintext content for use in confirmation dialogs
-        // and signals. We always expect one to exist.
+        // and signals (display text only; the clipboard gets the raw bytes).
+        // We always expect one to exist.
         let Some(text) = contents
             .iter()
             .find(|(mime, _)| mime == "text/plain")
-            .map(|(_, data)| data.clone())
+            .map(|(_, data)| String::from_utf8_lossy(data).into_owned())
         else {
             return;
         };
@@ -2505,7 +2517,7 @@ mod clipboard {
             let providers: Vec<gdk::ContentProvider> = contents
                 .iter()
                 .map(|(mime, data)| {
-                    let bytes = glib::Bytes::from(data.as_bytes());
+                    let bytes = glib::Bytes::from(data.as_slice());
                     if mime == "text/plain" {
                         // Add an explicit UTF-8 encoding parameter to the
                         // text/plain type. The default charset when there is

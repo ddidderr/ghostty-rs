@@ -244,8 +244,9 @@ impl DerivedConfig {
             .value
             .iter()
             .map(|p| match p {
-                ConfigPath::Optional(s) => PathItem::Optional(s.clone()),
-                ConfigPath::Required(s) => PathItem::Required(s.clone()),
+                // Decode the config path (encoded OS string) here, once.
+                ConfigPath::Optional(s) => PathItem::Optional(s.to_path()),
+                ConfigPath::Required(s) => PathItem::Required(s.to_path()),
             })
             .collect();
 
@@ -858,7 +859,8 @@ impl<G: GraphicsApi> DrawState<G> {
     fn prep_background_image(&mut self) {
         // Then we try to load the background image if we have a path.
         if let Some(p) = &self.config.bg_image
-            && let Some(image) = load_background_image(p.path()).map(image::Image::Pending)
+            && let Some(image) =
+                load_background_image(&p.path().to_path()).map(image::Image::Pending)
         {
             // If we have an existing background image, replace it.
             // Otherwise, set this as our background image directly.
@@ -1094,16 +1096,17 @@ fn upload_background_image<G: GraphicsApi>(bg_image: &mut BgImageState<G>, gpu: 
 
 /// Decode a background image file (`prepBackgroundImage`). Failures are
 /// logged and result in no image, as in Zig.
-fn load_background_image(path: &str) -> Option<image::Pending> {
+fn load_background_image(path: &std::path::Path) -> Option<image::Pending> {
+    let shown = path.display();
     // Read it (Max size of 4 GiB, for now.)
     let contents = match std::fs::read(path) {
         Ok(c) if u32::try_from(c.len()).is_ok() => c,
         Ok(_) => {
-            log::warn!("background image file \"{path}\" is too large");
+            log::warn!("background image file \"{shown}\" is too large");
             return None;
         }
         Err(err) => {
-            log::warn!("error opening background image file \"{path}\": {err}");
+            log::warn!("error opening background image file \"{shown}\": {err}");
             return None;
         }
     };
@@ -1119,23 +1122,23 @@ fn load_background_image(path: &str) -> Option<image::Pending> {
         FileType::Png => match decode_png(&contents) {
             Ok(v) => v,
             Err(err) => {
-                log::warn!("error decoding png background image \"{path}\": {err}");
+                log::warn!("error decoding png background image \"{shown}\": {err}");
                 return None;
             }
         },
         FileType::Jpeg => match decode_jpeg(&contents) {
             Ok(v) => v,
             Err(err) => {
-                log::warn!("error decoding jpeg background image \"{path}\": {err}");
+                log::warn!("error decoding jpeg background image \"{shown}\": {err}");
                 return None;
             }
         },
         FileType::Unknown => {
-            log::warn!("Cannot determine file type for background image file \"{path}\"!");
+            log::warn!("Cannot determine file type for background image file \"{shown}\"!");
             return None;
         }
         f => {
-            log::warn!("Unsupported file type {f:?} for background image file \"{path}\"!");
+            log::warn!("Unsupported file type {f:?} for background image file \"{shown}\"!");
             return None;
         }
     };
@@ -1179,8 +1182,8 @@ fn detect_file_type(contents: &[u8]) -> FileType {
     }
 }
 
-fn guess_file_type_from_extension(path: &str) -> FileType {
-    let ext = std::path::Path::new(path)
+fn guess_file_type_from_extension(path: &std::path::Path) -> FileType {
+    let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .map(str::to_ascii_lowercase);
@@ -3634,9 +3637,18 @@ mod tests {
         assert_eq!(detect_file_type(&[0xFF, 0xD8, 0xFF, 0xE0]), FileType::Jpeg);
         assert_eq!(detect_file_type(b"GIF89a.."), FileType::Gif);
         assert_eq!(detect_file_type(b"hello"), FileType::Unknown);
-        assert_eq!(guess_file_type_from_extension("/a/b.JPG"), FileType::Jpeg);
-        assert_eq!(guess_file_type_from_extension("/a/b.png"), FileType::Png);
-        assert_eq!(guess_file_type_from_extension("/a/b"), FileType::Unknown);
+        assert_eq!(
+            guess_file_type_from_extension("/a/b.JPG".as_ref()),
+            FileType::Jpeg
+        );
+        assert_eq!(
+            guess_file_type_from_extension("/a/b.png".as_ref()),
+            FileType::Png
+        );
+        assert_eq!(
+            guess_file_type_from_extension("/a/b".as_ref()),
+            FileType::Unknown
+        );
     }
 
     #[test]
@@ -3655,15 +3667,15 @@ mod tests {
         let path = dir.join("bg.png");
         std::fs::write(&path, &bytes).unwrap();
 
-        let img = load_background_image(path.to_str().unwrap()).expect("decoded");
+        let img = load_background_image(&path).expect("decoded");
         assert_eq!((img.width, img.height), (2, 1));
         assert_eq!(img.data, [1, 2, 3, 255, 4, 5, 6, 128]);
 
         // Missing / undecodable files are not an error, just no image.
-        assert!(load_background_image(dir.join("missing.png").to_str().unwrap()).is_none());
+        assert!(load_background_image(&dir.join("missing.png")).is_none());
         let bad = dir.join("bad.txt");
         std::fs::write(&bad, b"not an image").unwrap();
-        assert!(load_background_image(bad.to_str().unwrap()).is_none());
+        assert!(load_background_image(&bad).is_none());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

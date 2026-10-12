@@ -234,7 +234,7 @@ fn init_with(opts: InitOptions, default_logging: Logging) -> &'static GlobalStat
 
         // Setup i18n
         if let Some(v) = resources_dir.app()
-            && let Err(err) = ghostty_os::i18n::init(v)
+            && let Err(err) = ghostty_os::i18n::init(&v.to_path())
         {
             log::warn!("failed to init i18n, translations will not be available err={err}");
         }

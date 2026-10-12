@@ -28,6 +28,7 @@ mod signal;
 #[cfg(windows)]
 #[path = "signal_windows.rs"]
 mod signal;
+mod suspend;
 
 pub use context::{DimsSnapshot, SurfaceDims, ThreadGuard, ThreadType, current_dims};
 pub use dir::{Dir, Report, ReportIterator, default_dir};

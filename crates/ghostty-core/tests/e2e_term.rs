@@ -111,7 +111,7 @@ fn pwd_osc7() {
         _ => None,
     });
     assert_eq!(pwd, "/tmp/a b");
-    assert_eq!(h.surface.pwd().as_deref(), Some("/tmp/a b"));
+    assert_eq!(h.surface.pwd().unwrap(), "/tmp/a b");
 }
 
 #[test]
@@ -124,12 +124,9 @@ fn pwd_osc7_keeps_non_utf8_bytes() {
         Action::Pwd(p) if !p.pwd.is_empty() => Some(p.pwd.clone()),
         _ => None,
     });
-    assert_eq!(
-        ghostty_os::osbytes::config_str_to_bytes(&pwd),
-        b"/tmp/a\xffb"
-    );
+    assert_eq!(pwd.to_bytes(), b"/tmp/a\xffb");
     assert_eq!(h.surface.pwd_bytes().as_deref(), Some(&b"/tmp/a\xffb"[..]));
-    assert_eq!(h.surface.pwd().as_deref(), Some(pwd.as_str()));
+    assert_eq!(h.surface.pwd(), Some(pwd));
 }
 
 #[test]

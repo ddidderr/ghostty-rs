@@ -145,7 +145,7 @@ pub use env::{
     prepend_env_os,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::{Rlimit, alloc_tmp_dir, alloc_tmp_dir_os, fix_max_files, restore_max_files};
+pub use file::{Rlimit, alloc_tmp_dir_os, fix_max_files, restore_max_files};
 #[cfg(unix)]
 pub use flatpak::FlatpakHostCommand;
 #[cfg(not(target_arch = "wasm32"))]

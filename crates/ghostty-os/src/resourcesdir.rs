@@ -4,24 +4,24 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::osbytes::{config_str_to_os, os_to_config_string};
+use crate::osbytes::EncodedOs;
 
-fn enc(p: &Path) -> String {
-    os_to_config_string(p.as_os_str())
+fn enc(p: &Path) -> EncodedOs {
+    EncodedOs::from_path(p)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourcesDir {
     /// Avoid accessing these directly, use the app() and host() methods instead.
-    pub app_path: Option<String>,
-    pub host_path: Option<String>,
+    pub app_path: Option<EncodedOs>,
+    pub host_path: Option<EncodedOs>,
 }
 
 impl ResourcesDir {
     /// Get the directory to the bundled resources directory accessible
     /// by the application.
-    pub fn app(&self) -> Option<&str> {
-        self.app_path.as_deref()
+    pub fn app(&self) -> Option<&EncodedOs> {
+        self.app_path.as_ref()
     }
 
     /// Get the directory to the bundled resources directory accessible
@@ -30,19 +30,19 @@ impl ResourcesDir {
     /// itself.
     ///
     /// In non-sandboxed environment, this should be the same as app().
-    pub fn host(&self) -> Option<&str> {
-        self.host_path.as_deref().or(self.app_path.as_deref())
+    pub fn host(&self) -> Option<&EncodedOs> {
+        self.host_path.as_ref().or(self.app_path.as_ref())
     }
 
     /// Byte-preserving [`ResourcesDir::app`]: the string fields carry
     /// non-UTF-8 bytes via [`crate::osbytes`], this decodes them.
     pub fn app_os(&self) -> Option<PathBuf> {
-        self.app().map(|p| PathBuf::from(config_str_to_os(p)))
+        self.app().map(EncodedOs::to_path)
     }
 
     /// Byte-preserving [`ResourcesDir::host`].
     pub fn host_os(&self) -> Option<PathBuf> {
-        self.host().map(|p| PathBuf::from(config_str_to_os(p)))
+        self.host().map(EncodedOs::to_path)
     }
 }
 
@@ -86,7 +86,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) ->
     // freshly built ones under zig-out/share/ghostty.
     if !debug && let Some(dir) = env.as_ref().filter(|d| !d.is_empty()) {
         return ResourcesDir {
-            app_path: Some(os_to_config_string(dir)),
+            app_path: Some(EncodedOs::from_os(dir)),
             host_path: None,
         };
     }
@@ -127,7 +127,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) ->
     // fallback and use the provided resources dir.
     if debug && let Some(dir) = env.filter(|d| !d.is_empty()) {
         return ResourcesDir {
-            app_path: Some(os_to_config_string(&dir)),
+            app_path: Some(EncodedOs::from_os(&dir)),
             host_path: None,
         };
     }
@@ -176,22 +176,6 @@ pub fn maybe_dir_os(base: &Path, sub: &str, suffix: &str) -> Option<PathBuf> {
     dir.join(suffix).exists().then_some(dir)
 }
 
-/// Little helper to check if the "base/sub/suffix" directory exists and
-/// if so return "base/sub". The "suffix" is just used as a way to verify a
-/// directory seems roughly right.
-pub fn maybe_dir(base: &str, sub: &str, suffix: &str) -> Option<String> {
-    let path = format!("{base}/{sub}/{suffix}");
-
-    // Folder doesn't exist. If a different error happens its okay
-    // we just ignore it and move on.
-    if Path::new(&path).exists() {
-        let len = path.len() - suffix.len() - 1;
-        return Some(path[..len].to_owned());
-    }
-
-    None
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -199,13 +183,13 @@ mod tests {
     #[test]
     fn resources_dir_accessors() {
         let mut r = ResourcesDir::default();
-        assert_eq!(r.app(), None);
-        assert_eq!(r.host(), None);
-        r.app_path = Some("/a".into());
-        assert_eq!(r.host(), Some("/a"));
-        r.host_path = Some("/h".into());
-        assert_eq!(r.app(), Some("/a"));
-        assert_eq!(r.host(), Some("/h"));
+        assert_eq!(r.app().map(EncodedOs::as_encoded), None);
+        assert_eq!(r.host().map(EncodedOs::as_encoded), None);
+        r.app_path = Some(EncodedOs::from_encoded("/a"));
+        assert_eq!(r.host().map(EncodedOs::as_encoded), Some("/a"));
+        r.host_path = Some(EncodedOs::from_encoded("/h"));
+        assert_eq!(r.app().map(EncodedOs::as_encoded), Some("/a"));
+        assert_eq!(r.host().map(EncodedOs::as_encoded), Some("/h"));
     }
 
     fn make_tree() -> crate::TempDir {
@@ -222,7 +206,7 @@ mod tests {
         let exe = td.path().join("bin/ghostty");
         let r = resources_dir_impl(true, Some(&exe), None);
         let expected = format!("{}/share/ghostty", td.path().display());
-        assert_eq!(r.app(), Some(expected.as_str()));
+        assert_eq!(r.app().map(EncodedOs::as_encoded), Some(expected.as_str()));
     }
 
     #[test]
@@ -231,21 +215,29 @@ mod tests {
         let exe = td.path().join("bin/ghostty");
         let env = Some(OsString::from("/env/res"));
         assert_eq!(
-            resources_dir_impl(false, Some(&exe), env.clone()).app(),
+            resources_dir_impl(false, Some(&exe), env.clone())
+                .app()
+                .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         assert_ne!(
-            resources_dir_impl(true, Some(&exe), env.clone()).app(),
+            resources_dir_impl(true, Some(&exe), env.clone())
+                .app()
+                .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         // Debug fallback when detection fails.
         assert_eq!(
-            resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), env).app(),
+            resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), env)
+                .app()
+                .map(EncodedOs::as_encoded),
             Some("/env/res")
         );
         // Empty env is ignored.
         assert_eq!(
-            resources_dir_impl(false, None, Some(OsString::new())).app(),
+            resources_dir_impl(false, None, Some(OsString::new()))
+                .app()
+                .map(EncodedOs::as_encoded),
             None
         );
     }
@@ -254,13 +246,13 @@ mod tests {
     fn dev_fallback_finds_workspace_resources() {
         let exe = workspace_root().join("target/debug/ghostty");
         let r = resources_dir_impl(true, Some(&exe), None);
-        assert!(r.app().is_some_and(|d| d.ends_with("/resources")));
+        assert!(r.app().is_some_and(|d| d.ends_with_plain("/resources")));
         // Outside the workspace there is no fallback.
         let r = resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), None);
-        assert_eq!(r.app(), None);
+        assert_eq!(r.app().map(EncodedOs::as_encoded), None);
         // Release builds never use it.
         let r = resources_dir_impl(false, Some(&exe), None);
-        assert_eq!(r.app(), None);
+        assert_eq!(r.app().map(EncodedOs::as_encoded), None);
     }
 
     #[test]
@@ -278,16 +270,5 @@ mod tests {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let r = resources_dir_impl(true, Some(&root.join("bin/ghostty")), None);
         assert_eq!(r.app_os().unwrap(), root.join("share/ghostty"));
-    }
-
-    #[test]
-    fn maybe_dir_checks_suffix() {
-        let td = make_tree();
-        let base = td.path().to_string_lossy().into_owned();
-        assert_eq!(
-            maybe_dir(&base, "share", "terminfo/x/xterm-ghostty"),
-            Some(format!("{base}/share"))
-        );
-        assert_eq!(maybe_dir(&base, "share", "terminfo/g/ghostty"), None);
     }
 }

@@ -3,7 +3,7 @@
 
 use std::ffi::CStr;
 
-use crate::{env::getenv_not_empty, homedir, path_join};
+use crate::{env::getenv_not_empty, homedir, osbytes::EncodedOs};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options<'a> {
@@ -11,10 +11,10 @@ pub struct Options<'a> {
     /// when building up the directory. This is commonly the application.
     pub subdir: Option<&'a str>,
 
-    /// The home directory for the user. If this is not set, we will attempt
+    /// The home directory for the user (encoded OS string). If this is not set, we will attempt
     /// to look it up which is an expensive process. By setting this, you can
     /// avoid lookups.
-    pub home: Option<&'a str>,
+    pub home: Option<&'a EncodedOs>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -28,29 +28,25 @@ pub enum Error {
 }
 
 /// Get the XDG user config directory.
-pub fn config(opts: &Options<'_>) -> Result<String, Error> {
+pub fn config(opts: &Options<'_>) -> Result<EncodedOs, Error> {
     dir(opts, "XDG_CONFIG_HOME", ".config")
 }
 
 /// Get the XDG cache directory.
-pub fn cache(opts: &Options<'_>) -> Result<String, Error> {
+pub fn cache(opts: &Options<'_>) -> Result<EncodedOs, Error> {
     dir(opts, "XDG_CACHE_HOME", ".cache")
 }
 
 /// Get the XDG state directory.
-pub fn state(opts: &Options<'_>) -> Result<String, Error> {
+pub fn state(opts: &Options<'_>) -> Result<EncodedOs, Error> {
     dir(opts, "XDG_STATE_HOME", ".local/state")
 }
 
 /// Unified helper to get XDG directories that follow a common pattern.
-fn dir(opts: &Options<'_>, env: &str, default_subdir: &str) -> Result<String, Error> {
+fn dir(opts: &Options<'_>, env: &str, default_subdir: &str) -> Result<EncodedOs, Error> {
     // If we have a cached home dir, use that.
     if let Some(home) = opts.home {
-        return Ok(path_join(&[
-            home,
-            default_subdir,
-            opts.subdir.unwrap_or(""),
-        ]));
+        return Ok(home.join_plain(&[default_subdir, opts.subdir.unwrap_or("")]));
     }
 
     // First check the env var. On Windows we treat `LOCALAPPDATA` as a
@@ -61,7 +57,7 @@ fn dir(opts: &Options<'_>, env: &str, default_subdir: &str) -> Result<String, Er
     if let Some(env) = env_value {
         // If we have a subdir, then we join it.
         if let Some(subdir) = opts.subdir {
-            return Ok(path_join(&[&env, subdir]));
+            return Ok(env.join_plain(&[subdir]));
         }
 
         return Ok(env);
@@ -69,11 +65,7 @@ fn dir(opts: &Options<'_>, env: &str, default_subdir: &str) -> Result<String, Er
 
     // Get our home dir
     if let Ok(Some(home)) = homedir::home() {
-        return Ok(path_join(&[
-            &home,
-            default_subdir,
-            opts.subdir.unwrap_or(""),
-        ]));
+        return Ok(home.join_plain(&[default_subdir, opts.subdir.unwrap_or("")]));
     }
 
     Err(Error::NoHomeDir)
@@ -110,7 +102,7 @@ mod tests {
 
     #[test]
     fn cache_directory_paths() {
-        let mock_home = "/Users/test";
+        let mock_home = &EncodedOs::from_plain_text("/Users/test");
 
         // Test base path
         let p = cache(&Options {
@@ -129,7 +121,7 @@ mod tests {
         assert_eq!(p, "/Users/test/.cache/ghostty");
     }
 
-    type DirFn = fn(&Options<'_>) -> Result<String, Error>;
+    type DirFn = fn(&Options<'_>) -> Result<EncodedOs, Error>;
     const CASES: [(&str, DirFn, &str); 3] = [
         ("XDG_CONFIG_HOME", config, ".config"),
         ("XDG_CACHE_HOME", cache, ".cache"),
@@ -141,9 +133,9 @@ mod tests {
         let temp_home = "/tmp/ghostty-test-home";
         for (name, func, default_subdir) in CASES {
             temp_env::with_vars([("HOME", Some(temp_home)), (name, Some(""))], || {
-                let expected = path_join(&[temp_home, default_subdir]);
+                let expected = crate::path_join(&[temp_home, default_subdir]);
                 let actual = func(&Options::default()).unwrap();
-                assert_eq!(expected, actual);
+                assert_eq!(actual, expected.as_str());
             });
         }
     }
@@ -153,13 +145,13 @@ mod tests {
         let temp_home = "/tmp/ghostty-test-home";
         for (name, func, default_subdir) in CASES {
             temp_env::with_vars([("HOME", Some(temp_home)), (name, Some(""))], || {
-                let expected = path_join(&[temp_home, default_subdir, "ghostty"]);
+                let expected = crate::path_join(&[temp_home, default_subdir, "ghostty"]);
                 let actual = func(&Options {
                     subdir: Some("ghostty"),
                     ..Default::default()
                 })
                 .unwrap();
-                assert_eq!(expected, actual);
+                assert_eq!(actual, expected.as_str());
             });
         }
     }

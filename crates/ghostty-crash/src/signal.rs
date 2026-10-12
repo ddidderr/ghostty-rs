@@ -252,7 +252,14 @@ fn write_signal_report(name: &str, desc: &str, info: *mut libc::siginfo_t, uc: *
 }
 
 extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
-    if let Some((_, name, desc)) = SIGNALS.iter().find(|(s, ..)| *s == sig) {
+    // macOS: `abort()` raises SIGABRT directly (no Mach exception), so ask the
+    // exception handler thread for the report with a minidump, like
+    // Breakpad. The event-only report below is the fallback.
+    #[cfg(target_os = "macos")]
+    let dumped = sig == libc::SIGABRT && crate::mach_handler::request_abort_dump(sig);
+    #[cfg(not(target_os = "macos"))]
+    let dumped = false;
+    if !dumped && let Some((_, name, desc)) = SIGNALS.iter().find(|(s, ..)| *s == sig) {
         write_signal_report(name, desc, info, ctx);
     }
     // Restore the default action and re-raise so the process dies with the

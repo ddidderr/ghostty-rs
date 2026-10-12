@@ -80,9 +80,9 @@ pub enum Target {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathItem {
     /// A path that may be missing (`?path`); missing files are skipped.
-    Optional(String),
+    Optional(std::path::PathBuf),
     /// A path that must exist.
-    Required(String),
+    Required(std::path::PathBuf),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -124,14 +124,14 @@ pub fn load_from_files(paths: &[PathItem], target: Target) -> Result<Vec<String>
             PathItem::Required(p) => (p, false),
         };
 
-        let shader = match load_from_file(&ghostty_os::osbytes::config_str_to_path(path), target) {
+        let shader = match load_from_file(path, target) {
             Ok(s) => s,
             Err(Error::Io(e)) if optional && e.kind() == std::io::ErrorKind::NotFound => {
                 continue;
             }
             Err(e) => return Err(e),
         };
-        log::info!("loaded custom shader path={path}");
+        log::info!("loaded custom shader path={}", path.display());
         list.push(shader);
     }
 
@@ -709,13 +709,13 @@ mod tests {
         let missing = dir.join("missing.glsl");
 
         let items = [
-            PathItem::Optional(missing.to_string_lossy().into_owned()),
-            PathItem::Required(good.to_string_lossy().into_owned()),
+            PathItem::Optional(missing.clone()),
+            PathItem::Required(good.clone()),
         ];
         let shaders = load_from_files(&items, Target::Glsl).unwrap();
         assert_eq!(shaders.len(), 1);
 
-        let items = [PathItem::Required(missing.to_string_lossy().into_owned())];
+        let items = [PathItem::Required(missing.clone())];
         assert!(matches!(
             load_from_files(&items, Target::Glsl),
             Err(Error::Io(_))

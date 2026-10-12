@@ -259,13 +259,13 @@ pub fn getenv_not_empty_os(key: &str) -> Option<OsString> {
 /// Gets the value of an environment variable, or None if not found. A
 /// non-UTF-8 value is still present: its invalid bytes are carried through
 /// the reversible [`crate::osbytes`] encoding.
-pub fn getenv(key: &str) -> Option<String> {
-    getenv_os(key).map(|v| crate::osbytes::os_to_config_string(&v))
+pub fn getenv(key: &str) -> Option<crate::osbytes::EncodedOs> {
+    getenv_os(key).map(|v| crate::osbytes::EncodedOs::from_os(&v))
 }
 
 /// Gets the value of an environment variable. Returns None if not found or
 /// the value is empty.
-pub fn getenv_not_empty(key: &str) -> Option<String> {
+pub fn getenv_not_empty(key: &str) -> Option<crate::osbytes::EncodedOs> {
     getenv(key).filter(|v| !v.is_empty())
 }
 
@@ -324,7 +324,10 @@ mod tests {
             assert_eq!(getenv_os("GHOSTTY_RS_T3").unwrap(), v);
             assert_eq!(getenv_not_empty_os("GHOSTTY_RS_T3").unwrap(), v);
             let s = getenv("GHOSTTY_RS_T3").unwrap();
-            assert_eq!(crate::osbytes::config_str_to_bytes(&s), vec![b'a', 0xff]);
+            assert_eq!(
+                crate::osbytes::config_str_to_bytes(s.as_encoded()),
+                vec![b'a', 0xff]
+            );
             assert!(getenv_not_empty("GHOSTTY_RS_T3").is_some());
         });
     }
@@ -361,9 +364,9 @@ mod tests {
         temp_env::with_vars(
             [("GHOSTTY_RS_T1", Some("")), ("GHOSTTY_RS_T2", Some("v"))],
             || {
-                assert_eq!(getenv("GHOSTTY_RS_T1").as_deref(), Some(""));
+                assert_eq!(getenv("GHOSTTY_RS_T1").unwrap(), "");
                 assert_eq!(getenv_not_empty("GHOSTTY_RS_T1"), None);
-                assert_eq!(getenv_not_empty("GHOSTTY_RS_T2").as_deref(), Some("v"));
+                assert_eq!(getenv_not_empty("GHOSTTY_RS_T2").unwrap(), "v");
                 assert_eq!(getenv_not_empty("GHOSTTY_RS_NOPE"), None);
             },
         );

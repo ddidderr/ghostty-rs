@@ -1022,7 +1022,7 @@ impl StreamHandler<'_> {
         Ok(())
     }
 
-    fn color_operation(&mut self, requests: &osc_color::List, terminator: Terminator) {
+    fn color_operation(&mut self, requests: &osc_color::List<'_>, terminator: Terminator) {
         // return early if there is nothing to do
         if requests.is_empty() {
             return;
@@ -1030,8 +1030,8 @@ impl StreamHandler<'_> {
 
         let mut response: Vec<u8> = Vec::new();
 
-        for req in requests {
-            match *req {
+        for req in requests.iter() {
+            match req {
                 Request::Set(set) => {
                     match set.target {
                         Target::Palette(i) => {
@@ -1216,13 +1216,13 @@ impl StreamHandler<'_> {
         }
     }
 
-    fn kitty_color_report(&mut self, request: &kitty::color::OSC) {
+    fn kitty_color_report(&mut self, request: &kitty::color::OSC<'_>) {
         use kitty::color::{Kind, Request as KReq, Special};
 
         let mut out: Vec<u8> = Vec::new();
 
-        for item in &request.list {
-            match item {
+        for item in request.list.iter() {
+            match &item {
                 KReq::Query(key) => {
                     // If the writer buffer is empty, we need to write our prefix
                     if out.is_empty() {

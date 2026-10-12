@@ -131,11 +131,13 @@ impl Face {
     /// Initialize a new font face from a file.
     pub fn init_file(
         lib: &Library,
-        path: &str,
+        path: impl AsRef<std::path::Path>,
         index: i32,
         opts: Options,
     ) -> Result<Face, FaceError> {
-        let cpath = CString::new(path).map_err(|_| FaceError::InvalidPath)?;
+        // File names are raw OS bytes (they need not be UTF-8).
+        let cpath = CString::new(path.as_ref().as_os_str().as_encoded_bytes())
+            .map_err(|_| FaceError::InvalidPath)?;
         let face = {
             let _g = lib.lock();
             ft::FtFace::new_file(&lib.inner.lib, &cpath, index).map_err(FaceError::Freetype)?

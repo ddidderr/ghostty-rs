@@ -1,6 +1,6 @@
 //! Flatpak helpers (port of `apprt/gtk/flatpak.zig`).
 
-use ghostty_os::ResourcesDir;
+use ghostty_os::{ResourcesDir, osbytes::EncodedOs};
 use gtk::glib;
 
 /// Returns the resources directory, consulting the Flatpak runtime data
@@ -9,7 +9,7 @@ pub fn resources_dir() -> std::io::Result<ResourcesDir> {
     // Only consult Flatpak runtime data for the host case.
     if ghostty_os::is_flatpak() {
         let mut result = ResourcesDir {
-            app_path: Some("/app/share/ghostty".to_owned()),
+            app_path: Some(EncodedOs::from_plain_text("/app/share/ghostty")),
             host_path: None,
         };
 
@@ -24,13 +24,11 @@ pub fn resources_dir() -> std::io::Result<ResourcesDir> {
             return Ok(result);
         };
 
-        result.host_path = Some(
-            std::path::Path::new(app_dir.as_str())
+        result.host_path = Some(EncodedOs::from_path(
+            &std::path::Path::new(app_dir.as_str())
                 .join("share")
-                .join("ghostty")
-                .to_string_lossy()
-                .into_owned(),
-        );
+                .join("ghostty"),
+        ));
         return Ok(result);
     }
 

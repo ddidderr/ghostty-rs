@@ -131,7 +131,7 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         Action::SetTabTitle(t) => v.set_tab_title.title = keep.cstr(&t.title),
         Action::PromptTitle(p) => v.prompt_title = *p as c_int,
         Action::Pwd(p) => {
-            v.pwd.pwd = keep.cstr_bytes(&ghostty_os::osbytes::config_str_to_bytes(&p.pwd));
+            v.pwd.pwd = keep.cstr_bytes(&p.pwd.to_bytes());
         }
         Action::MouseShape(s) => v.mouse_shape = *s as c_int,
         Action::MouseVisibility(m) => v.mouse_visibility = *m as c_int,
@@ -185,7 +185,7 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
             v.open_url.kind = u.kind as c_int;
             // The URL may be the escaped form of a non-UTF-8 path; hand the
             // embedder the real bytes.
-            let url = ghostty_os::osbytes::config_str_to_bytes(&u.url);
+            let url = u.url.to_bytes();
             v.open_url.url = keep.cstr_bytes(&url);
             v.open_url.len = url.len();
         }

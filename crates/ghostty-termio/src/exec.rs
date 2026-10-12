@@ -32,7 +32,7 @@ use ghostty_config::{
     types_b::{ShellIntegration, ShellIntegrationFeatures},
 };
 use ghostty_datastruct::blocking_queue::Timeout;
-use ghostty_os::file::Rlimit;
+use ghostty_os::{file::Rlimit, osbytes::EncodedOs};
 use ghostty_renderer::size::{GridSize, ScreenSize};
 use ghostty_terminal::terminal::Terminal;
 use rustix::{
@@ -107,8 +107,8 @@ pub struct Config {
     pub shell_integration: ShellIntegration,
     pub shell_integration_features: ShellIntegrationFeatures,
     pub cursor_blink: Option<bool>,
-    pub working_directory: Option<String>,
-    pub resources_dir: Option<String>,
+    pub working_directory: Option<EncodedOs>,
+    pub resources_dir: Option<EncodedOs>,
     pub term: String,
 
     pub rt_pre_exec_info: RtPreExecInfo,
@@ -158,8 +158,8 @@ impl Exec {
     }
 
     /// The working directory the subprocess will be started in, if any.
-    pub fn cwd(&self) -> Option<&str> {
-        self.subprocess.cwd.as_deref()
+    pub fn cwd(&self) -> Option<&EncodedOs> {
+        self.subprocess.cwd.as_ref()
     }
 
     /// The argv that will be executed.
@@ -181,7 +181,7 @@ impl Exec {
         // set that on the terminal now. This allows rapidly initializing
         // new surfaces to use the proper pwd.
         if let Some(cwd) = &self.subprocess.cwd
-            && let Err(err) = term.set_pwd(&ghostty_os::osbytes::config_str_to_bytes(cwd))
+            && let Err(err) = term.set_pwd(&cwd.to_bytes())
         {
             log::warn!("error setting initial pwd err={err:?}");
         }
@@ -766,7 +766,7 @@ struct FlatpakProcess {
 }
 
 struct Subprocess {
-    cwd: Option<String>,
+    cwd: Option<EncodedOs>,
     env: Option<EnvMap>,
     args: Vec<String>,
     grid_size: GridSize,
@@ -790,11 +790,8 @@ impl Subprocess {
 
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
-            log::info!("found Ghostty resources dir: {dir}");
-            env.insert(
-                "GHOSTTY_RESOURCES_DIR",
-                ghostty_os::osbytes::config_str_to_os(dir),
-            );
+            log::info!("found Ghostty resources dir: {}", dir.as_encoded());
+            env.insert("GHOSTTY_RESOURCES_DIR", dir.to_os());
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
@@ -923,7 +920,7 @@ impl Subprocess {
         // https://github.com/kovidgoyal/kitty/issues/1595
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if let Some(pwd) = &cwd {
-            env.insert("PWD", ghostty_os::osbytes::config_str_to_os(pwd));
+            env.insert("PWD", pwd.to_os());
         }
 
         Ok(Subprocess {
@@ -1002,7 +999,7 @@ impl Subprocess {
         // If we can't access the cwd, then don't set any cwd and inherit.
         // This is important because our cwd can be set by the shell (OSC 7)
         // and we don't want to break new windows.
-        let cwd: Option<String> = match &self.cwd {
+        let cwd: Option<EncodedOs> = match &self.cwd {
             None => None,
             Some(proposed) if flatpak => {
                 // Flatpak sandboxing prevents access to certain reserved paths
@@ -1035,10 +1032,10 @@ impl Subprocess {
                 }
             }
             Some(proposed) => {
-                if std::path::Path::new(&ghostty_os::osbytes::config_str_to_os(proposed)).exists() {
+                if proposed.to_path().exists() {
                     Some(proposed.clone())
                 } else {
-                    log::warn!("cannot access cwd, ignoring: {proposed}");
+                    log::warn!("cannot access cwd, ignoring: {}", proposed.as_encoded());
                     None
                 }
             }
@@ -1188,10 +1185,17 @@ fn add_ghostty_path(env: &mut EnvMap) {
             return;
         }
     };
-    let Some(exe_dir) = exe.parent().map(|p| p.to_string_lossy().into_owned()) else {
+    add_ghostty_path_for(env, &exe);
+}
+
+/// [`add_ghostty_path`] for a given executable (testable with non-UTF-8
+/// directories).
+fn add_ghostty_path_for(env: &mut EnvMap, exe: &std::path::Path) {
+    // Keep the exact bytes of the directory (it may be non-UTF-8).
+    let Some(exe_dir) = exe.parent().map(|p| p.as_os_str().to_owned()) else {
         return;
     };
-    log::debug!("appending ghostty bin to path dir={exe_dir}");
+    log::debug!("appending ghostty bin to path dir={}", exe_dir.display());
 
     // We always set this so that if the shell overwrites the path
     // scripts still have a way to find the Ghostty binary when
@@ -1211,10 +1215,7 @@ fn add_ghostty_path(env: &mut EnvMap) {
         {
             return;
         }
-        env.insert(
-            "PATH",
-            ghostty_os::env::append_env_os(&path, std::ffi::OsStr::new(&exe_dir)),
-        );
+        env.insert("PATH", ghostty_os::env::append_env_os(&path, &exe_dir));
     } else {
         env.insert("PATH", exe_dir);
     }
@@ -1222,8 +1223,8 @@ fn add_ghostty_path(env: &mut EnvMap) {
 
 /// The `TERMINFO` directory for a resources dir (reversible config-string
 /// encoding in, raw OS string out).
-fn terminfo_dir(base: &str) -> std::ffi::OsString {
-    let base = ghostty_os::osbytes::config_str_to_os(base);
+fn terminfo_dir(base: &EncodedOs) -> std::ffi::OsString {
+    let base = base.to_os();
     let own = std::path::Path::new(&base).join("terminfo");
     if own.join("x/xterm-ghostty").exists() {
         own.into_os_string()
@@ -1238,9 +1239,9 @@ fn terminfo_dir(base: &str) -> std::ffi::OsString {
 
 /// macOS: export additional data directories from our application bundle
 /// (`XDG_DATA_DIRS` and `MANPATH`).
-pub fn darwin_bundle_env(env: &mut EnvMap, resources_dir: &str) {
+pub fn darwin_bundle_env(env: &mut EnvMap, resources_dir: &EncodedOs) {
     let xdg_data_dir_key = "XDG_DATA_DIRS";
-    let mut data_dir = ghostty_os::osbytes::config_str_to_os(resources_dir);
+    let mut data_dir = resources_dir.to_os();
     data_dir.push("/..");
     let current = env.get(xdg_data_dir_key).map_or_else(
         || std::ffi::OsString::from("/usr/local/share:/usr/share"),
@@ -1252,7 +1253,7 @@ pub fn darwin_bundle_env(env: &mut EnvMap, resources_dir: &str) {
     );
 
     let manpath_key = "MANPATH";
-    let mut man_dir = ghostty_os::osbytes::config_str_to_os(resources_dir);
+    let mut man_dir = resources_dir.to_os();
     man_dir.push("/../man");
     // Always append with colon in front, as it mean that if
     // `MANPATH` is empty, then it should be treated as an extra
@@ -1439,11 +1440,13 @@ fn darwin_login_command(
 
     let hush = match &passwd.home {
         Some(home) => {
-            if std::fs::read_dir(home).is_err() {
+            // The passwd home is an encoded OS string: decode it first.
+            let home = home.to_path();
+            if std::fs::read_dir(&home).is_err() {
                 log::warn!("failed to open home dir, not checking for hushlogin");
                 false
             } else {
-                std::path::Path::new(home).join(".hushlogin").exists()
+                home.join(".hushlogin").exists()
             }
         }
         None => false,
@@ -1507,7 +1510,7 @@ fn darwin_login_command(
         args.push("-q".into());
     }
     args.push("-flp".into());
-    args.push(username);
+    args.push(username.into_encoded());
 
     match command {
         // Direct args can be passed directly to login, since
@@ -1552,11 +1555,64 @@ impl Drop for ThreadData {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ghostty_path_keeps_non_utf8_exe_dir_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let exe = std::path::PathBuf::from(std::ffi::OsString::from_vec(
+            b"/opt/gh\xffostty/bin/ghostty".to_vec(),
+        ));
+
+        // No PATH: PATH becomes the directory itself.
+        let mut env = EnvMap::new();
+        add_ghostty_path_for(&mut env, &exe);
+        assert_eq!(
+            env.get("GHOSTTY_BIN_DIR").unwrap().as_bytes(),
+            b"/opt/gh\xffostty/bin"
+        );
+        assert_eq!(env.get("PATH").unwrap().as_bytes(), b"/opt/gh\xffostty/bin");
+
+        // Existing PATH: appended byte for byte (no U+FFFD), and not twice.
+        let mut env = EnvMap::new();
+        env.insert("PATH", "/usr/bin");
+        add_ghostty_path_for(&mut env, &exe);
+        assert_eq!(
+            env.get("PATH").unwrap().as_bytes(),
+            b"/usr/bin:/opt/gh\xffostty/bin"
+        );
+        add_ghostty_path_for(&mut env, &exe);
+        assert_eq!(
+            env.get("PATH").unwrap().as_bytes(),
+            b"/usr/bin:/opt/gh\xffostty/bin"
+        );
+    }
+
+    #[test]
+    fn exec_command_darwin_hushlogin_with_non_utf8_home() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = ghostty_os::TempDir::init().unwrap();
+        let home = tmp.path().join(std::ffi::OsStr::from_bytes(b"h\xffome"));
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(home.join(".hushlogin"), "").unwrap();
+        // The passwd entry carries the *encoded* home; it must be decoded
+        // before the lookup.
+        let enc = EncodedOs::from_path(&home);
+        assert_ne!(enc.as_encoded().as_bytes(), home.as_os_str().as_bytes());
+        let passwd = move || {
+            Ok(ghostty_os::passwd::Entry {
+                name: Some(EncodedOs::from_encoded("u")),
+                home: Some(enc.clone()),
+                ..Default::default()
+            })
+        };
+        let result = exec_command_with(&ConfigCommand::Direct(vec!["x".into()]), true, &passwd);
+        assert_eq!(result, ["/usr/bin/login", "-q", "-flp", "u", "x"]);
+    }
+
     fn pw(name: Option<&str>) -> impl Fn() -> std::io::Result<ghostty_os::passwd::Entry> {
         let name = name.map(str::to_owned);
         move || {
             Ok(ghostty_os::passwd::Entry {
-                name: name.clone(),
+                name: name.clone().map(EncodedOs::from_encoded),
                 ..Default::default()
             })
         }
@@ -1602,10 +1658,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ghostty-hush-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(".hushlogin"), "").unwrap();
-        let home = dir.to_str().unwrap().to_owned();
+        let home = EncodedOs::from_path(&dir);
         let passwd = move || {
             Ok(ghostty_os::passwd::Entry {
-                name: Some("u".into()),
+                name: Some(EncodedOs::from_encoded("u")),
                 home: Some(home.clone()),
                 ..Default::default()
             })

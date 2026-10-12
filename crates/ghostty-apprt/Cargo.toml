@@ -11,6 +11,7 @@ ghostty-config.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-inspector.workspace = true
 ghostty-terminal.workspace = true
+ghostty-os.workspace = true
 ghostty-renderer.workspace = true
 thiserror = "2.0.21"
 

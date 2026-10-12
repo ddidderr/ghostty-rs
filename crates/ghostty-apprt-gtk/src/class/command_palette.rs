@@ -138,7 +138,10 @@ mod command_imp {
                     let title = surface
                         .get_effective_title()
                         .unwrap_or_else(|| "Untitled".to_string());
-                    if let Some(pwd) = surface.get_pwd()
+                    // Display text only.
+                    if let Some(pwd) = surface
+                        .get_pwd()
+                        .map(|p| String::from_utf8_lossy(&p.to_bytes()).into_owned())
                         && !title.contains(&pwd)
                     {
                         *description = Some(pwd);

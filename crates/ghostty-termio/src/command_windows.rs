@@ -16,11 +16,13 @@ use std::{
     ptr,
 };
 
-use ghostty_os::windows::{
-    CREATE_UNICODE_ENVIRONMENT,
-    EXTENDED_STARTUPINFO_PRESENT,
-    PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-    to_wide_nul,
+use ghostty_os::{
+    osbytes::EncodedOs,
+    windows::{
+        CREATE_UNICODE_ENVIRONMENT,
+        EXTENDED_STARTUPINFO_PRESENT,
+        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+    },
 };
 use windows_sys::Win32::{
     Foundation::{HANDLE, TRUE, WAIT_FAILED},
@@ -43,7 +45,7 @@ use windows_sys::Win32::{
     },
 };
 
-use crate::windows_args::{self, create_windows_env_block, windows_create_command_line};
+use crate::windows_args::{self, create_windows_env_block, windows_create_command_line_wide};
 
 /// Errors from [`Command::start`].
 #[derive(Debug, thiserror::Error)]
@@ -77,7 +79,7 @@ pub struct Command {
 
     /// Working directory for the child. If not set, the working directory of
     /// the calling process is preserved.
-    pub cwd: Option<String>,
+    pub cwd: Option<ghostty_os::osbytes::EncodedOs>,
 
     /// The file handles to set for stdin/out/err. If not set the NUL device
     /// is used. Ignored if `pseudo_console` is set.
@@ -127,12 +129,21 @@ impl Command {
     /// available.
     #[allow(unsafe_code)]
     pub fn start(&mut self) -> Result<(), StartError> {
-        let application_w = to_wide_nul(&self.path);
-        let cwd_w = self.cwd.as_deref().map(to_wide_nul);
+        // `path` and `args` are the config command's argv strings (encoded
+        // OS strings); decode them to WTF-16 for the Windows API.
+        let application_w = EncodedOs::from_encoded(&self.path).to_wide_nul();
+        let cwd_w = self.cwd.as_ref().map(EncodedOs::to_wide_nul);
         let mut command_line_w = if self.args.is_empty() {
             None
         } else {
-            Some(to_wide_nul(&windows_create_command_line(&self.args)))
+            let wide: Vec<Vec<u16>> = self
+                .args
+                .iter()
+                .map(|a| EncodedOs::from_encoded(a).to_wide())
+                .collect();
+            let mut line = windows_create_command_line_wide(&wide);
+            line.push(0);
+            Some(line)
         };
         let mut env_w = match &self.env {
             Some(map) => Some(create_windows_env_block(map.iter())?),

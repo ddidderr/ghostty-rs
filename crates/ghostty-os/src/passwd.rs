@@ -2,15 +2,15 @@ use std::ffi::OsString;
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use crate::flatpak::is_flatpak;
-use crate::osbytes;
+use crate::osbytes::EncodedOs;
 
 /// Entry that is retrieved from the passwd API. This only contains the fields
 /// we care about.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Entry {
-    pub shell: Option<String>,
-    pub home: Option<String>,
-    pub name: Option<String>,
+    pub shell: Option<EncodedOs>,
+    pub home: Option<EncodedOs>,
+    pub name: Option<EncodedOs>,
 }
 
 /// Byte-preserving [`Entry`] (Zig slices are arbitrary bytes).
@@ -23,7 +23,7 @@ pub struct EntryOs {
 
 impl From<EntryOs> for Entry {
     fn from(e: EntryOs) -> Self {
-        let f = |v: Option<OsString>| v.map(|v| osbytes::os_to_config_string(&v));
+        let f = |v: Option<OsString>| v.map(|v| EncodedOs::from_os(&v));
         Entry {
             shell: f(e.shell),
             home: f(e.home),
@@ -152,8 +152,8 @@ fn parse_getent(output: &[u8]) -> EntryOs {
         .rposition(|b| !matches!(b, b' ' | b'\r' | b'\n'))
         .map_or(0, |i| i + 1);
     let mut it = output[..end].rsplit(|&b| b == b':');
-    let shell = it.next().map(|b| osbytes::os_from_bytes(b.to_vec()));
-    let home = it.next().map(|b| osbytes::os_from_bytes(b.to_vec()));
+    let shell = it.next().map(|b| crate::osbytes::os_from_bytes(b.to_vec()));
+    let home = it.next().map(|b| crate::osbytes::os_from_bytes(b.to_vec()));
     EntryOs {
         shell,
         home,

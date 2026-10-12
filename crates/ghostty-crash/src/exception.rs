@@ -15,7 +15,50 @@ pub(crate) const MACH_EXCEPTION_RAISE: i32 = 2405;
 pub(crate) const EXC_BAD_ACCESS: u32 = 1;
 pub(crate) const EXC_BAD_INSTRUCTION: u32 = 2;
 pub(crate) const EXC_ARITHMETIC: u32 = 3;
+pub(crate) const EXC_SOFTWARE: u32 = 5;
 pub(crate) const EXC_BREAKPOINT: u32 = 6;
+
+/// `EXC_SOFT_SIGNAL`: the code of an `EXC_SOFTWARE` exception that stands for
+/// a BSD signal (the subcode is the signal number). This is how an
+/// `abort()` (SIGABRT) is described, as Apple's crash reporter does.
+pub(crate) const EXC_SOFT_SIGNAL: i64 = 0x10003;
+
+/// Message id of the "write a dump for this signal" request the signal
+/// handler sends to the exception handler thread (not a Mach exception id).
+pub(crate) const ABORT_MSG_ID: i32 = 0x6768_6f73;
+
+impl MachException {
+    /// The exception describing a fatal BSD signal that never went through
+    /// the Mach exception path (`abort()` raises SIGABRT directly).
+    pub(crate) fn from_signal(signo: i32) -> MachException {
+        MachException {
+            kind: EXC_SOFTWARE,
+            code: EXC_SOFT_SIGNAL,
+            subcode: i64::from(signo),
+        }
+    }
+}
+
+/// Wire layout of the abort request after the 24 byte Mach header:
+/// `thread: u32`, `signo: i32` (native endian).
+pub(crate) const ABORT_BODY_LEN: usize = 8;
+
+/// Encode the body of an abort request.
+pub(crate) fn abort_body(thread: u32, signo: i32) -> [u8; ABORT_BODY_LEN] {
+    let mut b = [0u8; ABORT_BODY_LEN];
+    b[..4].copy_from_slice(&thread.to_ne_bytes());
+    b[4..].copy_from_slice(&signo.to_ne_bytes());
+    b
+}
+
+/// Decode an abort request message (header included): the faulting thread
+/// and the signal. `None` for any other message.
+pub(crate) fn parse_abort(msg: &[u8]) -> Option<(u32, i32)> {
+    if u32_at(msg, 20)? as i32 != ABORT_MSG_ID {
+        return None;
+    }
+    Some((u32_at(msg, HEADER)?, u32_at(msg, HEADER + 4)? as i32))
+}
 
 /// A decoded Mach exception.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +104,7 @@ impl MachException {
             EXC_BAD_INSTRUCTION => (4, 1), // SIGILL, ILL_ILLOPC
             EXC_ARITHMETIC => (8, 0),      // SIGFPE
             EXC_BREAKPOINT => (5, 1),      // SIGTRAP, TRAP_BRKPT
+            EXC_SOFTWARE if self.code == EXC_SOFT_SIGNAL => (self.subcode as i32, 0),
             _ => (0, 0),
         }
     }
@@ -246,6 +290,28 @@ mod tests {
         assert_eq!(e(EXC_BAD_INSTRUCTION, 1).signal().0, 4);
         assert_eq!(e(EXC_ARITHMETIC, 1).signal().0, 8);
         assert_eq!(e(EXC_BREAKPOINT, 1).signal().0, 5);
+    }
+
+    #[test]
+    fn abort_request_round_trips() {
+        let mut msg = vec![0u8; 20];
+        msg.extend_from_slice(&ABORT_MSG_ID.to_ne_bytes());
+        msg.extend_from_slice(&abort_body(77, 6));
+        assert_eq!(parse_abort(&msg), Some((77, 6)));
+        // A Mach exception message or a truncated one is not an abort request.
+        assert_eq!(parse_abort(&raise(EXC_BAD_ACCESS, &[1, 2])), None);
+        assert_eq!(parse_abort(&msg[..26]), None);
+    }
+
+    #[test]
+    fn sigabrt_is_described_as_a_soft_signal() {
+        let e = MachException::from_signal(6);
+        assert_eq!(e.name(), "EXC_SOFTWARE");
+        assert_eq!(e.signal(), (6, 0));
+        assert_eq!(e.fault_addr(), 0);
+        let mut s = String::new();
+        e.describe(&mut s);
+        assert_eq!(s, "EXC_SOFTWARE (code=0x10003, subcode=0x6)");
     }
 
     #[test]

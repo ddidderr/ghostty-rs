@@ -560,14 +560,20 @@ fn contains_subslice(hay: &[u8], needle: &[u8]) -> bool {
 /// Returns true if path appears to be in a temporary directory.
 /// Copies logic from Kitty.
 fn is_path_in_temp_dir(path: &[u8]) -> bool {
+    is_path_in_temp_dir_with(path, alloc_tmp_dir())
+}
+
+/// [`is_path_in_temp_dir`] with an explicit temporary directory (an OS
+/// string: it may be non-UTF-8, so it is compared byte for byte).
+fn is_path_in_temp_dir_with(path: &[u8], tmp_dir: Option<std::ffi::OsString>) -> bool {
     if path.starts_with(b"/tmp") {
         return true;
     }
     if path.starts_with(b"/dev/shm") {
         return true;
     }
-    if let Some(dir) = alloc_tmp_dir() {
-        if path.starts_with(dir.as_bytes()) {
+    if let Some(dir) = tmp_dir {
+        if path.starts_with(dir.as_os_str().as_bytes()) {
             return true;
         }
 
@@ -582,22 +588,23 @@ fn is_path_in_temp_dir(path: &[u8]) -> bool {
     false
 }
 
-/// `os/file.zig allocTmpDir` on POSIX (TMPDIR, TMP, then /tmp).
+/// `os/file.zig allocTmpDir` on POSIX (TMPDIR, TMP, then /tmp), as the raw
+/// OS string.
 #[cfg(not(windows))]
 #[allow(clippy::unnecessary_wraps)]
-fn alloc_tmp_dir() -> Option<String> {
+fn alloc_tmp_dir() -> Option<std::ffi::OsString> {
     for key in ["TMPDIR", "TMP"] {
         if let Some(v) = std::env::var_os(key) {
-            return Some(v.to_string_lossy().into_owned());
+            return Some(v);
         }
     }
-    Some("/tmp".to_owned())
+    Some("/tmp".into())
 }
 
 /// `os/file.zig allocTmpDir` on Windows (`TMP` only).
 #[cfg(windows)]
-fn alloc_tmp_dir() -> Option<String> {
-    std::env::var_os("TMP").map(|v| v.to_string_lossy().into_owned())
+fn alloc_tmp_dir() -> Option<std::ffi::OsString> {
+    std::env::var_os("TMP")
 }
 
 /// Image represents a single fully loaded image.
@@ -655,6 +662,23 @@ pub struct Rect {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn temp_dir_check_keeps_non_utf8_tmpdir_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let dir = std::ffi::OsString::from_vec(b"/data/t\xffmp".to_vec());
+        assert!(is_path_in_temp_dir_with(
+            b"/data/t\xffmp/tty-graphics-protocol-x",
+            Some(dir.clone())
+        ));
+        // A lossy conversion would have turned the byte into U+FFFD.
+        assert!(!is_path_in_temp_dir_with(
+            b"/data/t\xef\xbf\xbdmp/tty-graphics-protocol-x",
+            Some(dir)
+        ));
+        assert!(!is_path_in_temp_dir_with(b"/data/x", None));
+    }
+
     use ghostty_vt::kitty::graphics_command::{Control, Transmission};
 
     use super::*;

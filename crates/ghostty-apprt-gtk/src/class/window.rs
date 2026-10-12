@@ -73,7 +73,7 @@ pub enum SelectTab {
 #[derive(Debug, Clone, Default)]
 pub struct TabOverrides {
     pub command: Option<ConfigCommand>,
-    pub working_directory: Option<String>,
+    pub working_directory: Option<ghostty_os::osbytes::EncodedOs>,
     pub title: Option<String>,
 }
 

@@ -124,7 +124,7 @@ fn write_report(st: &sentry::State, info: *mut EXCEPTION_POINTERS, tid: u32) {
         .map_or(0, |r| r.ExceptionCode) as u32;
     let (kind, desc) = exception::windows_exception(code);
 
-    let dir = std::path::PathBuf::from(String::from_utf8_lossy(&st.dir).into_owned());
+    let dir = std::path::PathBuf::from(ghostty_os::osbytes::os_from_bytes(st.dir.clone()));
     let dump = (|| -> Result<Vec<u8>, String> {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let tmp = dir.join(format!("minidump-{}.tmp", std::process::id()));

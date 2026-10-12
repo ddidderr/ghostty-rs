@@ -5,12 +5,7 @@
 
 use std::fs::File;
 
-use ghostty_os::osbytes::{
-    config_str_to_os,
-    config_str_to_path,
-    os_to_config_string,
-    path_to_config_string,
-};
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::diagnostics::{Diagnostic, DiagnosticList};
 
@@ -33,7 +28,7 @@ impl Location {
     /// invalid for any reason. For example, it is perfectly valid to
     /// install and run Ghostty without the resources directory.
     #[must_use]
-    pub fn dir(self, resources_dir: Option<&str>) -> Option<String> {
+    pub fn dir(self, resources_dir: Option<&EncodedOs>) -> Option<EncodedOs> {
         match self {
             Location::User => ghostty_os::xdg::config(&ghostty_os::xdg::Options {
                 subdir: Some("ghostty/themes"),
@@ -42,9 +37,7 @@ impl Location {
             .ok(),
             Location::Resources => {
                 let base = resources_dir?;
-                Some(path_to_config_string(
-                    &config_str_to_path(base).join("themes"),
-                ))
+                Some(EncodedOs::from_path(&base.to_path().join("themes")))
             }
         }
     }
@@ -54,24 +47,24 @@ impl Location {
 /// order of priority.
 #[derive(Debug, Clone)]
 pub struct LocationIterator {
-    pub resources_dir: Option<String>,
+    pub resources_dir: Option<EncodedOs>,
     pub i: usize,
 }
 
 impl LocationIterator {
     #[must_use]
-    pub fn new(resources_dir: Option<&str>) -> Self {
+    pub fn new(resources_dir: Option<&EncodedOs>) -> Self {
         Self {
-            resources_dir: resources_dir.map(str::to_string),
+            resources_dir: resources_dir.cloned(),
             i: 0,
         }
     }
 
-    pub fn next_location(&mut self) -> Option<(Location, String)> {
+    pub fn next_location(&mut self) -> Option<(Location, EncodedOs)> {
         while self.i < Location::ALL.len() {
             let location = Location::ALL[self.i];
             self.i += 1;
-            if let Some(dir) = location.dir(self.resources_dir.as_deref()) {
+            if let Some(dir) = location.dir(self.resources_dir.as_ref()) {
                 return Some((location, dir));
             }
         }
@@ -86,7 +79,7 @@ impl LocationIterator {
 /// An opened theme.
 #[derive(Debug)]
 pub struct OpenedTheme {
-    pub path: String,
+    pub path: EncodedOs,
     pub file: File,
 }
 
@@ -160,31 +153,34 @@ fn check_regular(file: &File, theme: &str, diags: &mut DiagnosticList) -> bool {
 /// the theme resolves to something other than a regular file a diagnostic entry
 /// will be added to the list and None will be returned.
 pub fn open(
-    theme: &str,
-    resources_dir: Option<&str>,
+    theme: &EncodedOs,
+    resources_dir: Option<&EncodedOs>,
     diags: &mut DiagnosticList,
 ) -> Option<OpenedTheme> {
+    let theme_path = theme.to_path();
+    let theme_text = theme.as_encoded();
+
     // Absolute themes are loaded a different path.
-    if config_str_to_path(theme).is_absolute() {
+    if theme_path.is_absolute() {
         let file = open_absolute(theme, diags)?;
-        if !check_regular(&file, theme, diags) {
+        if !check_regular(&file, theme_text, diags) {
             return None;
         }
         return Some(OpenedTheme {
-            path: theme.to_string(),
+            path: theme.clone(),
             file,
         });
     }
 
-    let basename = config_str_to_path(theme)
+    let basename = theme_path
         .file_name()
-        .map(os_to_config_string)
+        .map(EncodedOs::from_os)
         .unwrap_or_default();
-    if theme != basename {
+    if *theme != basename {
         diag(
             diags,
             format!(
-                "theme \"{theme}\" cannot include path separators unless it is an absolute path"
+                "theme \"{theme_text}\" cannot include path separators unless it is an absolute path"
             ),
         );
         return None;
@@ -194,10 +190,10 @@ pub fn open(
     // one that exists.
     let mut it = LocationIterator::new(resources_dir);
     while let Some((_, dir)) = it.next_location() {
-        let path = path_to_config_string(&config_str_to_path(&dir).join(config_str_to_os(theme)));
-        match File::open(config_str_to_path(&path)) {
+        let path = EncodedOs::from_path(&dir.to_path().join(theme.to_os()));
+        match File::open(path.to_path()) {
             Ok(file) => {
-                if !check_regular(&file, theme, diags) {
+                if !check_regular(&file, theme_text, diags) {
                     return None;
                 }
                 return Some(OpenedTheme { path, file });
@@ -208,7 +204,10 @@ pub fn open(
             Err(err) => {
                 diag(
                     diags,
-                    format!("failed to load theme \"{theme}\" from the file \"{path}\": {err}"),
+                    format!(
+                        "failed to load theme \"{theme_text}\" from the file \"{}\": {err}",
+                        path.as_encoded()
+                    ),
                 );
                 return None;
             }
@@ -219,10 +218,13 @@ pub fn open(
     // our iterator, reiterate over in order to build a better error message.
     it.reset();
     while let Some((_, dir)) = it.next_location() {
-        let path = path_to_config_string(&config_str_to_path(&dir).join(config_str_to_os(theme)));
+        let path = EncodedOs::from_path(&dir.to_path().join(theme.to_os()));
         diag(
             diags,
-            format!("theme \"{theme}\" not found, tried path \"{path}\""),
+            format!(
+                "theme \"{theme_text}\" not found, tried path \"{}\"",
+                path.as_encoded()
+            ),
         );
     }
 
@@ -232,8 +234,9 @@ pub fn open(
 /// Open the given theme from an absolute path. If there are any errors
 /// then messages will be appended to the given error list and None is
 /// returned.
-pub fn open_absolute(theme: &str, diags: &mut DiagnosticList) -> Option<File> {
-    match File::open(config_str_to_path(theme)) {
+pub fn open_absolute(theme: &EncodedOs, diags: &mut DiagnosticList) -> Option<File> {
+    let theme = theme.as_encoded();
+    match File::open(EncodedOs::from_encoded(theme).to_path()) {
         Ok(f) => Some(f),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {
@@ -257,10 +260,14 @@ pub fn open_absolute(theme: &str, diags: &mut DiagnosticList) -> Option<File> {
 mod tests {
     use super::*;
 
+    fn e(s: &str) -> EncodedOs {
+        EncodedOs::from_encoded(s)
+    }
+
     #[test]
     fn theme_path_separators_rejected() {
         let mut d = DiagnosticList::default();
-        assert!(open("a/b", None, &mut d).is_none());
+        assert!(open(&e("a/b"), None, &mut d).is_none());
         assert!(
             d.items()[0]
                 .message
@@ -271,13 +278,13 @@ mod tests {
     #[test]
     fn theme_absolute_missing_and_dir() {
         let mut d = DiagnosticList::default();
-        assert!(open("/nonexistent/ghostty/theme", None, &mut d).is_none());
+        assert!(open(&e("/nonexistent/ghostty/theme"), None, &mut d).is_none());
         assert_eq!(
             d.items()[0].message,
             "failed to load theme from the path \"/nonexistent/ghostty/theme\""
         );
         let mut d = DiagnosticList::default();
-        assert!(open("/tmp", None, &mut d).is_none());
+        assert!(open(&e("/tmp"), None, &mut d).is_none());
         assert_eq!(
             d.items()[0].message,
             "not reading theme from \"/tmp\": it is a directory"
@@ -290,8 +297,8 @@ mod tests {
         std::fs::create_dir_all(dir.join("themes")).unwrap();
         std::fs::write(dir.join("themes/mytheme-zzz"), "background = #000000\n").unwrap();
         let mut d = DiagnosticList::default();
-        let t = open("mytheme-zzz", Some(dir.to_str().unwrap()), &mut d).unwrap();
-        assert!(t.path.ends_with("themes/mytheme-zzz"));
+        let t = open(&e("mytheme-zzz"), Some(&EncodedOs::from_path(&dir)), &mut d).unwrap();
+        assert!(t.path.ends_with_plain("themes/mytheme-zzz"));
         assert!(d.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -299,7 +306,7 @@ mod tests {
     #[test]
     fn theme_not_found_lists_tried_paths() {
         let mut d = DiagnosticList::default();
-        assert!(open("nope-zzz", Some("/nonexistent-res"), &mut d).is_none());
+        assert!(open(&e("nope-zzz"), Some(&e("/nonexistent-res")), &mut d).is_none());
         assert!(d.items().iter().any(|x| x.message
             == "theme \"nope-zzz\" not found, tried path \"/nonexistent-res/themes/nope-zzz\""));
     }

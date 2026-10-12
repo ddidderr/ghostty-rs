@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 
 use ghostty_config::config::Config;
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::error::Error;
 pub use crate::options::NoOptions as Options;
@@ -43,7 +44,7 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
 
 /// Pick the editor from `$VISUAL` then `$EDITOR` (empty values are skipped).
 #[must_use]
-pub fn find_editor() -> Option<String> {
+pub fn find_editor() -> Option<EncodedOs> {
     // VISUAL vs. EDITOR: https://unix.stackexchange.com/questions/4859/visual-vs-editor-what-s-the-difference
     for var in ["VISUAL", "EDITOR"] {
         if let Some(v) = ghostty_os::getenv(var) {
@@ -76,19 +77,20 @@ fn run_inner(stderr: &mut dyn Write) -> Result<u8, Error> {
 
 /// Windows branch of `run`: print the path and fail.
 #[cfg(windows)]
-fn write_windows_unsupported(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
+fn write_windows_unsupported(stderr: &mut dyn Write, path: &EncodedOs) -> Result<u8, Error> {
     write!(
         stderr,
         "The `ghostty +edit-config` command is not supported on Windows.\n\
          Please edit the configuration file manually at the following path:\n\
          \n\
-         {path}\n"
+         {}\n",
+        path.as_encoded()
     )?;
     Ok(1)
 }
 
 #[cfg(unix)]
-fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
+fn exec_editor(stderr: &mut dyn Write, path: &EncodedOs) -> Result<u8, Error> {
     // Get our editor
     let Some(editor) = find_editor() else {
         // If we don't have `$EDITOR` set then we can't do anything
@@ -107,15 +109,16 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
         );
         // Output the path using the OSC8 sequence so that it is linked.
         // (Paths are raw bytes: decode the reversible escape when writing.)
-        let msg = format!("{msg}\x1b]8;;file://{path}\x1b\\{path}\x1b]8;;\x1b\\\n");
+        let p = path.as_encoded();
+        let msg = format!("{msg}\x1b]8;;file://{p}\x1b\\{p}\x1b]8;;\x1b\\\n");
         stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&msg))?;
         return Ok(1);
     };
 
     // Flush before exec so no output is lost.
     let _ = stderr.flush();
-    let err = std::process::Command::new(ghostty_os::osbytes::config_str_to_os(&editor))
-        .arg(ghostty_os::osbytes::config_str_to_os(path))
+    let err = std::process::Command::new(editor.to_os())
+        .arg(path.to_os())
         .exec();
 
     // If we reached this point then exec failed.
@@ -131,8 +134,10 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
          permissions, or the shell environment not being set up\n\
          correctly.\n\
          \n\
-         Editor: {editor}\n\
-         Path: {path}\n"
+         Editor: {}\n\
+         Path: {}\n",
+        editor.as_encoded(),
+        path.as_encoded()
     );
     stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&msg))?;
     Ok(1)

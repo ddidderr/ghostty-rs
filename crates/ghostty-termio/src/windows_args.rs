@@ -90,6 +90,48 @@ pub fn windows_create_command_line<S: AsRef<str>>(argv: &[S]) -> String {
     buf
 }
 
+/// [`windows_create_command_line`] over UTF-16 arguments (which may hold
+/// lone surrogates, so they cannot be a `str`). The quoting rules are the
+/// same: only ASCII characters are significant, so the logic is identical on
+/// code units.
+pub fn windows_create_command_line_wide(argv: &[Vec<u16>]) -> Vec<u16> {
+    let (sp, tab, nl, quote, bs) = (
+        u16::from(b' '),
+        u16::from(b'\t'),
+        u16::from(b'\n'),
+        u16::from(b'"'),
+        u16::from(b'\\'),
+    );
+    let mut buf: Vec<u16> = Vec::new();
+    for (arg_i, arg) in argv.iter().enumerate() {
+        if arg_i != 0 {
+            buf.push(sp);
+        }
+        if !arg.iter().any(|c| [sp, tab, nl, quote].contains(c)) {
+            buf.extend_from_slice(arg);
+            continue;
+        }
+        buf.push(quote);
+        let mut backslash_count = 0usize;
+        for &c in arg {
+            if c == bs {
+                backslash_count += 1;
+            } else if c == quote {
+                buf.extend(std::iter::repeat_n(bs, backslash_count * 2 + 1));
+                buf.push(quote);
+                backslash_count = 0;
+            } else {
+                buf.extend(std::iter::repeat_n(bs, backslash_count));
+                buf.push(c);
+                backslash_count = 0;
+            }
+        }
+        buf.extend(std::iter::repeat_n(bs, backslash_count * 2));
+        buf.push(quote);
+    }
+    buf
+}
+
 /// The argv for a `shell` command on Windows (`execCommand`): the command is
 /// run as `%WINDIR%\System32\cmd.exe /C <command>`.
 pub fn windows_shell_args(windir: &str, command: &str) -> Vec<String> {
@@ -113,6 +155,25 @@ mod tests {
 
     fn cl(args: &[&str]) -> String {
         windows_create_command_line(args)
+    }
+
+    #[test]
+    fn wide_command_line_matches_str_version_and_keeps_lone_surrogates() {
+        let w = |s: &str| s.encode_utf16().collect::<Vec<u16>>();
+        for args in [
+            vec!["a", "b c", "d\"e", "f\\", "g h\\"],
+            vec!["cmd.exe", "/C", "echo \"hi\" there"],
+        ] {
+            let wide: Vec<Vec<u16>> = args.iter().map(|a| w(a)).collect();
+            assert_eq!(
+                windows_create_command_line_wide(&wide),
+                w(&windows_create_command_line(&args))
+            );
+        }
+        // A lone surrogate inside a quoted argument is carried unchanged.
+        let lone = vec![u16::from(b'a'), u16::from(b' '), 0xD800];
+        let out = windows_create_command_line_wide(&[lone]);
+        assert_eq!(out, [34, 97, 32, 0xD800, 34]);
     }
 
     #[test]

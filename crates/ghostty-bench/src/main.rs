@@ -4,15 +4,15 @@ use std::process::ExitCode;
 use ghostty_bench::{args::Args, benches};
 
 fn main() -> ExitCode {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut action = None;
     for a in &argv {
-        if let Some(name) = a.strip_prefix('+') {
+        if let Some(name) = ghostty_bench::args::action_name(a) {
             if action.is_some() {
                 eprintln!("error: multiple actions specified");
                 return ExitCode::FAILURE;
             }
-            action = Some(name.to_owned());
+            action = Some(name);
         }
     }
     let Some(action) = action else {

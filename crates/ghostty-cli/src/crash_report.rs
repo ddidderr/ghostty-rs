@@ -85,7 +85,8 @@ fn run_inner(
             };
             format!("{} ago", d.round(1_000_000_000))
         };
-        writeln!(stdout, "{} ({since})", report.name)?;
+        // Display only: the file name is shown as text.
+        writeln!(stdout, "{} ({since})", report.name.to_string_lossy())?;
     }
 
     Ok(0)

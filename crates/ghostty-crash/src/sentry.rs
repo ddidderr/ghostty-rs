@@ -138,7 +138,8 @@ pub fn install(opts: &Options) -> Result<(), InitError> {
     }
 
     let state = State {
-        dir: dir.as_os_str().as_encoded_bytes().to_vec(),
+        // Bytes on Unix, WTF-8 on Windows (lossless both ways).
+        dir: ghostty_os::osbytes::os_bytes(dir.as_os_str()),
         prefix,
     };
     if STATE.set(state).is_err() {
@@ -415,17 +416,8 @@ pub(crate) fn write_report_ext(
         data.extend_from_slice(&enc.payload);
     }
 
-    #[cfg(unix)]
-    let dir = {
-        use std::os::unix::ffi::OsStrExt as _;
-        std::path::Path::new(std::ffi::OsStr::from_bytes(&st.dir))
-    };
-    // Windows paths are not arbitrary bytes; the dir was UTF-8 in practice.
-    #[cfg(not(unix))]
-    let dir_buf = PathBuf::from(String::from_utf8_lossy(&st.dir).into_owned());
-    #[cfg(not(unix))]
-    let dir = dir_buf.as_path();
-    std::fs::create_dir_all(dir)?;
+    let dir = PathBuf::from(ghostty_os::osbytes::os_from_bytes(st.dir.clone()));
+    std::fs::create_dir_all(&dir)?;
     let path = dir.join(report_file_name(uuid));
     std::fs::write(&path, data)?;
     Ok(path)

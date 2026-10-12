@@ -15,12 +15,7 @@ use ghostty_config::{
     config_struct,
     theme::{Location, LocationIterator},
 };
-use ghostty_os::osbytes::{
-    config_str_to_bytes,
-    config_str_to_path,
-    os_to_config_string,
-    path_to_config_string,
-};
+use ghostty_os::osbytes::{EncodedOs, config_str_to_bytes, os_to_config_string};
 
 use crate::{error::Error, tui};
 
@@ -58,7 +53,7 @@ cli_options!(Options, help);
 #[derive(Debug, Clone, PartialEq)]
 pub struct ThemeListElement {
     pub location: Location,
-    pub path: String,
+    pub path: EncodedOs,
     pub theme: String,
     pub rank: Option<f64>,
 }
@@ -76,7 +71,7 @@ impl ThemeListElement {
     #[must_use]
     pub fn to_uri(&self) -> String {
         let mut out = String::from("file://");
-        for b in ghostty_os::osbytes::config_str_to_bytes(&self.path) {
+        for b in self.path.to_bytes() {
             // std.Uri path component escaping: unreserved + sub-delims + ":@/".
             if b.is_ascii_alphanumeric()
                 || matches!(
@@ -123,15 +118,15 @@ pub fn location_name(loc: Location) -> &'static str {
 /// Returns the unsorted list (in directory order). Errors opening a
 /// directory other than "not found" are printed to stderr and skipped.
 #[must_use]
-pub fn collect_themes(resources_dir: Option<&str>) -> Vec<ThemeListElement> {
+pub fn collect_themes(resources_dir: Option<&EncodedOs>) -> Vec<ThemeListElement> {
     let mut themes = vec![];
     let mut it = LocationIterator::new(resources_dir);
     while let Some((location, dir)) = it.next_location() {
-        let rd = match std::fs::read_dir(config_str_to_path(&dir)) {
+        let rd = match std::fs::read_dir(dir.to_path()) {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
-                eprintln!("error trying to open {dir}: {e}");
+                eprintln!("error trying to open {}: {e}", dir.as_encoded());
                 continue;
             }
         };
@@ -150,7 +145,7 @@ pub fn collect_themes(resources_dir: Option<&str>) -> Vec<ThemeListElement> {
                 continue;
             }
             themes.push(ThemeListElement {
-                path: path_to_config_string(&config_str_to_path(&dir).join(&raw_name)),
+                path: EncodedOs::from_path(&dir.to_path().join(&raw_name)),
                 location,
                 theme: name,
                 rank: None,
@@ -174,15 +169,14 @@ pub fn should_include_theme(theme_filter: ColorScheme, theme_config: &Config) ->
 }
 
 /// Make `path` absolute (`Config::load_file` requires absolute paths).
-pub(crate) fn absolute_path(path: &str) -> String {
-    std::path::absolute(config_str_to_path(path))
-        .map_or_else(|_| path.to_string(), |p| path_to_config_string(&p))
+pub(crate) fn absolute_path(path: &EncodedOs) -> EncodedOs {
+    std::path::absolute(path.to_path()).map_or_else(|_| path.clone(), |p| EncodedOs::from_path(&p))
 }
 
-fn resources_dir() -> Option<String> {
+fn resources_dir() -> Option<EncodedOs> {
     ghostty_os::resources_dir()
         .ok()
-        .and_then(|r| r.app().map(str::to_string))
+        .and_then(|r| r.app().cloned())
 }
 
 /// The `list-themes` command is used to preview or list all the available
@@ -238,7 +232,7 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
         )?;
     }
 
-    let mut themes = collect_themes(resources_dir.as_deref());
+    let mut themes = collect_themes(resources_dir.as_ref());
 
     if themes.is_empty() {
         write!(
@@ -281,7 +275,7 @@ pub fn write_plain(
         // Names/paths are raw bytes in Zig: decode the reversible escape so
         // non-UTF-8 bytes are written back unchanged.
         let line = if opts.path {
-            format!("{} ({loc}) {}\n", theme.theme, theme.path)
+            format!("{} ({loc}) {}\n", theme.theme, theme.path.as_encoded())
         } else {
             format!("{} ({loc})\n", theme.theme)
         };
@@ -314,7 +308,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let raw = std::ffi::OsStr::from_bytes(b"th\xffeme");
         std::fs::write(dir.join(raw), "background = #000000\n").unwrap();
-        let res = tmp.path().to_string_lossy().into_owned();
+        let res = EncodedOs::from_path(tmp.path());
         let themes: Vec<_> = collect_themes(Some(&res))
             .into_iter()
             .filter(|t| t.location == Location::Resources)
@@ -322,7 +316,7 @@ mod tests {
         assert_eq!(1, themes.len());
         assert_eq!(config_str_to_bytes(&themes[0].theme), b"th\xffeme".to_vec());
         // The path points at the real file and the listing loads it.
-        assert_eq!(config_str_to_path(&themes[0].path), dir.join(raw));
+        assert_eq!(themes[0].path.to_path(), dir.join(raw));
         let mut out = Vec::new();
         write_plain(&mut out, &themes, &Options::default()).unwrap();
         assert_eq!(out, b"th\xffeme (resources)\n");
@@ -336,7 +330,7 @@ mod tests {
             ("Beta", "background = 202020\n"),
             (".DS_Store", "junk"),
         ]);
-        let res = tmp.path().to_string_lossy().into_owned();
+        let res = EncodedOs::from_path(tmp.path());
         let mut themes: Vec<_> = collect_themes(Some(&res))
             .into_iter()
             .filter(|t| t.location == Location::Resources)
@@ -365,7 +359,7 @@ mod tests {
         );
         assert_eq!("Zeta (resources)\n", list(ColorScheme::Light, false));
         assert_eq!(
-            format!("Zeta (resources) {res}/themes/Zeta\n"),
+            format!("Zeta (resources) {}/themes/Zeta\n", res.as_encoded()),
             list(ColorScheme::Light, true)
         );
     }
@@ -392,7 +386,7 @@ mod tests {
     fn uri_escaping() {
         let t = ThemeListElement {
             location: Location::User,
-            path: "/a b/c%d".into(),
+            path: EncodedOs::from_encoded("/a b/c%d"),
             theme: "x".into(),
             rank: None,
         };
@@ -403,7 +397,7 @@ mod tests {
     fn uri_escaping_percent_encodes_original_bytes() {
         let t = ThemeListElement {
             location: Location::User,
-            path: ghostty_os::osbytes::bytes_to_config_string(b"/a/\xff\xc3x"),
+            path: EncodedOs::from_bytes(b"/a/\xff\xc3x"),
             theme: "x".into(),
             rank: None,
         };

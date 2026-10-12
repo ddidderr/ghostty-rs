@@ -59,7 +59,7 @@ impl DiskCache {
             home: None,
         })
         .map_err(|_| Error::XdgLookupFailed)?;
-        Ok(PathBuf::from(state_dir).join("ssh_cache"))
+        Ok(state_dir.to_path().join("ssh_cache"))
     }
 
     /// Clear all cache data stored in the disk cache.
@@ -346,6 +346,20 @@ fn is_valid_user(user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    #[cfg(unix)]
+    #[test]
+    fn default_path_decodes_non_utf8_xdg_state() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let v = std::ffi::OsString::from_vec(b"/tmp/st\xffate".to_vec());
+        let p = temp_env::with_var("XDG_STATE_HOME", Some(&v), || {
+            super::DiskCache::default_path("ghostty").unwrap()
+        });
+        assert_eq!(
+            p.as_os_str().as_bytes(),
+            b"/tmp/st\xffate/ghostty/ssh_cache"
+        );
+    }
+
     #[cfg(not(windows))]
     #[test]
     fn lock_is_exclusive_until_dropped() {

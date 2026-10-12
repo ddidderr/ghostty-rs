@@ -419,11 +419,16 @@ pub fn screen_file_contents(
 /// Write `contents` to `<tempdir>/<loc>.<ext>` (mode 0600) and return the
 /// canonical path. The temporary directory is intentionally left behind so
 /// the file stays around for the user (Zig does not delete it either).
+/// The raw bytes of a path (what Zig copies/pastes for a screen file).
+fn path_bytes(path: &std::path::Path) -> Vec<u8> {
+    ghostty_os::osbytes::os_bytes(path.as_os_str())
+}
+
 pub fn write_screen_temp_file(
     contents: &str,
     loc: WriteScreenLoc,
     emit: WriteScreenFormat,
-) -> Result<String, CoreError> {
+) -> Result<std::path::PathBuf, CoreError> {
     #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt as _;
 
@@ -432,7 +437,7 @@ pub fn write_screen_temp_file(
     let filename = screen_file_name(loc, emit);
     let file_path = tmp_dir.path().join(&filename);
 
-    let result = (|| -> Result<String, CoreError> {
+    let result = (|| -> Result<std::path::PathBuf, CoreError> {
         let mut opts = std::fs::OpenOptions::new();
         opts.write(true).create(true).truncate(true);
         #[cfg(unix)]
@@ -440,11 +445,7 @@ pub fn write_screen_temp_file(
         let mut file = opts.open(&file_path)?;
         file.write_all(contents.as_bytes())?;
         file.flush()?;
-        // Reversible config-string encoding: a non-UTF-8 temp dir keeps its
-        // bytes (decode with `config_str_to_path` at OS boundaries).
-        Ok(ghostty_os::osbytes::path_to_config_string(
-            &std::fs::canonicalize(&file_path)?,
-        ))
+        Ok(std::fs::canonicalize(&file_path)?)
     })();
 
     match result {
@@ -628,13 +629,10 @@ impl Surface {
 
         match write_screen.action {
             WriteScreenAction::Copy => {
+                // The file name is copied as the raw bytes of the path.
                 self.rt_surface.set_clipboard(
                     Clipboard::Standard,
-                    &[(
-                        "text/plain".to_owned(),
-                        String::from_utf8_lossy(&ghostty_os::osbytes::config_str_to_bytes(&path))
-                            .into_owned(),
-                    )],
+                    &[("text/plain".to_owned(), path_bytes(&path))],
                     false,
                 );
             }
@@ -643,11 +641,11 @@ impl Surface {
                     WriteScreenFormat::Plain | WriteScreenFormat::Vt => OpenUrlKind::Text,
                     WriteScreenFormat::Html => OpenUrlKind::Html,
                 },
-                url: path,
+                url: ghostty_os::osbytes::EncodedOs::from_path(&path),
             })?,
-            WriteScreenAction::Paste => self.queue_io(IoMessage::write_req(
-                &ghostty_os::osbytes::config_str_to_bytes(&path),
-            )),
+            WriteScreenAction::Paste => {
+                self.queue_io(IoMessage::write_req(&path_bytes(&path)));
+            }
         }
         Ok(())
     }
@@ -1278,6 +1276,7 @@ mod tests {
         let path =
             write_screen_temp_file(&s, WriteScreenLoc::Screen, WriteScreenFormat::Plain).unwrap();
         assert!(path.ends_with("screen.txt"));
+        let path = path.to_string_lossy().into_owned(); // test-only: ASCII temp path
         let read = std::fs::read_to_string(&path).unwrap();
         assert_eq!(read, s);
         #[cfg(unix)]
@@ -1292,18 +1291,23 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn screen_temp_file_returns_encoded_non_utf8_path() {
-        use std::os::unix::ffi::OsStrExt;
+    fn screen_temp_file_keeps_non_utf8_path_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
         let td = ghostty_os::temp_dir::TempDir::init().unwrap();
         let bad = td.path().join(std::ffi::OsStr::from_bytes(b"d\xff"));
         std::fs::create_dir_all(&bad).unwrap();
-        // Use TMPDIR to force the non-UTF-8 directory.
-        let file = bad.join("x.txt");
-        std::fs::write(&file, b"x").unwrap();
-        let canon = std::fs::canonicalize(&file).unwrap();
-        let enc = ghostty_os::osbytes::path_to_config_string(&canon);
-        assert!(enc.contains('\u{fdd0}'));
-        assert_eq!(ghostty_os::osbytes::config_str_to_path(&enc), canon);
+        let tmpdir = std::ffi::OsString::from_vec(bad.as_os_str().as_bytes().to_vec());
+        // Force the non-UTF-8 directory through TMPDIR.
+        let path = temp_env::with_var("TMPDIR", Some(&tmpdir), || {
+            write_screen_temp_file("x", WriteScreenLoc::Screen, WriteScreenFormat::Plain).unwrap()
+        });
+        assert!(path.as_os_str().as_bytes().contains(&0xff));
+        assert_eq!(std::fs::read(&path).unwrap(), b"x");
+        // Copy/paste carry the exact path bytes (no U+FFFD), and the open
+        // action's EncodedOs decodes back to the same path.
+        assert_eq!(path_bytes(&path), path.as_os_str().as_bytes());
+        let url = ghostty_os::osbytes::EncodedOs::from_path(&path);
+        assert_eq!(url.to_path(), path);
     }
 
     #[test]

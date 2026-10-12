@@ -1,5 +1,5 @@
 use std::{
-    ffi::{OsStr, OsString},
+    ffi::OsStr,
     io,
     process::{Command, Stdio},
 };
@@ -18,9 +18,10 @@ pub enum OpenUrlKind {
 
 /// Open a URL in the default handling application (via `xdg-open`).
 ///
-/// `url` is the core's "config string" form (see [`crate::osbytes`]): a
-/// non-UTF-8 path is carried in an escaped form and is decoded to the real
-/// path bytes here, right before it is handed to the opener.
+/// `url` is the exact OS string to hand to the opener. Callers holding an
+/// [`EncodedOs`](crate::osbytes::EncodedOs) decode it explicitly
+/// (`to_os`); plain text (a regex link, an OSC 8 URI) is wrapped with
+/// `EncodedOs::from_plain_text` first, so it is never decoded by mistake.
 ///
 /// Any output on stderr is logged as a warning in the application logs.
 /// Output on stdout is ignored.
@@ -29,9 +30,8 @@ pub enum OpenUrlKind {
 /// some portable way to open URLs. If you are implementing an
 /// apprt for Ghostty, you should consider doing something special-cased
 /// for your platform.
-pub fn open(kind: OpenUrlKind, url: &str) -> io::Result<()> {
-    let url: OsString = crate::osbytes::config_str_to_os(url);
-    let mut cmd = open_command(kind, &url)?;
+pub fn open(kind: OpenUrlKind, url: &OsStr) -> io::Result<()> {
+    let mut cmd = open_command(kind, url)?;
 
     // Pipe stdout/stderr so we can collect output from the command.
     cmd.stdin(Stdio::null())
@@ -141,12 +141,20 @@ mod tests {
         assert_eq!(macos_open_args(OpenUrlKind::Unknown, u), ["u"]);
     }
 
+    /// The opener receives decoded bytes for encoded paths and the text
+    /// unchanged for plain URLs (even when they contain the escape char).
     #[test]
-    fn encoded_non_utf8_path_is_decoded_for_the_opener() {
+    fn encoded_paths_decode_but_plain_urls_do_not() {
         use std::os::unix::ffi::OsStrExt as _;
-        let enc = crate::osbytes::bytes_to_config_string(b"/tmp/a\xffb");
-        let os = crate::osbytes::config_str_to_os(&enc);
-        assert_eq!(os.as_bytes(), b"/tmp/a\xffb");
+
+        use crate::osbytes::EncodedOs;
+        let path = EncodedOs::from_bytes(b"/tmp/a\xffb");
+        assert_eq!(path.to_os().as_bytes(), b"/tmp/a\xffb");
+
+        // U+FDD0 U+00FF in an ordinary URL must stay two chars, not byte FF.
+        let url = "https://x/\u{fdd0}\u{ff}";
+        let plain = EncodedOs::from_plain_text(url);
+        assert_eq!(plain.to_os().as_bytes(), url.as_bytes());
     }
 
     #[cfg(not(target_vendor = "apple"))]
@@ -155,7 +163,7 @@ mod tests {
         // With an empty PATH, xdg-open can't be found; Zig detects this
         // synchronously and so do we.
         temp_env::with_var("PATH", Some("/nonexistent-dir"), || {
-            let err = open(OpenUrlKind::Unknown, "https://example.com").unwrap_err();
+            let err = open(OpenUrlKind::Unknown, OsStr::new("https://example.com")).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::NotFound);
         });
     }

@@ -19,7 +19,8 @@ pub fn default_dir() -> io::Result<Dir> {
     })
     .map_err(|e| io::Error::other(e.to_string()))?;
     Ok(Dir {
-        path: PathBuf::from(path),
+        // The XDG helpers return the encoded form of the OS string.
+        path: path.to_path(),
     })
 }
 
@@ -62,7 +63,7 @@ impl ReportIterator {
             if !entry.file_type()?.is_file() {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry.file_name();
             // statFile follows symlinks; entries here are regular files.
             let mtime = fs::metadata(self.dir.join(entry.file_name()))?.modified()?;
             let mtime = match mtime.duration_since(UNIX_EPOCH) {
@@ -84,7 +85,8 @@ impl Iterator for ReportIterator {
 /// A crash report file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Report {
-    pub name: String,
+    /// The file name as the raw OS string (Zig `[]const u8`).
+    pub name: std::ffi::OsString,
     /// Modification time in nanoseconds since the unix epoch.
     pub mtime: i128,
 }
@@ -119,6 +121,29 @@ mod tests {
         let r = list_reports(t.path()).unwrap();
         assert_eq!(1, r.len());
         assert_eq!("a.ghosttycrash", r[0].name);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_dir_decodes_non_utf8_xdg_state() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let v = std::ffi::OsString::from_vec(b"/tmp/state\xff".to_vec());
+        let d = temp_env::with_var("XDG_STATE_HOME", Some(&v), || default_dir().unwrap());
+        assert_eq!(
+            d.path.as_os_str().as_bytes(),
+            b"/tmp/state\xff/ghostty/crash"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_report_name_is_kept() {
+        use std::os::unix::ffi::OsStrExt;
+        let t = tempfile::tempdir().unwrap();
+        let name = std::ffi::OsStr::from_bytes(b"a\xff.ghosttycrash");
+        fs::write(t.path().join(name), "x").unwrap();
+        let r = list_reports(t.path()).unwrap();
+        assert_eq!(r[0].name, name);
     }
 
     #[test]

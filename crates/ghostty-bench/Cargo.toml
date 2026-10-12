@@ -14,6 +14,7 @@ name = "ghostty-synthetic"
 path = "src/bin/ghostty-synthetic.rs"
 
 [dependencies]
+ghostty-os.workspace = true
 ghostty-terminal.workspace = true
 ghostty-unicode.workspace = true
 ghostty-vt.workspace = true

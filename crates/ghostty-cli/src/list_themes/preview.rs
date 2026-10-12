@@ -353,8 +353,8 @@ enum Loaded {
 /// A pending side effect requested by the state (needs the terminal).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
-    /// Copy the text to the clipboard (OSC 52).
-    Copy(String),
+    /// Copy the (decoded) bytes to the clipboard (OSC 52).
+    Copy(ghostty_os::osbytes::EncodedOs),
 }
 
 /// The preview state (Zig: `Preview`).
@@ -373,9 +373,9 @@ pub struct Preview {
     mouse: Option<MouseEvent>,
     /// The list height as of the last draw (for clamping the window).
     list_height: u16,
-    loaded: Option<(String, Loaded)>,
+    loaded: Option<(ghostty_os::osbytes::EncodedOs, Loaded)>,
     /// Where `w` writes the auto theme file (overridable for tests).
-    pub auto_theme_path: Option<String>,
+    pub auto_theme_path: Option<std::path::PathBuf>,
     effects: Vec<Effect>,
     overlays: Vec<Overlay>,
 }
@@ -581,7 +581,8 @@ impl Preview {
                 }
                 if is_char('c') {
                     if let Some(t) = self.selected() {
-                        let name = t.theme.clone();
+                        // Theme names are in the reversible OS-string encoding.
+                        let name = ghostty_os::osbytes::EncodedOs::from_encoded(t.theme.clone());
                         self.effects.push(Effect::Copy(name));
                     }
                 } else if code == KeyCode::Char('C')
@@ -965,10 +966,10 @@ impl Preview {
                     (child.area.width / 2).saturating_sub(gw(&text) / 2),
                 );
                 child.print_ex(
-                    &theme.path,
+                    theme.path.as_encoded(),
                     ui_err,
                     middle,
-                    (child.area.width / 2).saturating_sub(gw(&theme.path) / 2),
+                    (child.area.width / 2).saturating_sub(gw(theme.path.as_encoded()) / 2),
                     Some(&theme.to_uri()),
                     None,
                 );
@@ -1024,10 +1025,10 @@ impl Preview {
                 None,
             );
             child.print_ex(
-                &theme.path,
+                theme.path.as_encoded(),
                 standard,
                 2,
-                (child.area.width / 2).saturating_sub(gw(&theme.path) / 2),
+                (child.area.width / 2).saturating_sub(gw(theme.path.as_encoded()) / 2),
                 Some(&uri),
                 None,
             );
@@ -1405,25 +1406,25 @@ fn error_name(e: &ghostty_config::config::Error) -> String {
 }
 
 /// `resolveAutoThemePath`: `<config dir>/auto/theme.ghostty`.
-pub fn resolve_auto_theme_path() -> Result<String, Error> {
+pub fn resolve_auto_theme_path() -> Result<std::path::PathBuf, Error> {
     let main_cfg_path = ghostty_config::file_load::preferred_default_file_path()
-        .map_err(|e| Error::Other(e.to_string()))?;
-    let main_cfg_path = ghostty_os::osbytes::config_str_to_path(&main_cfg_path);
+        .map_err(|e| Error::Other(e.to_string()))?
+        .to_path();
     let base_dir = main_cfg_path
         .parent()
         .ok_or_else(|| Error::Other("BadPathName".to_string()))?;
-    Ok(ghostty_os::osbytes::path_to_config_string(
-        &base_dir.join("auto").join("theme.ghostty"),
-    ))
+    Ok(base_dir.join("auto").join("theme.ghostty"))
 }
 
 /// `writeAutoThemeFile`.
-pub fn write_auto_theme_file(path: Option<&str>, theme_name: &str) -> Result<(), Error> {
+pub fn write_auto_theme_file(
+    path: Option<&std::path::Path>,
+    theme_name: &str,
+) -> Result<(), Error> {
     let auto_path = match path {
-        Some(p) => p.to_string(),
+        Some(p) => p.to_path_buf(),
         None => resolve_auto_theme_path()?,
     };
-    let auto_path = ghostty_os::osbytes::config_str_to_path(&auto_path);
     if let Some(dir) = auto_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -1737,11 +1738,7 @@ fn run_loop(app: &mut Preview) -> Result<(), Error> {
                 match effect {
                     Effect::Copy(text) => {
                         let out = terminal.backend_mut();
-                        write!(
-                            out,
-                            "\x1b]52;c;{}\x1b\\",
-                            base64(&ghostty_os::osbytes::config_str_to_bytes(&text))
-                        )?;
+                        write!(out, "\x1b]52;c;{}\x1b\\", base64(&text.to_bytes()))?;
                         out.flush()?;
                     }
                 }
@@ -1788,7 +1785,7 @@ mod tests {
                 .unwrap();
                 ThemeListElement {
                     location: Location::Resources,
-                    path: path.to_string_lossy().into_owned(),
+                    path: ghostty_os::osbytes::EncodedOs::from_path(&path),
                     theme: (*name).to_string(),
                     rank: None,
                 }
@@ -1939,14 +1936,19 @@ mod tests {
             KeyModifiers::SHIFT,
         )));
         let effects = p.take_effects();
-        assert_eq!(Effect::Copy("alpha".into()), effects[0]);
         assert_eq!(
-            Effect::Copy(tmp.path().join("alpha").to_string_lossy().into_owned()),
+            Effect::Copy(ghostty_os::osbytes::EncodedOs::from_encoded("alpha")),
+            effects[0]
+        );
+        assert_eq!(
+            Effect::Copy(ghostty_os::osbytes::EncodedOs::from_path(
+                &tmp.path().join("alpha")
+            )),
             effects[1]
         );
 
         let auto = tmp.path().join("cfg/auto/theme.ghostty");
-        p.auto_theme_path = Some(auto.to_string_lossy().into_owned());
+        p.auto_theme_path = Some(auto.clone());
         p.update(&key(KeyCode::Enter));
         assert_eq!(Mode::Save, p.mode);
         p.update(&ch('w'));

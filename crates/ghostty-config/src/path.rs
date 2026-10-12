@@ -5,7 +5,7 @@ use std::{
     path::{Component, PathBuf},
 };
 
-use ghostty_os::osbytes::{config_str_to_path, path_to_config_string};
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::{
     c_value::CValue,
@@ -20,21 +20,21 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Path {
     /// No error if the file does not exist.
-    Optional(String),
+    Optional(EncodedOs),
 
     /// The file is required to exist.
-    Required(String),
+    Required(EncodedOs),
 }
 
 impl Default for Path {
     fn default() -> Self {
-        Path::Required(String::new())
+        Path::Required(EncodedOs::new())
     }
 }
 
 /// Lexically resolve `base/path` like `std.fs.path.resolve`.
-fn resolve_lexical(base: &str, path: &str) -> String {
-    let joined = config_str_to_path(base).join(config_str_to_path(path));
+fn resolve_lexical(base: &EncodedOs, path: &EncodedOs) -> EncodedOs {
+    let joined = base.to_path().join(path.to_path());
     let mut out = PathBuf::new();
     for c in joined.components() {
         match c {
@@ -45,27 +45,22 @@ fn resolve_lexical(base: &str, path: &str) -> String {
             other => out.push(other.as_os_str()),
         }
     }
-    path_to_config_string(&out)
+    EncodedOs::from_path(&out)
 }
 
 impl Path {
     /// The inner path string.
     #[must_use]
-    pub fn path(&self) -> &str {
+    pub fn path(&self) -> &EncodedOs {
         match self {
             Path::Optional(p) | Path::Required(p) => p,
         }
     }
 
-    fn path_mut(&mut self) -> &mut String {
+    fn path_mut(&mut self) -> &mut EncodedOs {
         match self {
             Path::Optional(p) | Path::Required(p) => p,
         }
-    }
-
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.path().len()
     }
 
     #[must_use]
@@ -98,9 +93,9 @@ impl Path {
         }
 
         Ok(Some(if optional {
-            Path::Optional(value.to_string())
+            Path::Optional(EncodedOs::from_encoded(value))
         } else {
-            Path::Required(value.to_string())
+            Path::Required(EncodedOs::from_encoded(value))
         }))
     }
 
@@ -110,16 +105,15 @@ impl Path {
     /// `base` is the base directory to expand relative paths; it must be an
     /// absolute path. Errors are added to `diags` if they occur; an `Err` is
     /// only returned if the base directory cannot be opened.
-    pub fn expand(&mut self, base: &str, diags: &mut DiagnosticList) -> std::io::Result<()> {
-        // Config strings carry non-UTF-8 bytes via a reversible escape
-        // encoding; filesystem calls use the decoded OS paths.
-        let base_path = config_str_to_path(base);
+    pub fn expand(&mut self, base: &EncodedOs, diags: &mut DiagnosticList) -> std::io::Result<()> {
+        // Filesystem calls use the decoded OS paths.
+        let base_path = base.to_path();
         assert!(base_path.is_absolute());
 
-        let path = self.path().to_string();
+        let path = self.path().clone();
 
         // If it is already absolute we can ignore it.
-        if path.is_empty() || config_str_to_path(&path).is_absolute() {
+        if path.is_empty() || path.to_path().is_absolute() {
             return Ok(());
         }
 
@@ -127,21 +121,27 @@ impl Path {
         // home directory. We explicitly look for "~/" because we don't
         // support alternate users such as "~alice/"
         // (Windows isn't supported yet: Zig skips this there.)
-        if !cfg!(windows) && path.starts_with("~/") {
+        if !cfg!(windows) && path.starts_with_plain("~/") {
             match ghostty_os::expand_home(&path) {
                 Ok(expanded) => {
-                    log::debug!("expanding file path from home directory: path={expanded}");
+                    log::debug!(
+                        "expanding file path from home directory: path={}",
+                        expanded.as_encoded()
+                    );
                     *self.path_mut() = expanded;
                 }
                 Err(err) => {
                     diags.append(Diagnostic {
-                        message: format!("error expanding home directory for path {path}: {err}"),
+                        message: format!(
+                            "error expanding home directory for path {}: {err}",
+                            path.as_encoded()
+                        ),
                         ..Diagnostic::default()
                     });
 
                     // Blank this path so that we don't attempt to resolve it
                     // again
-                    *self = Path::Required(String::new());
+                    *self = Path::Required(EncodedOs::new());
                 }
             }
             return Ok(());
@@ -150,9 +150,9 @@ impl Path {
         // Make sure the base directory can be opened.
         std::fs::read_dir(&base_path)?;
 
-        let full = base_path.join(config_str_to_path(&path));
+        let full = base_path.join(path.to_path());
         let abs = match std::fs::canonicalize(&full) {
-            Ok(p) => path_to_config_string(&p),
+            Ok(p) => EncodedOs::from_path(&p),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // The file doesn't exist. Try to resolve the relative path
                 // another way.
@@ -160,17 +160,21 @@ impl Path {
             }
             Err(err) => {
                 diags.append(Diagnostic {
-                    message: format!("error resolving file path {path}: {err}"),
+                    message: format!("error resolving file path {}: {err}", path.as_encoded()),
                     ..Diagnostic::default()
                 });
 
                 // Blank this path so that we don't attempt to resolve it again
-                *self = Path::Required(String::new());
+                *self = Path::Required(EncodedOs::new());
                 return Ok(());
             }
         };
 
-        log::debug!("expanding file path relative={path} abs={abs}");
+        log::debug!(
+            "expanding file path relative={} abs={}",
+            path.as_encoded(),
+            abs.as_encoded()
+        );
         *self.path_mut() = abs;
         Ok(())
     }
@@ -180,11 +184,11 @@ impl ConfigField for Path {
     fn c_value(&self) -> CValue {
         match self {
             Path::Optional(p) => CValue::Path {
-                path: p.clone(),
+                path: p.as_encoded().to_owned(),
                 optional: true,
             },
             Path::Required(p) => CValue::Path {
-                path: p.clone(),
+                path: p.as_encoded().to_owned(),
                 optional: false,
             },
         }
@@ -205,8 +209,8 @@ impl ConfigField for Path {
     /// Used by formatter.
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         match self {
-            Path::Optional(p) => writeln!(f.writer, "{} = ?{p}", f.name),
-            Path::Required(p) => writeln!(f.writer, "{} = {p}", f.name),
+            Path::Optional(p) => writeln!(f.writer, "{} = ?{}", f.name, p.as_encoded()),
+            Path::Required(p) => writeln!(f.writer, "{} = {}", f.name, p.as_encoded()),
         }
     }
 }
@@ -222,7 +226,7 @@ pub struct RepeatablePath {
 
 impl RepeatablePath {
     /// Expand all the paths relative to the base directory.
-    pub fn expand(&mut self, base: &str, diags: &mut DiagnosticList) -> std::io::Result<()> {
+    pub fn expand(&mut self, base: &EncodedOs, diags: &mut DiagnosticList) -> std::io::Result<()> {
         for path in &mut self.value {
             path.expand(base, diags)?;
         }
@@ -267,6 +271,10 @@ mod tests {
     use super::*;
     use crate::formatter::format_entry;
 
+    fn e(s: &str) -> EncodedOs {
+        EncodedOs::from_encoded(s)
+    }
+
     fn fmt<T: ConfigField>(v: &T) -> String {
         let mut s = String::new();
         format_entry("a", v, &mut s).unwrap();
@@ -276,13 +284,13 @@ mod tests {
     #[test]
     fn path_parse() {
         let p = |s| Path::parse(Some(s)).unwrap().unwrap();
-        assert_eq!(p("config.1"), Path::Required("config.1".into()));
-        assert_eq!(p("?config.2"), Path::Optional("config.2".into()));
-        assert_eq!(p("\"?config.3\""), Path::Required("?config.3".into()));
-        assert_eq!(p("?\"config.4\""), Path::Optional("config.4".into()));
-        assert_eq!(p("?"), Path::Optional(String::new()));
-        assert_eq!(p("\"\""), Path::Required(String::new()));
-        assert_eq!(p("?\"\""), Path::Optional(String::new()));
+        assert_eq!(p("config.1"), Path::Required(e("config.1")));
+        assert_eq!(p("?config.2"), Path::Optional(e("config.2")));
+        assert_eq!(p("\"?config.3\""), Path::Required(e("?config.3")));
+        assert_eq!(p("?\"config.4\""), Path::Optional(e("config.4")));
+        assert_eq!(p("?"), Path::Optional(EncodedOs::new()));
+        assert_eq!(p("\"\""), Path::Required(EncodedOs::new()));
+        assert_eq!(p("?\"\""), Path::Optional(EncodedOs::new()));
         assert_eq!(Path::parse(None), Err(ArgError::ValueRequired));
         assert_eq!(Path::parse(Some("")), Ok(None));
     }
@@ -292,21 +300,21 @@ mod tests {
         let mut item = Path::default();
 
         item.parse_cli(Some("config.1")).unwrap();
-        assert_eq!(item, Path::Required("config.1".into()));
+        assert_eq!(item, Path::Required(e("config.1")));
 
         item.parse_cli(Some("?config.2")).unwrap();
-        assert_eq!(item, Path::Optional("config.2".into()));
+        assert_eq!(item, Path::Optional(e("config.2")));
 
         item.parse_cli(Some("\"?config.3\"")).unwrap();
-        assert_eq!(item, Path::Required("?config.3".into()));
+        assert_eq!(item, Path::Required(e("?config.3")));
 
         // Zero-length values, ignored
         item.parse_cli(Some("?")).unwrap();
-        assert_eq!(item, Path::Required("?config.3".into()));
+        assert_eq!(item, Path::Required(e("?config.3")));
         item.parse_cli(Some("\"\"")).unwrap();
-        assert_eq!(item, Path::Required("?config.3".into()));
+        assert_eq!(item, Path::Required(e("?config.3")));
         item.parse_cli(Some("?\"\"")).unwrap();
-        assert_eq!(item, Path::Required("?config.3".into()));
+        assert_eq!(item, Path::Required(e("?config.3")));
     }
 
     #[test]
@@ -339,9 +347,9 @@ mod tests {
 
         assert_eq!(list.value.len(), 3);
 
-        assert_eq!(list.value[0], Path::Required("config.1".into()));
-        assert_eq!(list.value[1], Path::Optional("config.2".into()));
-        assert_eq!(list.value[2], Path::Required("?config.3".into()));
+        assert_eq!(list.value[0], Path::Required(e("config.1")));
+        assert_eq!(list.value[1], Path::Optional(e("config.2")));
+        assert_eq!(list.value[2], Path::Required(e("?config.3")));
 
         list.parse_cli(Some("")).unwrap();
         assert_eq!(list.value.len(), 0);
@@ -370,13 +378,13 @@ mod tests {
     #[test]
     fn path_expand_relative_nonexistent_and_absolute() {
         let mut diags = DiagnosticList::default();
-        let mut p = Path::Required("../nope/x.conf".into());
-        p.expand("/tmp", &mut diags).unwrap();
-        assert_eq!(p, Path::Required("/nope/x.conf".into()));
+        let mut p = Path::Required(e("../nope/x.conf"));
+        p.expand(&e("/tmp"), &mut diags).unwrap();
+        assert_eq!(p, Path::Required(e("/nope/x.conf")));
 
-        let mut p = Path::Optional("/abs/path".into());
-        p.expand("/tmp", &mut diags).unwrap();
-        assert_eq!(p, Path::Optional("/abs/path".into()));
+        let mut p = Path::Optional(e("/abs/path"));
+        p.expand(&e("/tmp"), &mut diags).unwrap();
+        assert_eq!(p, Path::Optional(e("/abs/path")));
         assert!(diags.is_empty());
     }
 
@@ -390,12 +398,12 @@ mod tests {
         std::fs::write(&target, b"x").unwrap();
         std::os::unix::fs::symlink(&target, base.join("link")).unwrap();
 
-        let mut p = Path::Required("link".into());
+        let mut p = Path::Required(e("link"));
         let mut diags = DiagnosticList::default();
-        p.expand(&path_to_config_string(&base), &mut diags).unwrap();
+        p.expand(&EncodedOs::from_path(&base), &mut diags).unwrap();
         assert_eq!(diags.items().len(), 0);
         // The canonical (non-UTF-8) target is preserved byte for byte.
-        assert_eq!(config_str_to_path(p.path()), target);
-        assert!(std::fs::metadata(config_str_to_path(p.path())).is_ok());
+        assert_eq!(p.path().to_path(), target);
+        assert!(std::fs::metadata(p.path().to_path()).is_ok());
     }
 }

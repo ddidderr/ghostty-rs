@@ -101,12 +101,6 @@ pub fn alloc_tmp_dir_os() -> Option<std::path::PathBuf> {
     Some("/tmp".into())
 }
 
-/// Return the recommended path for temporary files. Non-UTF-8 bytes are
-/// carried via [`crate::osbytes`]; see [`alloc_tmp_dir_os`].
-pub fn alloc_tmp_dir() -> Option<String> {
-    alloc_tmp_dir_os().map(|p| crate::osbytes::os_to_config_string(p.as_os_str()))
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
@@ -115,13 +109,13 @@ mod tests {
     #[test]
     fn tmp_dir_env_precedence() {
         temp_env::with_vars([("TMPDIR", Some("/a")), ("TMP", Some("/b"))], || {
-            assert_eq!(alloc_tmp_dir().as_deref(), Some("/a"));
+            assert_eq!(alloc_tmp_dir_os(), Some("/a".into()));
         });
         temp_env::with_vars([("TMPDIR", None), ("TMP", Some("/b"))], || {
-            assert_eq!(alloc_tmp_dir().as_deref(), Some("/b"));
+            assert_eq!(alloc_tmp_dir_os(), Some("/b".into()));
         });
         temp_env::with_vars([("TMPDIR", None::<&str>), ("TMP", None)], || {
-            assert_eq!(alloc_tmp_dir().as_deref(), Some("/tmp"));
+            assert_eq!(alloc_tmp_dir_os(), Some("/tmp".into()));
         });
     }
 

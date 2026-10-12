@@ -11,14 +11,14 @@ use ghostty_bench::{
 };
 
 fn run() -> Result<(), String> {
-    let argv: Vec<String> = std::env::args().skip(1).collect();
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     let mut action = None;
     for a in &argv {
-        if let Some(name) = a.strip_prefix('+') {
+        if let Some(name) = ghostty_bench::args::action_name(a) {
             if action.is_some() {
                 return Err("multiple actions specified".into());
             }
-            action = Some(name.to_owned());
+            action = Some(name);
         }
     }
     let action = action.ok_or("no action specified; available: ascii, osc, sgr, utf8")?;

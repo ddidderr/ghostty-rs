@@ -69,10 +69,11 @@ impl DeferredFace {
             .expect("deferred face has no fontconfig data");
 
         // Filename and index for our face so we can load it
-        let filename = fc.pattern.get_string(fc::Property::File, 0)?;
+        // File names are raw OS bytes, not text.
+        let filename = fc.pattern.get_os_string(fc::Property::File, 0)?;
         let face_index = fc.pattern.get_integer(fc::Property::Index, 0)?;
 
-        let mut face = Face::init_file(lib, &filename, face_index, opts)?;
+        let mut face = Face::init_file(lib, std::path::Path::new(&filename), face_index, opts)?;
         face.set_variations(&fc.variations, opts)?;
         Ok(face)
     }
