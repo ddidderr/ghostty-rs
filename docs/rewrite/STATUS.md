@@ -78,7 +78,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV8 | final Codex verification (RV7 gaps, Z9/Z10) + sweep + verdict | codex astra | ✅ | 9 edge-case groups; root cause = escape-encoded config strings |
 | BX | structural: byte-faithful config value parsing (fields parse &[u8] like Zig) + RV8 findings | codex astra | ✅ | 3428 tests; CLI outputs identical to Ghostty 1.3.1 |
 | RV9 | final Codex verification + full-scope sweep | codex astra | ✅ | RV8 9/9 resolved; 6 differential gaps (NUL panic, numeric grammar, ...) → Z11 |
-| Z11 | RV9 gaps: NUL font names, Zig parseInt/parseFloat, C NUL, ASCII trim, ArgIteratorGeneral, diagnostics | sonnet | 🟨 | |
+| Z11 | RV9 gaps: NUL font names, Zig parseInt/parseFloat, C NUL, ASCII trim, ArgIteratorGeneral, diagnostics | sonnet | ✅ | 3456 tests; 202-field differential vs installed Ghostty: 0 mismatches |
+| Z12 | Zig numeric parsing in VT/terminal/protocol parsers | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -113,3 +114,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: RV8: gap count stalled (escape design). Codex BX structural refactor launched.
 - 2026-10-12: BX committed (3428 tests, all cross-checks green, oracle diffs clean). RV9 running.
 - 2026-10-12: RV9: all RV8 rows resolved; 6 new differential gaps → Z11.
+- 2026-10-12: Z11 committed (3456 tests). Z12 launched; RV10 after.
