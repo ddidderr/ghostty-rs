@@ -11,52 +11,23 @@ use std::{
 };
 
 use ghostty_config::types_b::Duration;
+pub use ghostty_crash::Report;
 
 use crate::error::Error;
 pub use crate::options::NoOptions as Options;
 
-/// A crash report file (Zig: `crash.Report`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Report {
-    pub name: String,
-    /// Modification time in nanoseconds since the unix epoch.
-    pub mtime: i128,
-}
-
 /// The default crash directory (Zig: `crash.defaultDir`):
 /// `$XDG_STATE_HOME/ghostty/crash`.
 pub fn default_dir() -> Result<PathBuf, Error> {
-    let dir = ghostty_os::xdg::state(&ghostty_os::xdg::Options {
-        subdir: Some("ghostty/crash"),
-        home: None,
-    })
-    .map_err(|e| Error::Other(e.to_string()))?;
-    Ok(PathBuf::from(dir))
+    let dir = ghostty_crash::default_dir().map_err(|e| Error::Other(e.to_string()))?;
+    Ok(dir.path)
 }
 
-/// List the crash reports (regular files) in `dir`. A directory that cannot
-/// be opened yields no reports.
+/// List the crash reports (regular files) in `dir`, i.e. the
+/// `.ghosttycrash` envelopes written by `ghostty-crash`. A directory that
+/// cannot be opened yields no reports.
 pub fn list_reports(dir: &std::path::Path) -> Result<Vec<Report>, Error> {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return Ok(vec![]);
-    };
-    let mut reports = vec![];
-    for entry in rd {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let mtime = entry.metadata()?.modified()?;
-        let mtime = match mtime.duration_since(UNIX_EPOCH) {
-            Ok(d) => i128::try_from(d.as_nanos()).unwrap_or(i128::MAX),
-            Err(e) => -i128::try_from(e.duration().as_nanos()).unwrap_or(i128::MAX),
-        };
-        reports.push(Report {
-            name: entry.file_name().to_string_lossy().into_owned(),
-            mtime,
-        });
-    }
-    Ok(reports)
+    Ok(ghostty_crash::dir::list_reports(dir)?)
 }
 
 /// The `crash-report` command is used to inspect and send crash reports.
