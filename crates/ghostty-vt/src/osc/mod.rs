@@ -23,7 +23,7 @@ pub use parsers::{color, semantic_prompt};
 use crate::kitty::color as kitty_color;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum Command {
+pub enum Command<'a> {
     /// This generally shouldn't ever be set except as an initial zero value.
     /// Ignore it.
     Invalid,
@@ -36,23 +36,23 @@ pub enum Command {
     /// If title mode 2 is set or the terminal is setup for unconditional
     /// utf-8 titles text is interpreted as utf-8. Else text is interpreted
     /// as latin1.
-    ChangeWindowTitle(Vec<u8>),
+    ChangeWindowTitle(Bytes<'a>),
 
     /// Set the icon of the terminal window. The name of the icon is not
     /// well defined, so this is currently ignored by Ghostty at the time
     /// of writing this. We just parse it so that we don't get parse errors
     /// in the log.
-    ChangeWindowIcon(Vec<u8>),
+    ChangeWindowIcon(Bytes<'a>),
 
     /// Semantic prompt command: https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
-    SemanticPrompt(SemanticPrompt),
+    SemanticPrompt(SemanticPrompt<'a>),
 
     /// Set or get clipboard contents. If data is null, then the current
     /// clipboard contents are sent to the pty. If data is set, this
     /// contents is set on the clipboard.
     ClipboardContents {
         kind: u8,
-        data: Vec<u8>,
+        data: Bytes<'a>,
     },
 
     /// OSC 7. Reports the current working directory of the shell. This is
@@ -62,7 +62,7 @@ pub enum Command {
     ReportPwd {
         /// The reported pwd value. This is not checked for validity. It should
         /// be a file URL but it is up to the caller to utilize this value.
-        value: Vec<u8>,
+        value: Bytes<'a>,
     },
 
     /// OSC 22. Set the mouse shape. There doesn't seem to be a standard
@@ -70,7 +70,7 @@ pub enum Command {
     /// are moving towards using the W3C CSS cursor names. For OSC parsing,
     /// we just parse whatever string is given.
     MouseShape {
-        value: Vec<u8>,
+        value: Bytes<'a>,
     },
 
     /// OSC color operations to set, reset, or report color settings. Some OSCs
@@ -92,14 +92,14 @@ pub enum Command {
 
     /// Show a desktop notification (OSC 9 or OSC 777)
     ShowDesktopNotification {
-        title: Vec<u8>,
-        body: Vec<u8>,
+        title: Bytes<'a>,
+        body: Bytes<'a>,
     },
 
     /// Start a hyperlink (OSC 8)
     HyperlinkStart {
-        id: Option<Vec<u8>>,
-        uri: Vec<u8>,
+        id: Option<Bytes<'a>>,
+        uri: Bytes<'a>,
     },
 
     /// End a hyperlink (OSC 8)
@@ -111,10 +111,10 @@ pub enum Command {
     },
 
     /// ConEmu show GUI message box (OSC 9;2)
-    ConemuShowMessageBox(Vec<u8>),
+    ConemuShowMessageBox(Bytes<'a>),
 
     /// ConEmu change tab title (OSC 9;3)
-    ConemuChangeTabTitle(ConemuChangeTabTitle),
+    ConemuChangeTabTitle(ConemuChangeTabTitle<'a>),
 
     /// ConEmu progress report (OSC 9;4)
     ConemuProgressReport(ProgressReport),
@@ -123,13 +123,13 @@ pub enum Command {
     ConemuWaitInput,
 
     /// ConEmu GUI macro (OSC 9;6)
-    ConemuGuimacro(Vec<u8>),
+    ConemuGuimacro(Bytes<'a>),
 
     /// ConEmu run process (OSC 9;7)
-    ConemuRunProcess(Vec<u8>),
+    ConemuRunProcess(Bytes<'a>),
 
     /// ConEmu output environment variable (OSC 9;8)
-    ConemuOutputEnvironmentVariable(Vec<u8>),
+    ConemuOutputEnvironmentVariable(Bytes<'a>),
 
     /// ConEmu XTerm keyboard and output emulation (OSC 9;10)
     /// https://conemu.github.io/en/TerminalModes.html
@@ -145,26 +145,32 @@ pub enum Command {
     },
 
     /// ConEmu comment (OSC 9;11)
-    ConemuComment(Vec<u8>),
+    ConemuComment(Bytes<'a>),
 
     /// Kitty text sizing protocol (OSC 66)
-    KittyTextSizing(parsers::kitty_text_sizing::OSC),
+    KittyTextSizing(parsers::kitty_text_sizing::OSC<'a>),
 
-    KittyClipboardProtocol(KittyClipboardProtocol),
+    KittyClipboardProtocol(KittyClipboardProtocol<'a>),
 
     /// OSC 3008. Hierarchical context signalling (UAPI spec).
     /// https://uapi-group.org/specifications/specs/osc_context/
-    ContextSignal(parsers::context_signal::Command),
+    ContextSignal(parsers::context_signal::Command<'a>),
 }
 
-pub type SemanticPrompt = parsers::semantic_prompt::Command;
-pub type KittyClipboardProtocol = parsers::kitty_clipboard_protocol::OSC;
+/// Payload bytes of a [`Command`]: borrowed from the parser's payload storage
+/// (Zig: slices into the parser's buffer), so producing a command does not
+/// allocate. Use [`Command::into_owned`] to keep one past the next parser
+/// operation.
+pub type Bytes<'a> = std::borrow::Cow<'a, [u8]>;
+
+pub type SemanticPrompt<'a> = parsers::semantic_prompt::Command<'a>;
+pub type KittyClipboardProtocol<'a> = parsers::kitty_clipboard_protocol::OSC<'a>;
 
 /// Payload of `Command::ConemuChangeTabTitle`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConemuChangeTabTitle {
+pub enum ConemuChangeTabTitle<'a> {
     Reset,
-    Value(Vec<u8>),
+    Value(Bytes<'a>),
 }
 
 /// The discriminant of a [`Command`] (Zig `Command.Key`). Order matches Zig.
@@ -197,7 +203,67 @@ pub enum Key {
     ContextSignal,
 }
 
-impl Command {
+fn own(b: Bytes<'_>) -> Bytes<'static> {
+    Bytes::Owned(b.into_owned())
+}
+
+impl Command<'_> {
+    /// Detach the command from the parser's storage (copies the payloads),
+    /// so it can outlive the next parser operation.
+    pub fn into_owned(self) -> Command<'static> {
+        match self {
+            Command::Invalid => Command::Invalid,
+            Command::ChangeWindowTitle(v) => Command::ChangeWindowTitle(own(v)),
+            Command::ChangeWindowIcon(v) => Command::ChangeWindowIcon(own(v)),
+            Command::SemanticPrompt(v) => Command::SemanticPrompt(v.into_owned()),
+            Command::ClipboardContents { kind, data } => Command::ClipboardContents {
+                kind,
+                data: own(data),
+            },
+            Command::ReportPwd { value } => Command::ReportPwd { value: own(value) },
+            Command::MouseShape { value } => Command::MouseShape { value: own(value) },
+            Command::ColorOperation {
+                op,
+                requests,
+                terminator,
+            } => Command::ColorOperation {
+                op,
+                requests,
+                terminator,
+            },
+            Command::KittyColorProtocol(v) => Command::KittyColorProtocol(v),
+            Command::ShowDesktopNotification { title, body } => Command::ShowDesktopNotification {
+                title: own(title),
+                body: own(body),
+            },
+            Command::HyperlinkStart { id, uri } => Command::HyperlinkStart {
+                id: id.map(own),
+                uri: own(uri),
+            },
+            Command::HyperlinkEnd => Command::HyperlinkEnd,
+            Command::ConemuSleep { duration_ms } => Command::ConemuSleep { duration_ms },
+            Command::ConemuShowMessageBox(v) => Command::ConemuShowMessageBox(own(v)),
+            Command::ConemuChangeTabTitle(v) => Command::ConemuChangeTabTitle(match v {
+                ConemuChangeTabTitle::Reset => ConemuChangeTabTitle::Reset,
+                ConemuChangeTabTitle::Value(b) => ConemuChangeTabTitle::Value(own(b)),
+            }),
+            Command::ConemuProgressReport(v) => Command::ConemuProgressReport(v),
+            Command::ConemuWaitInput => Command::ConemuWaitInput,
+            Command::ConemuGuimacro(v) => Command::ConemuGuimacro(own(v)),
+            Command::ConemuRunProcess(v) => Command::ConemuRunProcess(own(v)),
+            Command::ConemuOutputEnvironmentVariable(v) => {
+                Command::ConemuOutputEnvironmentVariable(own(v))
+            }
+            Command::ConemuXtermEmulation { keyboard, output } => {
+                Command::ConemuXtermEmulation { keyboard, output }
+            }
+            Command::ConemuComment(v) => Command::ConemuComment(own(v)),
+            Command::KittyTextSizing(v) => Command::KittyTextSizing(v.into_owned()),
+            Command::KittyClipboardProtocol(v) => Command::KittyClipboardProtocol(v.into_owned()),
+            Command::ContextSignal(v) => Command::ContextSignal(v.into_owned()),
+        }
+    }
+
     pub fn key(&self) -> Key {
         match self {
             Command::Invalid => Key::Invalid,
@@ -374,8 +440,14 @@ pub trait ByteStorage: std::fmt::Debug + Send {
     /// Drop the contents and release any memory acquired by growth (Zig
     /// `reset` deinits the allocating writer).
     fn reset(&mut self);
-    /// For `Parser: Clone`.
-    fn clone_box(&self) -> Box<dyn ByteStorage>;
+    /// Number of accumulated bytes.
+    fn len(&self) -> usize {
+        self.bytes().len()
+    }
+    /// Whether nothing has been accumulated.
+    fn is_empty(&self) -> bool {
+        self.bytes().is_empty()
+    }
 }
 
 impl ByteStorage for Vec<u8> {
@@ -393,74 +465,16 @@ impl ByteStorage for Vec<u8> {
     fn reset(&mut self) {
         self.clear();
     }
-    fn clone_box(&self) -> Box<dyn ByteStorage> {
-        Box::new(self.clone())
-    }
 }
 
-impl Clone for Box<dyn ByteStorage> {
-    fn clone(&self) -> Self {
-        self.clone_box()
-    }
-}
+/// Maximum size of a "normal" OSC.
+pub const MAX_BUF: usize = 2048;
 
-/// Payload buffer: a plain `Vec` (fast path) or custom allocator-backed
-/// storage.
+/// The OSC parser. `S` is the payload storage: a `Vec<u8>` on the global
+/// allocator by default, or caller-allocated storage (C API), in which case
+/// the parser holds it inline (no extra allocation).
 #[derive(Debug, Clone)]
-enum Buffer {
-    Vec(Vec<u8>),
-    Custom(Box<dyn ByteStorage>),
-}
-
-impl Buffer {
-    #[inline]
-    fn bytes(&self) -> &[u8] {
-        match self {
-            Buffer::Vec(v) => v,
-            Buffer::Custom(c) => c.bytes(),
-        }
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.bytes().len()
-    }
-
-    #[inline]
-    fn try_extend(&mut self, b: &[u8]) -> Result<(), StorageFull> {
-        match self {
-            Buffer::Vec(v) => {
-                v.extend_from_slice(b);
-                Ok(())
-            }
-            Buffer::Custom(c) => c.try_extend(b),
-        }
-    }
-
-    fn try_reserve(&mut self, n: usize) -> Result<(), StorageFull> {
-        match self {
-            Buffer::Vec(v) => {
-                v.reserve(n);
-                Ok(())
-            }
-            Buffer::Custom(c) => c.try_reserve(n),
-        }
-    }
-
-    fn reset(&mut self) {
-        match self {
-            Buffer::Vec(v) => v.clear(),
-            Buffer::Custom(c) => c.reset(),
-        }
-    }
-
-    fn to_vec(&self) -> Vec<u8> {
-        self.bytes().to_vec()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Parser {
+pub struct Parser<S: ByteStorage = Vec<u8>> {
     /// Whether an allocator is available, i.e. whether data longer than
     /// MAX_BUF may be accepted for some commands (e.g. OSC 52), and whether
     /// commands that require an allocator are processed. (Zig:
@@ -471,7 +485,7 @@ pub struct Parser {
     pub state: State,
 
     /// Buffer for temporary storage of OSC data
-    buffer: Buffer,
+    buffer: S,
     writer: Writer,
 }
 
@@ -482,25 +496,27 @@ impl Default for Parser {
 }
 
 impl Parser {
-    /// Maximum size of a "normal" OSC.
-    pub const MAX_BUF: usize = 2048;
-
     pub fn init(alloc: bool) -> Parser {
         Parser {
             alloc,
             state: State::Start,
-            buffer: Buffer::Vec(Vec::new()),
+            buffer: Vec::new(),
             writer: Writer::None,
         }
     }
+}
+
+impl<S: ByteStorage> Parser<S> {
+    /// Maximum size of a "normal" OSC.
+    pub const MAX_BUF: usize = MAX_BUF;
 
     /// Like [`Parser::init`] with an allocator-backed payload buffer
     /// (`alloc` is true: an allocator is available).
-    pub fn with_storage(storage: Box<dyn ByteStorage>) -> Parser {
+    pub fn with_storage(storage: S) -> Parser<S> {
         Parser {
             alloc: true,
             state: State::Start,
-            buffer: Buffer::Custom(storage),
+            buffer: storage,
             writer: Writer::None,
         }
     }
@@ -549,11 +565,11 @@ impl Parser {
     }
 
     /// Helper for the per-command parsers. Mirrors the Zig prologue
-    /// `writer orelse invalid; writer.writeByte(0) catch invalid;
-    /// writer.buffered()`: returns a copy of the accumulated data (without
-    /// the NUL terminator) or `None` (and marks the parser invalid) if no
-    /// data was being accumulated or there was no room for the terminator.
-    pub fn data(&mut self) -> Option<Vec<u8>> {
+    /// `writer orelse invalid; writer.writeByte(0) catch invalid`: returns
+    /// `None` (and marks the parser invalid) if no data was being accumulated
+    /// or there was no room for the NUL terminator. On success the payload
+    /// is available, borrowed and without copying, from [`Parser::payload`].
+    pub fn data(&mut self) -> Option<()> {
         if self.writer == Writer::None {
             self.state = State::Invalid;
             return None;
@@ -563,29 +579,33 @@ impl Parser {
             self.state = State::Invalid;
             return None;
         }
-        Some(self.buffer.to_vec())
+        Some(())
     }
 
-    /// Zig `writer.writeByte(0)` capacity check: when the fixed buffer is
-    /// full there is no room for the NUL terminator, so the parser becomes
-    /// invalid and this returns false.
-    pub fn reserve_nul(&mut self) -> bool {
-        if self.writer == Writer::Fixed && self.buffer.len() >= Self::MAX_BUF {
-            self.state = State::Invalid;
-            return false;
-        }
-        true
+    /// Whether `writer.writeByte(0)` would succeed: when the fixed buffer is
+    /// full there is no room for the NUL terminator. Pure so that it can be
+    /// asked while the payload is borrowed; the caller returns `None`, which
+    /// invalidates the OSC.
+    pub fn reserve_nul(&self) -> bool {
+        !(self.writer == Writer::Fixed && self.buffer.len() >= Self::MAX_BUF)
     }
 
     /// Like [`Parser::data`] but without reserving room for the NUL
     /// terminator (for parsers that, like Zig's color parsers, read
     /// `writer.buffered()` directly).
-    pub fn buffered(&mut self) -> Option<Vec<u8>> {
+    pub fn buffered(&mut self) -> Option<()> {
         if self.writer == Writer::None {
             self.state = State::Invalid;
             return None;
         }
-        Some(self.buffer.to_vec())
+        Some(())
+    }
+
+    /// The accumulated OSC payload (Zig `writer.buffered()`), borrowed from
+    /// the parser's storage. Commands built from it borrow it too, which is
+    /// why producing a command never allocates.
+    pub fn payload(&self) -> &[u8] {
+        self.buffer.bytes()
     }
 
     /// Whether any payload writer has been set up (Zig `parser.writer != null`).
@@ -871,7 +891,7 @@ impl Parser {
     /// is None, then no valid command was found. The optional terminator_ch
     /// is the final character in the OSC sequence. This is used to determine
     /// the response terminator.
-    pub fn end(&mut self, terminator_ch: Option<u8>) -> Option<Command> {
+    pub fn end(&mut self, terminator_ch: Option<u8>) -> Option<Command<'_>> {
         #[allow(clippy::enum_glob_use)]
         use State::*;
         match self.state {
@@ -953,17 +973,14 @@ mod next_slice_tests {
         fn reset(&mut self) {
             self.data.clear();
         }
-        fn clone_box(&self) -> Box<dyn ByteStorage> {
-            Box::new(self.clone())
-        }
     }
 
     #[test]
     fn storage_failure_invalidates_osc() {
-        let mut p = Parser::with_storage(Box::new(Limited {
+        let mut p = Parser::with_storage(Limited {
             data: Vec::new(),
             cap: 8,
-        }));
+        });
         for b in b"0;abcdefghijkl" {
             p.next(*b);
         }
@@ -976,7 +993,7 @@ mod next_slice_tests {
             p.next(*b);
         }
         let cmd = p.end(Some(0x07)).expect("command");
-        assert!(matches!(cmd, Command::ChangeWindowTitle(t) if t == b"abc"));
+        assert!(matches!(cmd, Command::ChangeWindowTitle(t) if &t[..] == b"abc"));
     }
 
     #[test]

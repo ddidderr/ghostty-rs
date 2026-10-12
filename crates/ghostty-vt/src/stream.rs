@@ -153,7 +153,7 @@ define_actions! {
     SetAttribute(sgr::Attribute<'a>),
     KittyColorReport(&'a kitty::color::OSC),
     ColorOperation(ColorOperation<'a>),
-    SemanticPrompt(&'a osc::SemanticPrompt),
+    SemanticPrompt(&'a osc::SemanticPrompt<'a>),
 }
 
 /// Field types of [`Action`] payloads.
@@ -253,7 +253,7 @@ pub struct ColorOperation<'a> {
 }
 
 /// Alias matching Zig `Action.SemanticPrompt`.
-pub type SemanticPrompt = osc::SemanticPrompt;
+pub type SemanticPrompt<'a> = osc::SemanticPrompt<'a>;
 
 /// The receiver of [`Action`]s (Zig: a type with a
 /// `vt(comptime action, value) !void` method).

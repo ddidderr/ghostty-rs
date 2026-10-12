@@ -1,11 +1,16 @@
 //! OSC 22 (ZIG/src/terminal/osc/parsers/mouse_shape.zig).
-use crate::osc::{Command, Parser, State};
+use crate::osc::{ByteStorage, Command, Parser, State};
 
 /// Parse OSC 22
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     debug_assert_eq!(parser.state, State::S22);
-    let data = parser.data()?;
-    Some(Command::MouseShape { value: data })
+    parser.data()?;
+    Some(Command::MouseShape {
+        value: parser.payload().into(),
+    })
 }
 
 #[cfg(test)]
@@ -22,7 +27,7 @@ mod tests {
         assert_eq!(
             p.end(None).unwrap(),
             Command::MouseShape {
-                value: b"pointer".to_vec()
+                value: b"pointer".to_vec().into()
             }
         );
     }

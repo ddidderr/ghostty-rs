@@ -6,7 +6,7 @@
 //! Each context has an identifier and metadata fields. Contexts are hierarchical
 //! and form a stack.
 
-use crate::osc::{Command as OscCommand, Parser, State};
+use crate::osc::{ByteStorage, Command as OscCommand, Parser, State};
 
 /// Maximum length of a context identifier (per spec).
 const MAX_CONTEXT_ID_LEN: usize = 64;
@@ -21,14 +21,14 @@ pub enum Action {
 
 /// A single OSC 3008 context signal command.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Command {
+pub struct Command<'a> {
     pub action: Action,
     /// The context identifier. Must be 1-64 characters in the 32..126 byte range.
-    pub id: Vec<u8>,
+    pub id: crate::osc::Bytes<'a>,
     /// Raw unparsed metadata fields after the context ID.
     /// Fields are semicolon-separated key=value pairs.
     /// Parsed lazily via `read_option`.
-    pub metadata: Vec<u8>,
+    pub metadata: crate::osc::Bytes<'a>,
 }
 
 /// Value of a decoded metadata field (Zig `Field.Type()`).
@@ -40,7 +40,15 @@ pub enum FieldValue<'a> {
     Str(&'a [u8]),
 }
 
-impl Command {
+impl Command<'_> {
+    pub fn into_owned(self) -> Command<'static> {
+        Command {
+            action: self.action,
+            id: super::super::own(self.id),
+            metadata: super::super::own(self.metadata),
+        }
+    }
+
     /// Read a metadata field value from the raw fields string.
     /// Returns None if the field is not present or malformed.
     pub fn read_option(&self, option: Field) -> Option<FieldValue<'_>> {
@@ -234,71 +242,83 @@ impl Field {
 /// Expected data format (after "3008;" prefix has been consumed by the state machine):
 ///   start=<id>[;<field>=<value>]*
 ///   end=<id>[;<field>=<value>]*
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<OscCommand> {
-    let data = parser.buffered()?;
-    if data.is_empty() {
-        parser.state = State::Invalid;
-        return None;
-    }
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<OscCommand<'_>> {
+    parser.buffered()?;
 
-    // Determine the action (start= or end=)
-    let (action, prefix_len) = if data.starts_with(b"start=") {
-        (Action::Start, b"start=".len())
-    } else if data.starts_with(b"end=") {
-        (Action::End, b"end=".len())
-    } else {
-        log::warn!(
-            "OSC 3008: expected 'start=' or 'end=' prefix, got: {}",
-            String::from_utf8_lossy(&data[..data.len().min(10)])
-        );
-        parser.state = State::Invalid;
-        return None;
-    };
-
-    // Skip past the "start=" or "end=" prefix
-    let rest = &data[prefix_len..];
-
-    if rest.is_empty() {
-        log::warn!("OSC 3008: missing context ID");
-        parser.state = State::Invalid;
-        return None;
-    }
-
-    // Extract the context ID (up to the first semicolon or end of data)
-    let id_end = rest.iter().position(|&c| c == b';').unwrap_or(rest.len());
-    let id = &rest[..id_end];
-
-    // Validate context ID length (1-64 chars per spec)
-    if id.is_empty() || id.len() > MAX_CONTEXT_ID_LEN {
-        log::warn!(
-            "OSC 3008: context ID length {} out of range (1-{})",
-            id.len(),
-            MAX_CONTEXT_ID_LEN
-        );
-        parser.state = State::Invalid;
-        return None;
-    }
-
-    // Validate context ID characters (32..126 byte range per spec)
-    for &c in id {
-        if !(0x20..=0x7e).contains(&c) {
-            log::warn!("OSC 3008: invalid character 0x{c:02x} in context ID");
+    // Validate with a short-lived borrow; the command borrows the payload
+    // again below (so marking the parser invalid does not overlap with the
+    // returned borrow).
+    let (action, id_range, meta_start) = {
+        let data = parser.payload();
+        if data.is_empty() {
             parser.state = State::Invalid;
             return None;
         }
-    }
 
-    // Extract raw metadata fields (everything after the ID)
-    let metadata = if id_end < rest.len() {
-        rest[id_end + 1..].to_vec()
-    } else {
-        Vec::new()
+        // Determine the action (start= or end=)
+        let (action, prefix_len) = if data.starts_with(b"start=") {
+            (Action::Start, b"start=".len())
+        } else if data.starts_with(b"end=") {
+            (Action::End, b"end=".len())
+        } else {
+            log::warn!(
+                "OSC 3008: expected 'start=' or 'end=' prefix, got: {}",
+                String::from_utf8_lossy(&data[..data.len().min(10)])
+            );
+            parser.state = State::Invalid;
+            return None;
+        };
+
+        // Skip past the "start=" or "end=" prefix
+        let rest = &data[prefix_len..];
+
+        if rest.is_empty() {
+            log::warn!("OSC 3008: missing context ID");
+            parser.state = State::Invalid;
+            return None;
+        }
+
+        // Extract the context ID (up to the first semicolon or end of data)
+        let id_end = rest.iter().position(|&c| c == b';').unwrap_or(rest.len());
+        let id = &rest[..id_end];
+
+        // Validate context ID length (1-64 chars per spec)
+        if id.is_empty() || id.len() > MAX_CONTEXT_ID_LEN {
+            log::warn!(
+                "OSC 3008: context ID length {} out of range (1-{})",
+                id.len(),
+                MAX_CONTEXT_ID_LEN
+            );
+            parser.state = State::Invalid;
+            return None;
+        }
+
+        // Validate context ID characters (32..126 byte range per spec)
+        for &c in id {
+            if !(0x20..=0x7e).contains(&c) {
+                log::warn!("OSC 3008: invalid character 0x{c:02x} in context ID");
+                parser.state = State::Invalid;
+                return None;
+            }
+        }
+
+        // Metadata fields are everything after the ID.
+        let meta_start = if id_end < rest.len() {
+            prefix_len + id_end + 1
+        } else {
+            data.len()
+        };
+        (action, prefix_len..prefix_len + id_end, meta_start)
     };
 
+    let data = parser.payload();
     Some(OscCommand::ContextSignal(Command {
         action,
-        id: id.to_vec(),
-        metadata,
+        id: data[id_range].into(),
+        metadata: data[meta_start..].into(),
     }))
 }
 
@@ -307,15 +327,15 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<OscComma
 mod tests {
     use super::*;
 
-    fn run(input: &str) -> Option<OscCommand> {
+    fn run(input: &str) -> Option<OscCommand<'static>> {
         let mut p = Parser::init(false);
         for &ch in input.as_bytes() {
             p.next(ch);
         }
-        p.end(None)
+        p.end(None).map(OscCommand::into_owned)
     }
 
-    fn cs(input: &str) -> Command {
+    fn cs(input: &str) -> Command<'static> {
         match run(input) {
             Some(OscCommand::ContextSignal(c)) => c,
             other => panic!("unexpected {other:?}"),

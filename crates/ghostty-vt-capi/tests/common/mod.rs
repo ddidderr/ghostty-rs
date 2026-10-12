@@ -29,6 +29,9 @@ fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
 }
 
+/// Major version of libghostty-vt (the soname suffix set by build.rs).
+pub const VT_MAJOR: u32 = 0;
+
 static INSTALLED: OnceLock<PathBuf> = OnceLock::new();
 
 /// Build the cdylib/staticlib for the host and install them as
@@ -60,6 +63,19 @@ fn install_native_lib_once() -> PathBuf {
             std::fs::copy(&src, &tmp).expect("install library");
             std::fs::rename(&tmp, &dst).expect("install library");
         }
+    }
+    // The cdylib's soname is versioned (`libghostty-vt.so.<major>`, see
+    // build.rs), so executables linked against it need that name at run time
+    // (otherwise the loader would fall back to an unrelated system copy).
+    let so = dir.join("libghostty-vt.so");
+    if so.exists() {
+        let versioned = dir.join(format!("libghostty-vt.so.{VT_MAJOR}"));
+        let tmp = dir.join(format!(
+            "libghostty-vt.so.{VT_MAJOR}.{}.tmp",
+            std::process::id()
+        ));
+        std::fs::copy(&so, &tmp).expect("install versioned library");
+        std::fs::rename(&tmp, &versioned).expect("install versioned library");
     }
     dir
 }

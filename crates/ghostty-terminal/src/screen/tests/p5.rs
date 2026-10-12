@@ -685,9 +685,31 @@ fn screen_set_attribute_splits_page_on_out_of_space_at_max_styles() {
     assert!(page_was_split);
 }
 
-// "selectionString map allocation failure cleanup" is skipped: it relies on
-// Zig tripwire allocation-failure injection (selectionString_tw), which has
-// no Rust counterpart.
+#[test]
+fn screen_selection_string_map_allocation_failure_cleanup() {
+    use crate::tripwire::ResetMode;
+
+    // If building the StringMap fails, the already-built string must be
+    // dropped and the error returned (Zig: errdefer free(map_string)).
+    let mut s = init(10, 5, 0);
+    s.test_write_string("hello").unwrap();
+    let sel = sel_active(&s, (0, 0), (4, 0), false);
+
+    selection_string_tw::error_always(
+        SelectionStringPoint::CopyMap,
+        SelectionStringError::OutOfMemory,
+    );
+    let result = s.try_selection_string_map(SelectionString { sel, trim: true });
+    assert!(matches!(result, Err(SelectionStringError::OutOfMemory)));
+    selection_string_tw::end(ResetMode::Reset).unwrap();
+
+    // And it works again once the tripwire is reset.
+    let map = s
+        .try_selection_string_map(SelectionString { sel, trim: true })
+        .unwrap();
+    assert_eq!(map.string, "hello");
+    assert_eq!(map.map.len(), 5);
+}
 
 fn setup_prompt(cols: u16, click: Click) -> Screen {
     let mut s = init(cols, 5, 0);

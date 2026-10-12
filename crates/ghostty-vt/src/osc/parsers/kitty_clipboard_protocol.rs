@@ -3,15 +3,15 @@
 //! https://rockorager.dev/misc/bracketed-paste-mime/
 //! (ZIG/src/terminal/osc/parsers/kitty_clipboard_protocol.zig)
 
-use crate::osc::{Command, Parser, State, Terminator};
+use crate::osc::{ByteStorage, Command, Parser, State, Terminator};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OSC {
+pub struct OSC<'a> {
     /// The raw metadata that was received. It can be parsed by using the
     /// `read_option` method (or the typed helpers).
-    pub metadata: Vec<u8>,
+    pub metadata: crate::osc::Bytes<'a>,
     /// The raw payload. It may be Base64 encoded, check the `e` option.
-    pub payload: Option<Vec<u8>>,
+    pub payload: Option<crate::osc::Bytes<'a>>,
     /// The terminator that was used in case we need to send a response.
     pub terminator: Terminator,
 }
@@ -25,7 +25,15 @@ pub enum OptionValue<'a> {
     Type(Operation),
 }
 
-impl OSC {
+impl OSC<'_> {
+    pub fn into_owned(self) -> OSC<'static> {
+        OSC {
+            metadata: super::super::own(self.metadata),
+            payload: self.payload.map(super::super::own),
+            terminator: self.terminator,
+        }
+    }
+
     /// Decode an option from the metadata.
     pub fn read_option(&self, key: Opt) -> Option<OptionValue<'_>> {
         key.read(&self.metadata)
@@ -283,14 +291,18 @@ fn parse_identifier(s: &[u8]) -> Option<&[u8]> {
     }
 }
 
-pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     debug_assert_eq!(parser.state, State::S5522);
 
-    let data = parser.buffered()?;
+    parser.buffered()?;
+    let data = parser.payload();
 
     let (metadata, payload) = match data.iter().position(|&c| c == b';') {
-        None => (data, None),
-        Some(start) => (data[..start].to_vec(), Some(data[start + 1..].to_vec())),
+        None => (data.into(), None),
+        Some(start) => (data[..start].into(), Some(data[start + 1..].into())),
     };
 
     Some(Command::KittyClipboardProtocol(OSC {
@@ -305,13 +317,13 @@ pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> 
 mod tests {
     use super::*;
 
-    fn run(input: &str) -> OSC {
+    fn run(input: &str) -> OSC<'static> {
         let mut p = Parser::init(true);
         for &ch in input.as_bytes() {
             p.next(ch);
         }
         match p.end(Some(0x1b)) {
-            Some(Command::KittyClipboardProtocol(o)) => o,
+            Some(Command::KittyClipboardProtocol(o)) => o.into_owned(),
             other => panic!("unexpected {other:?}"),
         }
     }
@@ -337,7 +349,7 @@ mod tests {
             assert_eq!(m.as_bytes(), &c.metadata[..]);
         }
         if let Some(p) = e.payload {
-            assert_eq!(p.map(|s| s.as_bytes().to_vec()), c.payload);
+            assert_eq!(p.map(str::as_bytes), c.payload.as_deref());
         }
         assert_eq!(e.id.map(str::as_bytes), c.id());
         assert_eq!(e.loc, c.loc());

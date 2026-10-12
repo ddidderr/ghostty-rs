@@ -1,6 +1,6 @@
 //! OSC 1337 (iTerm2) (ZIG/src/terminal/osc/parsers/iterm2.zig).
 
-use crate::osc::{Command, Parser, State};
+use crate::osc::{ByteStorage, Command, Parser, State};
 
 /// iTerm2 OSC 1337 keys. Lookup is ASCII case-insensitive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,13 +90,17 @@ fn lookup(s: &[u8]) -> Option<Key> {
 
 /// Parse OSC 1337
 /// https://iterm2.com/documentation-escape-codes.html
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     debug_assert_eq!(parser.state, State::S1337);
 
-    let data = parser.data()?;
+    parser.data()?;
+    let data = parser.payload();
 
     let (key_str, value): (&[u8], Option<&[u8]>) = match data.iter().position(|&b| b == b'=') {
-        None => (&data[..], None),
+        None => (data, None),
         Some(index) => (&data[..index], Some(&data[index + 1..])),
     };
 
@@ -138,7 +142,7 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
 
             Some(Command::ClipboardContents {
                 kind: b'c',
-                data: value.to_vec(),
+                data: value.into(),
             })
         }
 
@@ -148,7 +152,7 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
                 return None;
             }
             Some(Command::ReportPwd {
-                value: value.to_vec(),
+                value: value.into(),
             })
         }
 
@@ -164,12 +168,12 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
 mod tests {
     use super::*;
 
-    fn run(input: &str) -> Option<Command> {
+    fn run(input: &str) -> Option<Command<'static>> {
         let mut p = Parser::init(true);
         for ch in input.bytes() {
             p.next(ch);
         }
-        p.end(Some(0x1b))
+        p.end(Some(0x1b)).map(Command::into_owned)
     }
 
     #[test]
@@ -257,7 +261,7 @@ mod tests {
             run("1337;Copy=:YWJjMTIz"),
             Some(Command::ClipboardContents {
                 kind: b'c',
-                data: b"YWJjMTIz".to_vec()
+                data: b"YWJjMTIz".to_vec().into()
             })
         );
     }
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(
             run("1337;CurrentDir=abc123"),
             Some(Command::ReportPwd {
-                value: b"abc123".to_vec()
+                value: b"abc123".to_vec().into()
             })
         );
     }

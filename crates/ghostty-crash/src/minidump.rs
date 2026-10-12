@@ -92,7 +92,7 @@ pub(crate) unsafe fn crash_context(
         unsafe {
             std::ptr::copy_nonoverlapping(uc.cast::<ucontext_t>(), &raw mut cc.context, 1);
         }
-        #[cfg(not(target_arch = "arm"))]
+        #[cfg(any(target_arch = "x86_64", target_arch = "x86"))]
         {
             let fp = cc.context.uc_mcontext.fpregs;
             if !fp.is_null() {
@@ -101,8 +101,59 @@ pub(crate) unsafe fn crash_context(
                 unsafe { std::ptr::copy_nonoverlapping(fp, &raw mut cc.float_state, 1) };
             }
         }
+        // AArch64 has no `fpregs` pointer: the FP/SIMD state is the
+        // `fpsimd_context` record in the chain of context extension records
+        // stored in `mcontext_t::__reserved`.
+        #[cfg(target_arch = "aarch64")]
+        {
+            // SAFETY: `__reserved` is plain initialized memory inside `cc`.
+            let reserved: &[u8] = unsafe {
+                std::slice::from_raw_parts(
+                    (&raw const cc.context.uc_mcontext.__reserved).cast::<u8>(),
+                    size_of_val(&cc.context.uc_mcontext.__reserved),
+                )
+            };
+            if let Some(off) = fpsimd_offset(reserved)
+                && off + size_of::<minidump_writer::crash_context::fpregset_t>() <= reserved.len()
+            {
+                // SAFETY: bounds checked above; both sides are plain old
+                // data and the destination is our static (unaligned source).
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        reserved.as_ptr().add(off),
+                        (&raw mut cc.float_state).cast::<u8>(),
+                        size_of::<minidump_writer::crash_context::fpregset_t>(),
+                    );
+                }
+            }
+        }
     }
     cc
+}
+
+/// Magic of the AArch64 `fpsimd_context` record (`FPSIMD_MAGIC`).
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+const FPSIMD_MAGIC: u32 = 0x4650_8001;
+
+/// Walk the AArch64 context extension records (`struct _aarch64_ctx`: u32
+/// magic, u32 size, native endian) in `mcontext_t::__reserved` and return the
+/// byte offset of the `fpsimd_context` record, if present. The chain ends at
+/// a zero magic. Pure, so it is testable on every architecture.
+#[cfg_attr(not(target_arch = "aarch64"), allow(dead_code))]
+fn fpsimd_offset(reserved: &[u8]) -> Option<usize> {
+    let mut off = 0usize;
+    while off + 8 <= reserved.len() {
+        let magic = u32::from_ne_bytes(reserved[off..off + 4].try_into().ok()?);
+        let size = u32::from_ne_bytes(reserved[off + 4..off + 8].try_into().ok()?) as usize;
+        if magic == FPSIMD_MAGIC {
+            return Some(off);
+        }
+        if magic == 0 || size < 8 {
+            return None;
+        }
+        off += size;
+    }
+    None
 }
 
 /// Fork the dumping child and wait for it. Returns true if the envelope with
@@ -323,4 +374,39 @@ fn write_envelope(cap: &Capture<'_>, dump: &[u8]) -> bool {
         unsafe { libc::unlink(cap.path.as_ptr().cast()) };
     }
     ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FPSIMD_MAGIC, fpsimd_offset};
+
+    fn record(magic: u32, size: u32, out: &mut Vec<u8>) {
+        out.extend_from_slice(&magic.to_ne_bytes());
+        out.extend_from_slice(&size.to_ne_bytes());
+        out.resize(out.len() + size as usize - 8, 0);
+    }
+
+    #[test]
+    fn finds_fpsimd_record_in_extension_chain() {
+        let mut buf = Vec::new();
+        // An unrelated record (e.g. esr_context) first, then fpsimd.
+        record(0x4553_5201, 16, &mut buf);
+        let at = buf.len();
+        record(FPSIMD_MAGIC, 528, &mut buf);
+        record(0, 8, &mut buf);
+        assert_eq!(fpsimd_offset(&buf), Some(at));
+    }
+
+    #[test]
+    fn missing_or_corrupt_chain_yields_none() {
+        let mut buf = Vec::new();
+        record(0, 8, &mut buf);
+        assert_eq!(fpsimd_offset(&buf), None);
+        assert_eq!(fpsimd_offset(&[]), None);
+        // A record with a bogus size must not loop forever.
+        let mut bad = Vec::new();
+        bad.extend_from_slice(&1u32.to_ne_bytes());
+        bad.extend_from_slice(&0u32.to_ne_bytes());
+        assert_eq!(fpsimd_offset(&bad), None);
+    }
 }

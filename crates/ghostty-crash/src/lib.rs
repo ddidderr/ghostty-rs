@@ -9,10 +9,16 @@
 #![cfg_attr(windows, allow(dead_code))]
 
 pub mod context;
+#[cfg(target_vendor = "apple")]
+mod darwin;
 pub mod dir;
 pub mod envelope;
 #[cfg(target_os = "linux")]
 mod minidump;
+// Pure (platform independent) event-context formatting; only used by the
+// Darwin signal path but unit-tested everywhere.
+#[cfg_attr(not(target_vendor = "apple"), allow(dead_code))]
+mod native;
 pub mod sentry;
 #[cfg(unix)]
 mod signal;

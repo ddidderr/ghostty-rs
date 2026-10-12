@@ -10,7 +10,7 @@
 #            `ghostty`: libghostty only (Zig: `-Dapp-runtime=none`, non-Darwin);
 #            `all` (default): both.
 #
-# libghostty-vt (version 0.1.0):
+# libghostty-vt (version from crates/ghostty-vt-capi/build.rs, 0.1.0):
 #   lib/libghostty-vt.so.0.1.0 (+ libghostty-vt.so.0, libghostty-vt.so symlinks;
 #   macOS: libghostty-vt.0.1.0.dylib, libghostty-vt.0.dylib, libghostty-vt.dylib)
 #   include/ghostty/vt.h and include/ghostty/vt/**.h
@@ -29,7 +29,9 @@ dir=$profile
 [ "$profile" = dev ] && dir=debug
 tdir=${CARGO_TARGET_DIR:-target}/$dir
 cargo_args=(--profile "$profile")
-vt_version=0.1.0
+# Single source of truth: the build script that sets the soname.
+vt_version=$(sed -n 's/^const VT_VERSION: &str = "\(.*\)";$/\1/p' crates/ghostty-vt-capi/build.rs)
+[ -n "$vt_version" ] || { echo "cannot read VT_VERSION from build.rs" >&2; exit 1; }
 vt_major=${vt_version%%.*}
 
 case $(uname -s) in
@@ -44,20 +46,18 @@ install_vt() {
     if [ "$dylib" = so ]; then
         local real="libghostty-vt.so.$vt_version"
         install -m755 "$src" "$dest/lib/$real"
-        # The cargo-built soname is the unversioned name; Zig's is `.so.0`.
-        if command -v patchelf >/dev/null 2>&1; then
-            patchelf --set-soname "libghostty-vt.so.$vt_major" "$dest/lib/$real"
-        else
-            echo "patchelf not found: soname stays libghostty-vt.so" >&2
+        # The soname (`libghostty-vt.so.$vt_major`) is set by build.rs at link
+        # time; verify instead of patching it after the fact.
+        if command -v readelf >/dev/null 2>&1 &&
+            ! readelf -d "$dest/lib/$real" | grep -q "Library soname: \[libghostty-vt.so.$vt_major\]"; then
+            echo "unexpected soname in $real" >&2
+            exit 1
         fi
         ln -sf "$real" "$dest/lib/libghostty-vt.so.$vt_major"
         ln -sf "libghostty-vt.so.$vt_major" "$dest/lib/libghostty-vt.so"
     else
         local real="libghostty-vt.$vt_version.dylib"
         install -m755 "$src" "$dest/lib/$real"
-        if command -v install_name_tool >/dev/null 2>&1; then
-            install_name_tool -id "@rpath/libghostty-vt.$vt_major.dylib" "$dest/lib/$real"
-        fi
         ln -sf "$real" "$dest/lib/libghostty-vt.$vt_major.dylib"
         ln -sf "libghostty-vt.$vt_major.dylib" "$dest/lib/libghostty-vt.dylib"
     fi

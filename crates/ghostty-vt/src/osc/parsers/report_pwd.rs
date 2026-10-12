@@ -1,10 +1,15 @@
 //! OSC 7 (ZIG/src/terminal/osc/parsers/report_pwd.zig).
-use crate::osc::{Command, Parser};
+use crate::osc::{ByteStorage, Command, Parser};
 
 /// Parse OSC 7
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
-    let data = parser.data()?;
-    Some(Command::ReportPwd { value: data })
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
+    parser.data()?;
+    Some(Command::ReportPwd {
+        value: parser.payload().into(),
+    })
 }
 
 #[cfg(test)]
@@ -21,7 +26,7 @@ mod tests {
         assert_eq!(
             p.end(None).unwrap(),
             Command::ReportPwd {
-                value: b"file:///tmp/example".to_vec()
+                value: b"file:///tmp/example".to_vec().into()
             }
         );
     }
@@ -34,7 +39,9 @@ mod tests {
         }
         assert_eq!(
             p.end(None).unwrap(),
-            Command::ReportPwd { value: Vec::new() }
+            Command::ReportPwd {
+                value: Vec::new().into()
+            }
         );
     }
 }

@@ -440,9 +440,11 @@ pub fn write_screen_temp_file(
         let mut file = opts.open(&file_path)?;
         file.write_all(contents.as_bytes())?;
         file.flush()?;
-        Ok(std::fs::canonicalize(&file_path)?
-            .to_string_lossy()
-            .into_owned())
+        // Reversible config-string encoding: a non-UTF-8 temp dir keeps its
+        // bytes (decode with `config_str_to_path` at OS boundaries).
+        Ok(ghostty_os::osbytes::path_to_config_string(
+            &std::fs::canonicalize(&file_path)?,
+        ))
     })();
 
     match result {
@@ -628,7 +630,11 @@ impl Surface {
             WriteScreenAction::Copy => {
                 self.rt_surface.set_clipboard(
                     Clipboard::Standard,
-                    &[("text/plain".to_owned(), path)],
+                    &[(
+                        "text/plain".to_owned(),
+                        String::from_utf8_lossy(&ghostty_os::osbytes::config_str_to_bytes(&path))
+                            .into_owned(),
+                    )],
                     false,
                 );
             }
@@ -639,7 +645,9 @@ impl Surface {
                 },
                 url: path,
             })?,
-            WriteScreenAction::Paste => self.queue_io(IoMessage::write_req(path.as_bytes())),
+            WriteScreenAction::Paste => self.queue_io(IoMessage::write_req(
+                &ghostty_os::osbytes::config_str_to_bytes(&path),
+            )),
         }
         Ok(())
     }
@@ -1280,6 +1288,22 @@ mod tests {
             assert_eq!(mode & 0o777, 0o600);
         }
         let _ = std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn screen_temp_file_returns_encoded_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = ghostty_os::temp_dir::TempDir::init().unwrap();
+        let bad = td.path().join(std::ffi::OsStr::from_bytes(b"d\xff"));
+        std::fs::create_dir_all(&bad).unwrap();
+        // Use TMPDIR to force the non-UTF-8 directory.
+        let file = bad.join("x.txt");
+        std::fs::write(&file, b"x").unwrap();
+        let canon = std::fs::canonicalize(&file).unwrap();
+        let enc = ghostty_os::osbytes::path_to_config_string(&canon);
+        assert!(enc.contains('\u{fdd0}'));
+        assert_eq!(ghostty_os::osbytes::config_str_to_path(&enc), canon);
     }
 
     #[test]

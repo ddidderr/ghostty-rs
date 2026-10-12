@@ -16,7 +16,7 @@ use crate::{
 /// C: `GhosttyOscParser` (opaque).
 pub struct OscParser {
     alloc: Alloc,
-    parser: Parser,
+    parser: Parser<CByteStorage>,
     /// Backing store for the last command returned by `ghostty_osc_end`.
     command: OscCommand,
 }
@@ -67,12 +67,12 @@ pub unsafe extern "C" fn ghostty_osc_new(
     // The parser's payload buffer (Zig's inline fixed buffer / allocating
     // writer) lives in memory from the same allocator; if either allocation
     // fails the caller gets OUT_OF_MEMORY.
-    let Some(storage) = CByteStorage::new(alloc, Parser::MAX_BUF) else {
+    let Some(storage) = CByteStorage::new(alloc, ghostty_vt::osc::MAX_BUF) else {
         return GhosttyResult::OutOfMemory;
     };
     let Some(p) = alloc.create(OscParser {
         alloc,
-        parser: Parser::with_storage(Box::new(storage)),
+        parser: Parser::with_storage(storage),
         command: OscCommand {
             key: 0,
             title_z: None,
@@ -131,8 +131,11 @@ pub unsafe extern "C" fn ghostty_osc_end(
     let Some(p) = (unsafe { parser.as_mut() }) else {
         return std::ptr::null_mut();
     };
-    let cmd = p.parser.end(Some(terminator)).unwrap_or(Command::Invalid);
+    // The command borrows its payload from the parser's own (caller
+    // allocated) storage, so nothing is copied or allocated here except the
+    // NUL-terminated title handed to C.
     p.command.title_z = None;
+    let cmd = p.parser.end(Some(terminator)).unwrap_or(Command::Invalid);
     p.command.key = cmd.key() as c_int;
     if let Command::ChangeWindowTitle(t) = &cmd {
         match CBlock::from_bytes_z(p.alloc, t) {
@@ -192,9 +195,156 @@ pub unsafe extern "C" fn ghostty_osc_command_data(
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::CStr;
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+        ffi::CStr,
+    };
 
     use super::*;
+
+    /// Counts Rust global-allocator calls made by the current thread, so the
+    /// tests can prove that OSC parsing and `ghostty_osc_end` use only the
+    /// caller's allocator.
+    struct CountingGlobal;
+    thread_local! {
+        static GLOBAL_ALLOCS: Cell<usize> = const { Cell::new(0) };
+    }
+    // SAFETY: forwards to the system allocator.
+    unsafe impl GlobalAlloc for CountingGlobal {
+        unsafe fn alloc(&self, l: Layout) -> *mut u8 {
+            let _ = GLOBAL_ALLOCS.try_with(|c| c.set(c.get() + 1));
+            // SAFETY: same contract.
+            unsafe { System.alloc(l) }
+        }
+        unsafe fn dealloc(&self, p: *mut u8, l: Layout) {
+            // SAFETY: same contract.
+            unsafe { System.dealloc(p, l) }
+        }
+        unsafe fn realloc(&self, p: *mut u8, l: Layout, n: usize) -> *mut u8 {
+            let _ = GLOBAL_ALLOCS.try_with(|c| c.set(c.get() + 1));
+            // SAFETY: same contract.
+            unsafe { System.realloc(p, l, n) }
+        }
+    }
+    #[global_allocator]
+    static GLOBAL: CountingGlobal = CountingGlobal;
+
+    fn global_allocs() -> usize {
+        GLOBAL_ALLOCS.with(Cell::get)
+    }
+
+    use std::{
+        ffi::c_void,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use crate::alloc::{Allocator, AllocatorVtable};
+
+    /// A caller allocator backed by the system allocator that counts calls.
+    unsafe extern "C" fn c_alloc(
+        ctx: *mut c_void,
+        len: usize,
+        align_log2: u8,
+        _: usize,
+    ) -> *mut c_void {
+        // SAFETY: `ctx` is the `AtomicUsize` owned by the test.
+        unsafe { &*ctx.cast::<AtomicUsize>() }.fetch_add(1, Ordering::SeqCst);
+        let l = Layout::from_size_align(len, 1 << align_log2).unwrap();
+        // SAFETY: non-zero size (the crate never calls with zero).
+        unsafe { System.alloc(l) }.cast()
+    }
+    unsafe extern "C" fn c_resize(
+        _: *mut c_void,
+        _: *mut c_void,
+        _: usize,
+        _: u8,
+        _: usize,
+        _: usize,
+    ) -> bool {
+        false
+    }
+    unsafe extern "C" fn c_remap(
+        _: *mut c_void,
+        _: *mut c_void,
+        _: usize,
+        _: u8,
+        _: usize,
+        _: usize,
+    ) -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    unsafe extern "C" fn c_free(
+        _: *mut c_void,
+        m: *mut c_void,
+        len: usize,
+        align_log2: u8,
+        _: usize,
+    ) {
+        let l = Layout::from_size_align(len, 1 << align_log2).unwrap();
+        // SAFETY: allocated by `c_alloc` with the same layout.
+        unsafe { System.dealloc(m.cast(), l) };
+    }
+    static VT: AllocatorVtable = AllocatorVtable {
+        alloc: c_alloc,
+        resize: c_resize,
+        remap: c_remap,
+        free: c_free,
+    };
+
+    #[test]
+    fn end_makes_no_global_allocations() {
+        let caller_allocs = AtomicUsize::new(0);
+        let a = Allocator {
+            ctx: (&raw const caller_allocs).cast_mut().cast(),
+            vtable: &raw const VT,
+        };
+        let mut p = std::ptr::null_mut();
+        // SAFETY: valid allocator and out pointer.
+        assert_eq!(
+            unsafe { ghostty_osc_new(&raw const a, &mut p) },
+            GhosttyResult::Success
+        );
+        // SAFETY: `p` is live for the whole block.
+        unsafe {
+            for (osc, title) in [
+                ("7;file:///tmp/x", false),
+                ("8;id=a;https://example.com", false),
+                ("8;;", false),
+                ("52;c;aGVsbG8=", false),
+                ("133;A", false),
+                ("777;notify;title;body", false),
+                ("9;4;1;50", false),
+                ("9;2;message", false),
+                ("22;pointer", false),
+                ("66;s=2;hi", false),
+                ("3008;start=abc;type=shell", false),
+                ("5522;type=read;data", false),
+                ("0;a title", true),
+            ] {
+                ghostty_osc_reset(p);
+                for b in osc.bytes() {
+                    ghostty_osc_next(p, b);
+                }
+                let global_before = global_allocs();
+                let caller_before = caller_allocs.load(Ordering::SeqCst);
+                let cmd = ghostty_osc_end(p, 0x07);
+                assert_ne!(ghostty_osc_command_type(cmd), 0, "{osc}");
+                assert_eq!(
+                    global_allocs(),
+                    global_before,
+                    "global allocation ending {osc}"
+                );
+                // Only the NUL-terminated title handed to C is allocated.
+                assert_eq!(
+                    caller_allocs.load(Ordering::SeqCst) - caller_before,
+                    usize::from(title),
+                    "caller allocations ending {osc}"
+                );
+            }
+            ghostty_osc_free(p);
+        }
+    }
 
     fn new() -> *mut OscParser {
         let mut p = std::ptr::null_mut();

@@ -1,10 +1,13 @@
 //! OSC 0 and OSC 2 (ZIG/src/terminal/osc/parsers/change_window_title.zig).
-use crate::osc::{Command, Parser};
+use crate::osc::{ByteStorage, Command, Parser};
 
 /// Parse OSC 0 and OSC 2
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
-    let data = parser.data()?;
-    Some(Command::ChangeWindowTitle(data))
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
+    parser.data()?;
+    Some(Command::ChangeWindowTitle(parser.payload().into()))
 }
 
 #[cfg(test)]
@@ -24,7 +27,7 @@ mod tests {
         feed(&mut p, b"0;ab");
         assert_eq!(
             p.end(None).unwrap(),
-            Command::ChangeWindowTitle(b"ab".to_vec())
+            Command::ChangeWindowTitle(b"ab".to_vec().into())
         );
     }
 
@@ -32,7 +35,7 @@ mod tests {
     fn osc_0_longer_than_buffer() {
         let mut p = Parser::init(false);
         let mut input = b"0;".to_vec();
-        input.extend(std::iter::repeat_n(b'a', Parser::MAX_BUF + 2));
+        input.extend(std::iter::repeat_n(b'a', crate::osc::MAX_BUF + 2));
         feed(&mut p, &input);
         assert!(p.end(None).is_none());
     }
@@ -40,18 +43,21 @@ mod tests {
     #[test]
     fn osc_0_one_shorter_than_buffer_length() {
         let mut p = Parser::init(false);
-        let title = vec![b'a'; Parser::MAX_BUF - 1];
+        let title = vec![b'a'; crate::osc::MAX_BUF - 1];
         let mut input = b"0;".to_vec();
         input.extend(&title);
         feed(&mut p, &input);
-        assert_eq!(p.end(None).unwrap(), Command::ChangeWindowTitle(title));
+        assert_eq!(
+            p.end(None).unwrap(),
+            Command::ChangeWindowTitle(title.into())
+        );
     }
 
     #[test]
     fn osc_0_exactly_at_buffer_length() {
         let mut p = Parser::init(false);
         let mut input = b"0;".to_vec();
-        input.extend(vec![b'a'; Parser::MAX_BUF]);
+        input.extend(vec![b'a'; crate::osc::MAX_BUF]);
         feed(&mut p, &input);
         // This should be None because we always reserve space for a null terminator.
         assert!(p.end(None).is_none());
@@ -63,7 +69,7 @@ mod tests {
         feed(&mut p, b"2;ab");
         assert_eq!(
             p.end(None).unwrap(),
-            Command::ChangeWindowTitle(b"ab".to_vec())
+            Command::ChangeWindowTitle(b"ab".to_vec().into())
         );
     }
 
@@ -79,7 +85,7 @@ mod tests {
         feed(&mut p, &[0xE2, 0x80, 0x90]);
         assert_eq!(
             p.end(None).unwrap(),
-            Command::ChangeWindowTitle("— ‐".as_bytes().to_vec())
+            Command::ChangeWindowTitle("— ‐".as_bytes().to_vec().into())
         );
     }
 
@@ -87,6 +93,9 @@ mod tests {
     fn osc_2_change_window_title_empty() {
         let mut p = Parser::init(false);
         feed(&mut p, b"2;");
-        assert_eq!(p.end(None).unwrap(), Command::ChangeWindowTitle(Vec::new()));
+        assert_eq!(
+            p.end(None).unwrap(),
+            Command::ChangeWindowTitle(Vec::new().into())
+        );
     }
 }

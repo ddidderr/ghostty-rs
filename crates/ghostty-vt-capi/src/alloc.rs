@@ -10,9 +10,12 @@
 //! `GHOSTTY_OUT_OF_MEMORY` where Zig can report it (object creation) and
 //! invalidates the OSC being parsed where Zig's writer fails.
 //!
-//! Transient values built while a command is parsed (the payload copies the
-//! per-command parsers make before `ghostty_osc_end` returns) use the global
-//! allocator; nothing of them outlives that call.
+//! Commands produced by `ghostty_osc_end` borrow their byte payloads from the
+//! parser's storage (as Zig's do), so ending an OSC does not allocate for the
+//! payload at all; the parser itself holds the storage inline (no `Box`). The
+//! only values still built on the global allocator are the small request
+//! lists of the color OSCs (4, 5, 10-19, 21, 104-119), which are not exposed
+//! through the C API and are dropped before `ghostty_osc_end` returns.
 #![allow(unsafe_code)]
 
 use std::{alloc::Layout, ffi::c_void, ptr::NonNull};
@@ -275,9 +278,5 @@ impl ByteStorage for CByteStorage {
         {
             self.block = b;
         }
-    }
-
-    fn clone_box(&self) -> Box<dyn ByteStorage> {
-        Box::new(self.bytes().to_vec())
     }
 }

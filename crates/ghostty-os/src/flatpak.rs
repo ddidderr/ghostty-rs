@@ -296,6 +296,14 @@ impl FlatpakSignalHandle {
     }
 }
 
+/// Decode a reversible config string to the original bytes plus NUL, the
+/// D-Bus `ay` form of a path/argument.
+fn nul_terminated_bytes(s: &str) -> Vec<u8> {
+    let mut v = crate::osbytes::config_str_to_bytes(s);
+    v.push(0);
+    v
+}
+
 struct Request {
     argv: Vec<String>,
     cwd: Option<String>,
@@ -346,22 +354,26 @@ fn start(
         .argv
         .iter()
         .map(|a| {
-            let mut v = a.as_bytes().to_vec();
+            let mut v = crate::osbytes::config_str_to_bytes(a);
             v.push(0);
             v
         })
         .collect();
 
     // Get the cwd in case we don't have ours set.
-    let cwd = match request.cwd {
-        Some(c) => c,
-        None => std::env::current_dir()
-            .map_err(|_| Error::FlatpakSetupFail)?
-            .to_string_lossy()
-            .into_owned(),
+    // D-Bus `ay`: the original bytes (request.cwd carries the reversible
+    // config-string encoding).
+    let cwd = if let Some(c) = request.cwd {
+        nul_terminated_bytes(&c)
+    } else {
+        let mut v = crate::osbytes::os_bytes(
+            std::env::current_dir()
+                .map_err(|_| Error::FlatpakSetupFail)?
+                .as_os_str(),
+        );
+        v.push(0);
+        v
     };
-    let mut cwd = cwd.into_bytes();
-    cwd.push(0);
 
     // Subscribe to exit notifications (before the call so we can't miss it).
     let rule = MatchRule::builder()
@@ -429,6 +441,13 @@ fn wait_for_exit(shared: &Shared, iter: MessageIterator, pid: u32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dbus_bytes_are_decoded() {
+        let enc = crate::osbytes::bytes_to_config_string(b"/tmp/\xff\xfe");
+        assert_ne!(enc.as_bytes(), b"/tmp/\xff\xfe");
+        assert_eq!(super::nul_terminated_bytes(&enc), b"/tmp/\xff\xfe\0");
+    }
+
     use super::*;
 
     #[test]

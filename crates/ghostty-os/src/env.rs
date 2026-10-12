@@ -203,6 +203,14 @@ pub fn append_env_always(current: &str, value: &str) -> String {
     format!("{current}{DELIMITER}{value}")
 }
 
+/// Byte-preserving [`append_env_always`].
+pub fn append_env_always_os(current: &OsStr, value: &OsStr) -> OsString {
+    let mut out = current.to_owned();
+    out.push(DELIMITER.to_string());
+    out.push(value);
+    out
+}
+
 /// Byte-preserving [`prepend_env`].
 pub fn prepend_env_os(current: &OsStr, value: &OsStr) -> OsString {
     if current.is_empty() {

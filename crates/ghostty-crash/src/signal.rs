@@ -34,6 +34,8 @@ struct Scratch {
     event: [u8; EVENT_CAP],
     head: [u8; HEAD_CAP],
     path: [u8; PATH_CAP],
+    #[cfg(target_vendor = "apple")]
+    native: crate::native::Native,
 }
 
 struct ScratchCell(UnsafeCell<Scratch>);
@@ -44,6 +46,8 @@ static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new(Scratch {
     event: [0; EVENT_CAP],
     head: [0; HEAD_CAP],
     path: [0; PATH_CAP],
+    #[cfg(target_vendor = "apple")]
+    native: crate::native::Native::new(),
 }));
 static BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -150,6 +154,16 @@ fn write_signal_report(name: &str, desc: &str, info: *mut libc::siginfo_t, uc: *
         return;
     };
     let (secs, micros) = sentry::now();
+    // Darwin: record the faulting thread's registers and stack in the event
+    // (no minidump there; see `native.rs`).
+    #[cfg(target_vendor = "apple")]
+    let native_ctx = {
+        // SAFETY: `info`/`uc` are the pointers the kernel gave the handler.
+        unsafe { crate::darwin::capture(&mut sc.native, info, uc) };
+        Some(&sc.native)
+    };
+    #[cfg(not(target_vendor = "apple"))]
+    let native_ctx = None;
     let crash = Crash {
         uuid,
         secs,
@@ -157,6 +171,7 @@ fn write_signal_report(name: &str, desc: &str, info: *mut libc::siginfo_t, uc: *
         kind: name,
         value: desc,
         mechanism: "signalhandler",
+        native: native_ctx,
     };
 
     let mut ev = SliceWriter {

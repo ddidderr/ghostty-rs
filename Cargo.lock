@@ -1496,6 +1496,7 @@ dependencies = [
  "ghostty-os",
  "libc",
  "log",
+ "mach2",
  "minidump",
  "minidump-writer",
  "serde_json",

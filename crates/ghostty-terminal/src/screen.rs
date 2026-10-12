@@ -368,6 +368,24 @@ pub enum SemanticContentSet {
 
 pub use crate::string_map::StringMap;
 
+/// Failure of [`Screen::try_selection_string_map`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum SelectionStringError {
+    #[error("out of memory")]
+    OutOfMemory,
+}
+
+/// Failure points of `selection_string` (Zig: `selectionString_tw`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionStringPoint {
+    CopyMap,
+}
+crate::tripwire_module!(
+    selection_string_tw,
+    SelectionStringPoint,
+    SelectionStringError
+);
+
 #[derive(Debug, Clone, Copy)]
 pub struct SelectionString {
     /// The selection to convert to a string.
@@ -2572,10 +2590,38 @@ impl Screen {
 
     /// Same as `selection_string` but also returns a map from every byte of
     /// the string to the pin it came from (Zig: `SelectionString.map`).
+    ///
+    /// Panics if the map cannot be built, like any other Rust allocation
+    /// failure; use [`Screen::try_selection_string_map`] to handle it.
     pub fn selection_string_map(&self, opts: SelectionString) -> StringMap {
+        self.try_selection_string_map(opts)
+            .expect("selection string map allocation failed")
+    }
+
+    /// Fallible [`Screen::selection_string_map`] (Zig `selectionString` with
+    /// `opts.map` set, which can return `error.OutOfMemory` when copying the
+    /// map). Nothing is leaked on failure: the string and pin list built so
+    /// far are dropped (Zig: `errdefer alloc.free(map_string)`).
+    pub fn try_selection_string_map(
+        &self,
+        opts: SelectionString,
+    ) -> Result<StringMap, SelectionStringError> {
         let mut pins = Vec::new();
         let string = self.selection_string_impl(opts, Some(&mut pins));
-        StringMap { string, map: pins }
+
+        // Duplicate the string and take the pins for the map (Zig: `dupeZ`
+        // then `pins.toOwnedSlice`).
+        let mut map_string = String::new();
+        map_string
+            .try_reserve_exact(string.len())
+            .map_err(|_| SelectionStringError::OutOfMemory)?;
+        map_string.push_str(&string);
+        selection_string_tw::check(SelectionStringPoint::CopyMap)?;
+        pins.shrink_to_fit();
+        Ok(StringMap {
+            string: map_string,
+            map: pins,
+        })
     }
 
     fn selection_string_impl(

@@ -2,7 +2,14 @@
 //! (ZIG/src/terminal/osc/parsers/osc9.zig).
 
 use super::semantic_prompt;
-use crate::osc::{Command, ConemuChangeTabTitle, Parser, ProgressReport, ProgressState};
+use crate::osc::{
+    ByteStorage,
+    Command,
+    ConemuChangeTabTitle,
+    Parser,
+    ProgressReport,
+    ProgressState,
+};
 
 /// Parse a base-10 unsigned integer from raw bytes (Zig `parseUnsigned`).
 fn parse_unsigned<T: std::str::FromStr>(bytes: &[u8]) -> Option<T> {
@@ -10,16 +17,20 @@ fn parse_unsigned<T: std::str::FromStr>(bytes: &[u8]) -> Option<T> {
 }
 
 /// Parse OSC 9, which could be an iTerm2 notification or a ConEmu extension.
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     // Zig prologue: writer must exist. The NUL-terminator reservation is NOT
     // done here: Zig only appends the NUL (`writer.writeByte(0)`) in the
     // branches that return text, so full-buffer control commands (sleep,
     // xterm emulation, progress, ...) still parse.
-    let data = parser.buffered()?;
+    parser.buffered()?;
+    let data = parser.payload();
 
     // Check first to see if this is a ConEmu OSC
     // https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC
-    if let Some((cmd, needs_nul)) = conemu(&data) {
+    if let Some((cmd, needs_nul)) = conemu(data) {
         if needs_nul && !parser.reserve_nul() {
             return None;
         }
@@ -31,14 +42,14 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
         return None;
     }
     Some(Command::ShowDesktopNotification {
-        title: Vec::new(),
-        body: data,
+        title: std::borrow::Cow::Borrowed(&[]),
+        body: data.into(),
     })
 }
 
 /// Returns None where the Zig code does `break :conemu`. The flag is true
 /// when the Zig branch appends a NUL terminator (needs buffer room).
-fn conemu(data: &[u8]) -> Option<(Command, bool)> {
+fn conemu(data: &[u8]) -> Option<(Command<'_>, bool)> {
     let r = conemu_inner(data)?;
     let needs_nul = matches!(
         r,
@@ -53,11 +64,11 @@ fn conemu(data: &[u8]) -> Option<(Command, bool)> {
     Some((r, needs_nul))
 }
 
-fn conemu_inner(data: &[u8]) -> Option<Command> {
+fn conemu_inner(data: &[u8]) -> Option<Command<'_>> {
     if data.is_empty() {
         return None;
     }
-    let msg = |skip: usize| data[skip..].to_vec();
+    let msg = |skip: usize| -> crate::osc::Bytes<'_> { data[skip..].into() };
     match data[0] {
         // Check for OSC 9;1 9;10 9;11 9;12
         b'1' => {
@@ -210,18 +221,18 @@ fn conemu_inner(data: &[u8]) -> Option<Command> {
 mod tests {
     use super::*;
 
-    fn run(input: &str) -> Command {
+    fn run(input: &str) -> Command<'static> {
         let mut p = Parser::init(false);
         for ch in input.bytes() {
             p.next(ch);
         }
-        p.end(Some(0x1b)).unwrap()
+        p.end(Some(0x1b)).unwrap().into_owned()
     }
 
     fn notif(input: &str, body: &str) {
         match run(input) {
             Command::ShowDesktopNotification { title, body: b } => {
-                assert_eq!(title, b"");
+                assert_eq!(&title[..], b"");
                 assert_eq!(b, body.as_bytes());
             }
             c => panic!("unexpected {c:?}"),
@@ -242,17 +253,17 @@ mod tests {
         );
     }
 
-    fn run_opt(input: &str) -> Option<Command> {
+    fn run_opt(input: &str) -> Option<Command<'static>> {
         let mut p = Parser::init(false);
         for ch in input.bytes() {
             p.next(ch);
         }
-        p.end(Some(0x1b))
+        p.end(Some(0x1b)).map(Command::into_owned)
     }
 
     #[test]
     fn full_buffer_control_commands_do_not_need_nul() {
-        let fill = Parser::MAX_BUF;
+        let fill = crate::osc::MAX_BUF;
         // OSC 9;1 sleep with a buffer that has no room for a NUL: Zig never
         // appends one for this command, so it still parses (default 100ms).
         let input = format!("9;1;{}", "x".repeat(fill - 2));
@@ -267,7 +278,7 @@ mod tests {
 
     #[test]
     fn full_buffer_text_commands_are_invalid() {
-        let fill = Parser::MAX_BUF;
+        let fill = crate::osc::MAX_BUF;
         // These append a NUL in Zig, which fails on a full buffer.
         let input = format!("9;6;{}", "a".repeat(fill - 2));
         assert_eq!(run_opt(&input), None);
@@ -322,7 +333,7 @@ mod tests {
     fn osc_9_2_conemu_message_box() {
         assert_eq!(
             run("9;2;hello world"),
-            Command::ConemuShowMessageBox(b"hello world".to_vec())
+            Command::ConemuShowMessageBox(b"hello world".to_vec().into())
         );
     }
 
@@ -333,14 +344,17 @@ mod tests {
 
     #[test]
     fn osc_9_2_conemu_message_box_empty_message() {
-        assert_eq!(run("9;2;"), Command::ConemuShowMessageBox(Vec::new()));
+        assert_eq!(
+            run("9;2;"),
+            Command::ConemuShowMessageBox(Vec::new().into())
+        );
     }
 
     #[test]
     fn osc_9_2_conemu_message_box_spaces_only_message() {
         assert_eq!(
             run("9;2;   "),
-            Command::ConemuShowMessageBox(b"   ".to_vec())
+            Command::ConemuShowMessageBox(b"   ".to_vec().into())
         );
     }
 
@@ -358,7 +372,7 @@ mod tests {
     fn osc_9_3_conemu_change_tab_title() {
         assert_eq!(
             run("9;3;foo bar"),
-            Command::ConemuChangeTabTitle(ConemuChangeTabTitle::Value(b"foo bar".to_vec()))
+            Command::ConemuChangeTabTitle(ConemuChangeTabTitle::Value(b"foo bar".to_vec().into()))
         );
     }
 
@@ -374,7 +388,7 @@ mod tests {
     fn osc_9_3_conemu_change_tab_title_spaces_only() {
         assert_eq!(
             run("9;3;   "),
-            Command::ConemuChangeTabTitle(ConemuChangeTabTitle::Value(b"   ".to_vec()))
+            Command::ConemuChangeTabTitle(ConemuChangeTabTitle::Value(b"   ".to_vec().into()))
         );
     }
 
@@ -488,12 +502,15 @@ mod tests {
 
     #[test]
     fn osc_9_6_conemu_guimacro_1() {
-        assert_eq!(run("9;6;a"), Command::ConemuGuimacro(b"a".to_vec()));
+        assert_eq!(run("9;6;a"), Command::ConemuGuimacro(b"a".to_vec().into()));
     }
 
     #[test]
     fn osc_9_6_conemu_guimacro_2() {
-        assert_eq!(run("9;6;ab"), Command::ConemuGuimacro(b"ab".to_vec()));
+        assert_eq!(
+            run("9;6;ab"),
+            Command::ConemuGuimacro(b"ab".to_vec().into())
+        );
     }
 
     #[test]
@@ -503,12 +520,15 @@ mod tests {
 
     #[test]
     fn osc_9_7_conemu_run_process_1() {
-        assert_eq!(run("9;7;ab"), Command::ConemuRunProcess(b"ab".to_vec()));
+        assert_eq!(
+            run("9;7;ab"),
+            Command::ConemuRunProcess(b"ab".to_vec().into())
+        );
     }
 
     #[test]
     fn osc_9_7_conemu_run_process_2() {
-        assert_eq!(run("9;7;"), Command::ConemuRunProcess(Vec::new()));
+        assert_eq!(run("9;7;"), Command::ConemuRunProcess(Vec::new().into()));
     }
 
     #[test]
@@ -520,7 +540,7 @@ mod tests {
     fn osc_9_8_conemu_output_environment_variable_1() {
         assert_eq!(
             run("9;8;ab"),
-            Command::ConemuOutputEnvironmentVariable(b"ab".to_vec())
+            Command::ConemuOutputEnvironmentVariable(b"ab".to_vec().into())
         );
     }
 
@@ -528,7 +548,7 @@ mod tests {
     fn osc_9_8_conemu_output_environment_variable_2() {
         assert_eq!(
             run("9;8;"),
-            Command::ConemuOutputEnvironmentVariable(Vec::new())
+            Command::ConemuOutputEnvironmentVariable(Vec::new().into())
         );
     }
 
@@ -542,7 +562,7 @@ mod tests {
         assert_eq!(
             run("9;9;ab"),
             Command::ReportPwd {
-                value: b"ab".to_vec()
+                value: b"ab".to_vec().into()
             }
         );
     }
@@ -594,7 +614,10 @@ mod tests {
 
     #[test]
     fn osc_9_11_conemu_comment() {
-        assert_eq!(run("9;11;ab"), Command::ConemuComment(b"ab".to_vec()));
+        assert_eq!(
+            run("9;11;ab"),
+            Command::ConemuComment(b"ab".to_vec().into())
+        );
     }
 
     #[test]

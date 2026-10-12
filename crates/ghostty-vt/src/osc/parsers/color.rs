@@ -3,7 +3,7 @@
 
 use crate::{
     color::{Dynamic as DynamicColor, Rgb, Special as SpecialColor},
-    osc::{Command, Parser, State, Terminator},
+    osc::{ByteStorage, Command, Parser, State, Terminator},
 };
 
 /// The possible operations we support for colors.
@@ -36,17 +36,23 @@ pub enum Operation {
 }
 
 /// Parse OSCs 4, 5, 10-19, 104, 110-119
-pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     if !parser.alloc {
         parser.state = State::Invalid;
         return None;
     }
     // If we've collected any extra data parse that, otherwise use an empty
     // string.
-    let data = if parser.has_writer() {
-        parser.buffered()?
+    if parser.has_writer() {
+        parser.buffered()?;
+    }
+    let data: &[u8] = if parser.has_writer() {
+        parser.payload()
     } else {
-        Vec::new()
+        &[]
     };
     // Check and make sure that we're parsing the correct OSCs
     let op = match parser.state {
@@ -80,7 +86,7 @@ pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> 
     };
     Some(Command::ColorOperation {
         op,
-        requests: parse_color(op, &data),
+        requests: parse_color(op, data),
         terminator: Terminator::init(terminator_ch),
     })
 }

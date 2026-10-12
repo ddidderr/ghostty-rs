@@ -3,11 +3,14 @@
 use crate::{
     color::Rgb,
     kitty::color::{Kind, OSC, Request},
-    osc::{Command, Parser, State, Terminator},
+    osc::{ByteStorage, Command, Parser, State, Terminator},
 };
 
 /// Parse OSC 21, the Kitty Color Protocol.
-pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     debug_assert_eq!(parser.state, State::S21);
 
     if !parser.alloc {
@@ -18,8 +21,12 @@ pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> 
         parser.state = State::Invalid;
         return None;
     }
-    let data = parser.buffered()?;
+    parser.buffered()?;
 
+    // The parse only reads the payload; failure marks the parser invalid
+    // after the borrow ends.
+    let data = parser.payload();
+    let mut exceeded = false;
     let mut osc = OSC {
         list: Vec::new(),
         terminator: Terminator::init(terminator_ch),
@@ -27,8 +34,8 @@ pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> 
     for kv in data.split(|&c| c == b';') {
         if osc.list.len() >= Kind::MAX * 2 {
             log::warn!("exceeded limit for number of keys in kitty color protocol, ignoring");
-            parser.state = State::Invalid;
-            return None;
+            exceeded = true;
+            break;
         }
         let (k, rest) = match kv.iter().position(|&c| c == b'=') {
             Some(p) => (&kv[..p], &kv[p + 1..]),
@@ -58,6 +65,10 @@ pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> 
                 String::from_utf8_lossy(value)
             );
         }
+    }
+    if exceeded {
+        parser.state = State::Invalid;
+        return None;
     }
     Some(Command::KittyColorProtocol(osc))
 }

@@ -9,6 +9,7 @@ bytemuck = { version = "1.25.2", features = ["derive"] }
 crossbeam-channel = "0.5.17"
 ghostty-config.workspace = true
 ghostty-crash.workspace = true
+ghostty-os.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
 ghostty-input.workspace = true
@@ -61,7 +62,6 @@ inline_always = "allow"
 [target.'cfg(target_vendor = "apple")'.dependencies]
 block2 = "0.6.2"
 dispatch2 = "0.3.1"
-ghostty-os.workspace = true
 objc2 = "0.6.5"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"

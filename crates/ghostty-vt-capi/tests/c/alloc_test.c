@@ -159,6 +159,49 @@ int main(void) {
     assert(c.live == 0);
   }
 
+  // 6. Ending an OSC copies no payload: with the allocator frozen after
+  //    creation (any allocation would fail), commands whose payloads are
+  //    borrowed from the parser's storage still parse, and every command
+  //    makes exactly the allocations the caller can see (none, except the
+  //    NUL-terminated title copy).
+  {
+    static const struct { const char *osc; int type; } cases[] = {
+      {"7;file:///tmp/x", GHOSTTY_OSC_COMMAND_REPORT_PWD},
+      {"8;id=a;https://example.com", GHOSTTY_OSC_COMMAND_HYPERLINK_START},
+      {"8;;", GHOSTTY_OSC_COMMAND_HYPERLINK_END},
+      {"52;c;aGVsbG8=", GHOSTTY_OSC_COMMAND_CLIPBOARD_CONTENTS},
+      {"133;A", GHOSTTY_OSC_COMMAND_SEMANTIC_PROMPT},
+      {"777;notify;title;body", GHOSTTY_OSC_COMMAND_SHOW_DESKTOP_NOTIFICATION},
+      {"9;4;1;50", GHOSTTY_OSC_COMMAND_CONEMU_PROGRESS_REPORT},
+      {"22;pointer", GHOSTTY_OSC_COMMAND_MOUSE_SHAPE},
+      {"66;s=2;hi", GHOSTTY_OSC_COMMAND_KITTY_TEXT_SIZING},
+    };
+    Counter c = counter(0, SIZE_MAX);
+    GhosttyAllocator a = {.ctx = &c, .vtable = &VT};
+    GhosttyOscParser p;
+    assert(ghostty_osc_new(&a, &p) == GHOSTTY_SUCCESS);
+    c.fail_after = c.allocs;          // freeze: no allocation may succeed
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+      size_t allocs = c.allocs;
+      ghostty_osc_reset(p);
+      feed(p, cases[i].osc, strlen(cases[i].osc));
+      GhosttyOscCommand cmd = ghostty_osc_end(p, 0x07);
+      assert(ghostty_osc_command_type(cmd) == cases[i].type);
+      assert(c.allocs == allocs);
+    }
+    // The title is the one payload handed to C: exactly one allocation.
+    c.fail_after = SIZE_MAX;
+    size_t allocs = c.allocs;
+    ghostty_osc_reset(p);
+    feed(p, "2;title", 7);
+    GhosttyOscCommand cmd = ghostty_osc_end(p, 0x07);
+    assert(ghostty_osc_command_type(cmd) == GHOSTTY_OSC_COMMAND_CHANGE_WINDOW_TITLE);
+    assert(c.allocs == allocs + 1);
+    ghostty_osc_free(p);
+    assert(c.live == 0);
+    assert(c.allocs == c.frees);
+  }
+
   puts("ok");
   return 0;
 }

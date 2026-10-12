@@ -4,7 +4,7 @@
 //! <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
 
 use crate::{
-    osc::{Command as OscCommand, Parser, State},
+    osc::{ByteStorage, Command as OscCommand, Parser, State},
     string_encoding::{printf_q_decode, url_percent_decode},
 };
 
@@ -19,9 +19,9 @@ pub type DecodeError = crate::string_encoding::Error;
 /// all except one do and the spec does also say to ignore unknown
 /// options. So, I think this is a fair interpretation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Command {
+pub struct Command<'a> {
     pub action: Action,
-    pub options_unvalidated: Vec<u8>,
+    pub options_unvalidated: crate::osc::Bytes<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,11 +36,18 @@ pub enum Action {
     EndCommand,                      // 'D'
 }
 
-impl Command {
-    pub fn init(action: Action) -> Command {
+impl<'a> Command<'a> {
+    pub fn into_owned(self) -> Command<'static> {
+        Command {
+            action: self.action,
+            options_unvalidated: super::super::own(self.options_unvalidated),
+        }
+    }
+
+    pub fn init(action: Action) -> Command<'a> {
         Command {
             action,
-            options_unvalidated: Vec::new(),
+            options_unvalidated: std::borrow::Cow::Borrowed(&[]),
         }
     }
 
@@ -364,43 +371,54 @@ pub enum Redraw {
 }
 
 /// Parse OSC 133, semantic prompts
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<OscCommand> {
-    let data = parser.buffered()?;
-    if data.is_empty() {
-        parser.state = State::Invalid;
-        return None;
-    }
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<OscCommand<'_>> {
+    parser.buffered()?;
 
-    // All valid cases terminate within this block. Any fallthroughs
-    // are invalid.
-    let action = match data[0] {
-        b'A' => Action::FreshLineNewPrompt,
-        b'B' => Action::EndPromptStartInput,
-        b'I' => Action::EndPromptStartInputTerminateEol,
-        b'C' => Action::EndInputStartOutput,
-        b'D' => Action::EndCommand,
-        b'N' => Action::NewCommand,
-        b'P' => Action::PromptStart,
-        b'L' => {
-            if data.len() > 1 {
+    // Validate with a short-lived borrow (marking the parser invalid cannot
+    // overlap with the borrow handed to the command below).
+    let (action, has_options) = {
+        let data = parser.payload();
+        if data.is_empty() {
+            parser.state = State::Invalid;
+            return None;
+        }
+
+        // All valid cases terminate within this block. Any fallthroughs
+        // are invalid.
+        let action = match data[0] {
+            b'A' => Action::FreshLineNewPrompt,
+            b'B' => Action::EndPromptStartInput,
+            b'I' => Action::EndPromptStartInputTerminateEol,
+            b'C' => Action::EndInputStartOutput,
+            b'D' => Action::EndCommand,
+            b'N' => Action::NewCommand,
+            b'P' => Action::PromptStart,
+            b'L' => {
+                if data.len() > 1 {
+                    parser.state = State::Invalid;
+                    return None;
+                }
+                return Some(OscCommand::SemanticPrompt(Command::init(Action::FreshLine)));
+            }
+            _ => {
                 parser.state = State::Invalid;
                 return None;
             }
-            return Some(OscCommand::SemanticPrompt(Command::init(Action::FreshLine)));
-        }
-        _ => {
+        };
+
+        if data.len() > 1 && data[1] != b';' {
             parser.state = State::Invalid;
             return None;
         }
+        (action, data.len() > 1)
     };
 
     let mut cmd = Command::init(action);
-    if data.len() > 1 {
-        if data[1] != b';' {
-            parser.state = State::Invalid;
-            return None;
-        }
-        cmd.options_unvalidated = data[2..].to_vec();
+    if has_options {
+        cmd.options_unvalidated = parser.payload()[2..].into();
     }
     Some(OscCommand::SemanticPrompt(cmd))
 }
@@ -410,19 +428,19 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<OscComma
 mod tests {
     use super::*;
 
-    fn run(input: &str) -> Option<Command> {
+    fn run(input: &str) -> Option<Command<'static>> {
         let mut p = Parser::init(false);
         for ch in input.bytes() {
             p.next(ch);
         }
         match p.end(None) {
-            Some(OscCommand::SemanticPrompt(c)) => Some(c),
+            Some(OscCommand::SemanticPrompt(c)) => Some(c.into_owned()),
             Some(c) => panic!("unexpected {c:?}"),
             None => None,
         }
     }
 
-    fn cmdline(input: &str) -> (Command, Result<Vec<u8>, DecodeError>) {
+    fn cmdline(input: &str) -> (Command<'static>, Result<Vec<u8>, DecodeError>) {
         let cmd = run(input).unwrap();
         assert_eq!(cmd.action, Action::EndInputStartOutput);
         let mut w = Vec::new();

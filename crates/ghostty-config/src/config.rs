@@ -3940,13 +3940,29 @@ impl Config {
         }
     }
 
+    /// The default template with the (decoded, byte-exact) path substituted.
+    fn render_config_template(path: &str) -> Vec<u8> {
+        let tmpl = include_str!("config-template");
+        let path_bytes = ghostty_os::osbytes::config_str_to_bytes(path);
+        let mut out = Vec::with_capacity(tmpl.len() + path_bytes.len());
+        for (i, part) in tmpl.split("{[path]s}").enumerate() {
+            if i > 0 {
+                out.extend_from_slice(&path_bytes);
+            }
+            out.extend_from_slice(part.as_bytes());
+        }
+        out
+    }
+
     fn write_config_template(path: &str) -> std::io::Result<()> {
         log::info!("creating template config file: path={path}");
-        if let Some(dir) = std::path::Path::new(path).parent() {
+        // `path` carries the reversible byte encoding; decode it for the OS.
+        let os_path = ghostty_os::osbytes::config_str_to_path(path);
+        if let Some(dir) = os_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let template = include_str!("config-template").replace("{[path]s}", path);
-        std::fs::write(path, template)
+        let template = Self::render_config_template(path);
+        std::fs::write(os_path, template)
     }
 
     /// Load configurations from the default configuration files. The default
@@ -4928,6 +4944,21 @@ impl CliTarget for Config {
     clippy::assert_is_empty
 )]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn config_template_written_at_non_utf8_path() {
+        use std::os::unix::ffi::OsStrExt;
+        let td = ghostty_os::TempDir::init().unwrap();
+        let dir = td.path().join(std::ffi::OsStr::from_bytes(b"cfg\xff"));
+        let file = dir.join("config.ghostty");
+        let enc = ghostty_os::osbytes::path_to_config_string(&file);
+        Config::write_config_template(&enc).unwrap();
+        let data = std::fs::read(&file).unwrap();
+        let raw = file.as_os_str().as_bytes();
+        assert!(data.windows(raw.len()).any(|w| w == raw));
+        assert!(!data.windows(3).any(|w| w == "\u{fdd0}".as_bytes()));
+    }
+
     use std::io::Cursor;
 
     use ghostty_os::TempDir;

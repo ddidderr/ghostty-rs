@@ -13,14 +13,14 @@ use crate::{
     screen::SemanticClick,
 };
 
-fn sp(a: A) -> Cmd {
+fn sp(a: A) -> Cmd<'static> {
     Cmd::init(a)
 }
 
-fn sp_opts(a: A, o: &str) -> Cmd {
+fn sp_opts(a: A, o: &str) -> Cmd<'_> {
     Cmd {
         action: a,
-        options_unvalidated: o.as_bytes().to_vec(),
+        options_unvalidated: o.as_bytes().into(),
     }
 }
 

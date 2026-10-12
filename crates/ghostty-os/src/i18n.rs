@@ -1,6 +1,3 @@
-#[cfg(not(windows))]
-use std::path::Path;
-
 use crate::i18n_locales::LOCALES;
 
 /// Application bundle ID, used as the gettext domain
@@ -42,16 +39,18 @@ pub fn init(resources_dir: &str) -> Result<(), InitError> {
     // is standard for translations.
     // (`std.fs.path.dirname` returns null for a bare relative name, where
     // `Path::parent` returns an empty path.)
-    let share_dir = Path::new(resources_dir)
+    let resources_dir = crate::osbytes::config_str_to_path(resources_dir);
+    let share_dir = resources_dir
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .ok_or(InitError::InvalidResourcesDir)?;
 
     // Build our locale path
-    let path = format!("{}/locale", share_dir.display());
+    let path = share_dir.join("locale");
 
-    // Bind our bundle ID to the given locale path
-    log::debug!("binding domain={BUNDLE_ID} path={path}");
+    // Bind our bundle ID to the given locale path (gettextrs takes a
+    // `Into<PathBuf>`, so non-UTF-8 bytes are preserved).
+    log::debug!("binding domain={BUNDLE_ID} path={}", path.display());
     gettextrs::bindtextdomain(BUNDLE_ID, path).map_err(|_| InitError::OutOfMemory)?;
     Ok(())
 }

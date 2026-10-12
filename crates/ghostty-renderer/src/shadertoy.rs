@@ -124,7 +124,7 @@ pub fn load_from_files(paths: &[PathItem], target: Target) -> Result<Vec<String>
             PathItem::Required(p) => (p, false),
         };
 
-        let shader = match load_from_file(Path::new(path), target) {
+        let shader = match load_from_file(&ghostty_os::osbytes::config_str_to_path(path), target) {
             Ok(s) => s,
             Err(Error::Io(e)) if optional && e.kind() == std::io::ErrorKind::NotFound => {
                 continue;
@@ -262,6 +262,22 @@ fn adapt_for_naga(full: &str) -> String {
         .replacen("#version 430 core", "#version 460 core", 1)
         .replace("    uniform ", "    ")
         .replacen("layout(location = 0) in vec4 gl_FragCoord;", "", 1)
+        // std140 pads `float iChannelTime[4]` to stride 16, which naga types
+        // differently from a plain local `float[4]`, so whole-array loads and
+        // copies (`float t[4] = iChannelTime;`, passing it to a function) do
+        // not validate. The block member is renamed and `iChannelTime` becomes
+        // a function that reconstructs the plain array from the padded
+        // elements; element reads (`iChannelTime[i]`) keep working.
+        .replacen(
+            "    float iChannelTime[4];\n",
+            "    float iChannelTimeUbo[4];\n",
+            1,
+        )
+        .replacen(
+            "\n#define CURSORSTYLE_BLOCK ",
+            "\nfloat[4] iChannelTime_plain() {\n    return float[4](iChannelTimeUbo[0], iChannelTimeUbo[1], iChannelTimeUbo[2], iChannelTimeUbo[3]);\n}\n#define iChannelTime iChannelTime_plain()\n\n#define CURSORSTYLE_BLOCK ",
+            1,
+        )
         .replacen(
             "layout(binding = 0) uniform sampler2D iChannel0;",
             "layout(set = 0, binding = 0) uniform texture2D iChannel0_tex;\n\
@@ -803,10 +819,32 @@ mod tests {
 
     #[test]
     fn msl_uniform_block_matches_std140_upload_layout() {
-        use std::mem::offset_of as o;
         // A shader that reads the scalar array so the accessor path is used.
-        let user = "void mainImage(out vec4 c, in vec2 p) { \
-            int i = int(p.x) & 3; c = vec4(iChannelTime[i], iChannelTime[2], iTime, iSampleRate); }";
+        check_msl_layout(
+            "void mainImage(out vec4 c, in vec2 p) { \
+            int i = int(p.x) & 3; c = vec4(iChannelTime[i], iChannelTime[2], iTime, iSampleRate); }",
+        );
+    }
+
+    #[test]
+    fn whole_array_copy_of_padded_uniform_validates_and_keeps_layout() {
+        // Whole-array loads/copies of the std140-padded `iChannelTime` must
+        // validate (naga types the padded array differently from a plain
+        // local `float[4]`) and not disturb the MSL block layout.
+        let user = "float sum4(float a[4]) { return a[0] + a[1] + a[2] + a[3]; }\n\
+            void mainImage(out vec4 c, in vec2 p) { \
+            float t[4] = iChannelTime; float u[4]; u = iChannelTime; \
+            c = vec4(t[1] + u[2], sum4(iChannelTime), iChannelTime[3], iTime); }";
+        let msl = check_msl_layout(user);
+        // The block member keeps the padded wrapper and is read per element.
+        assert!(msl.contains(".iChannelTimeUbo.inner[0].x"), "{msl}");
+        // GLSL output (OpenGL) validates too.
+        let compiled = compile_shadertoy(user, None).unwrap();
+        glsl_from_compiled(&compiled).unwrap();
+    }
+
+    fn check_msl_layout(user: &str) -> String {
+        use std::mem::offset_of as o;
         let compiled = compile_shadertoy(user, None).unwrap();
         let msl = msl_from_compiled(&compiled).unwrap();
         let (members, size) = msl_globals_layout(&msl);
@@ -817,7 +855,7 @@ mod tests {
             ("iTimeDelta", o!(Uniforms, time_delta)),
             ("iFrameRate", o!(Uniforms, frame_rate)),
             ("iFrame", o!(Uniforms, frame)),
-            ("iChannelTime", o!(Uniforms, channel_time)),
+            ("iChannelTimeUbo", o!(Uniforms, channel_time)),
             ("iChannelResolution", o!(Uniforms, channel_resolution)),
             ("iMouse", o!(Uniforms, mouse)),
             ("iDate", o!(Uniforms, date)),
@@ -856,7 +894,8 @@ mod tests {
         }
         assert_eq!(size, std::mem::size_of::<Uniforms>());
         // Reads of the padded array take the first lane.
-        assert!(msl.contains(".iChannelTime.inner["), "{msl}");
+        assert!(msl.contains(".iChannelTimeUbo.inner["), "{msl}");
         assert!(msl.contains("].x"), "{msl}");
+        msl
     }
 }

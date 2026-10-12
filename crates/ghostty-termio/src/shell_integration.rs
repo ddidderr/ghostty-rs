@@ -62,6 +62,16 @@ pub struct ShellIntegration {
     pub command: Command,
 }
 
+/// `<resource_dir>/<rel>` as an OS string. `resource_dir` carries the
+/// reversible config-string encoding (it may hold non-UTF-8 bytes), so it is
+/// decoded before reaching the filesystem or the child environment.
+fn resource_path(resource_dir: &str, rel: &str) -> std::ffi::OsString {
+    let mut p = ghostty_os::osbytes::config_str_to_os(resource_dir);
+    p.push("/");
+    p.push(rel);
+    p
+}
+
 /// Set up the command execution environment for automatic
 /// integrated shell integration and return a ShellIntegration
 /// struct describing the integration.  If integration fails
@@ -239,13 +249,13 @@ fn setup_bash(
     }
 
     // Set our new ENV to point to our integration script.
-    let script_path = format!("{resource_dir}/shell-integration/bash/ghostty.bash");
+    let script_path = resource_path(resource_dir, "shell-integration/bash/ghostty.bash");
     match std::fs::File::open(&script_path) {
         Ok(_) => {
             env.insert("ENV", script_path);
         }
         Err(err) => {
-            log::warn!("unable to open {script_path}: {err}");
+            log::warn!("unable to open {}: {err}", script_path.to_string_lossy());
             env.remove("GHOSTTY_BASH_ENV");
             return Ok(None);
         }
@@ -278,9 +288,9 @@ fn setup_bash(
 /// from `XDG_DATA_DIRS` when integration is complete.
 fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
     // Get our path to the shell integration directory.
-    let integ_path = format!("{resource_dir}/shell-integration");
+    let integ_path = resource_path(resource_dir, "shell-integration");
     if let Err(err) = std::fs::read_dir(&integ_path) {
-        log::warn!("unable to open {integ_path}: {err}");
+        log::warn!("unable to open {}: {err}", integ_path.to_string_lossy());
         return false;
     }
 
@@ -297,7 +307,7 @@ fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
     let current = env
         .get(key)
         .unwrap_or_else(|| std::ffi::OsStr::new("/usr/local/share:/usr/share"));
-    let new = prepend_env_os(current, std::ffi::OsStr::new(&integ_path));
+    let new = prepend_env_os(current, &integ_path);
     env.insert(key, new);
 
     true
@@ -374,10 +384,10 @@ fn setup_zsh(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<
     }
 
     // Set our new ZDOTDIR to point to our shell resource directory.
-    let integ_path = format!("{resource_dir}/shell-integration/zsh");
+    let integ_path = resource_path(resource_dir, "shell-integration/zsh");
     if !Path::new(&integ_path).is_dir() {
         // Mirrors openDirAbsolute failing (missing or not a directory).
-        log::warn!("unable to open {integ_path}");
+        log::warn!("unable to open {}", integ_path.to_string_lossy());
         return None;
     }
     env.insert("ZDOTDIR", integ_path);

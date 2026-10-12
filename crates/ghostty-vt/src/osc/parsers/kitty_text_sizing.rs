@@ -2,7 +2,7 @@
 //! Specification: https://sw.kovidgoyal.net/kitty/text-sizing-protocol/
 //! (ZIG/src/terminal/osc/parsers/kitty_text_sizing.zig)
 
-use crate::osc::{Command, Parser, State, encoding};
+use crate::osc::{ByteStorage, Command, Parser, State, encoding};
 
 pub const MAX_PAYLOAD_LENGTH: usize = 4096;
 
@@ -45,7 +45,7 @@ impl HAlign {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OSC {
+pub struct OSC<'a> {
     /// 1 - 7 (u3)
     pub scale: u8,
     /// 0 - 7 (u3), 0 means default
@@ -56,7 +56,7 @@ pub struct OSC {
     pub denominator: u8,
     pub valign: VAlign,
     pub halign: HAlign,
-    pub text: Vec<u8>,
+    pub text: std::borrow::Cow<'a, [u8]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,7 +91,19 @@ fn parse_u4(value: &[u8]) -> Option<u8> {
     Some(acc as u8)
 }
 
-impl OSC {
+impl OSC<'_> {
+    pub fn into_owned(self) -> OSC<'static> {
+        OSC {
+            scale: self.scale,
+            width: self.width,
+            numerator: self.numerator,
+            denominator: self.denominator,
+            valign: self.valign,
+            halign: self.halign,
+            text: super::super::own(self.text),
+        }
+    }
+
     fn update(&mut self, key: u8, value: &[u8]) -> Result<(), UpdateError> {
         // All values are numeric, so we can do a small hack here
         let v = parse_u4(value).ok_or(UpdateError::InvalidValue)?;
@@ -119,31 +131,41 @@ impl OSC {
     }
 }
 
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
     debug_assert_eq!(parser.state, State::S66);
 
-    let data = parser.data()?;
+    parser.data()?;
 
-    let Some(payload_start) = data.iter().position(|&c| c == b';') else {
-        log::warn!("missing semicolon before payload");
-        parser.state = State::Invalid;
-        return None;
+    // Validate with a short-lived borrow (marking the parser invalid cannot
+    // overlap with the borrow returned in the command below).
+    let payload_start = {
+        let data = parser.payload();
+        let Some(payload_start) = data.iter().position(|&c| c == b';') else {
+            log::warn!("missing semicolon before payload");
+            parser.state = State::Invalid;
+            return None;
+        };
+        let payload = &data[payload_start + 1..];
+
+        // Payload has to be a URL-safe UTF-8 string,
+        // and be under the size limit.
+        if payload.len() > MAX_PAYLOAD_LENGTH {
+            log::warn!("payload is too long");
+            parser.state = State::Invalid;
+            return None;
+        }
+        if !encoding::is_safe_utf8(payload) {
+            log::warn!("payload is not escape code safe UTF-8");
+            parser.state = State::Invalid;
+            return None;
+        }
+        payload_start
     };
-    let payload = &data[payload_start + 1..];
 
-    // Payload has to be a URL-safe UTF-8 string,
-    // and be under the size limit.
-    if payload.len() > MAX_PAYLOAD_LENGTH {
-        log::warn!("payload is too long");
-        parser.state = State::Invalid;
-        return None;
-    }
-    if !encoding::is_safe_utf8(payload) {
-        log::warn!("payload is not escape code safe UTF-8");
-        parser.state = State::Invalid;
-        return None;
-    }
-
+    let data = parser.payload();
     let mut cmd = OSC {
         scale: 1,
         width: 0,
@@ -151,7 +173,7 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
         denominator: 0,
         valign: VAlign::Top,
         halign: HAlign::Left,
-        text: payload.to_vec(),
+        text: data[payload_start + 1..].into(),
     };
 
     // Parse any arguments if given
@@ -191,15 +213,15 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command>
 mod tests {
     use super::*;
 
-    fn run(input: &[u8]) -> Option<Command> {
+    fn run(input: &[u8]) -> Option<Command<'static>> {
         let mut p = Parser::init(false);
         for &ch in input {
             p.next(ch);
         }
-        p.end(Some(0x1b))
+        p.end(Some(0x1b)).map(Command::into_owned)
     }
 
-    fn sizing(input: &[u8]) -> OSC {
+    fn sizing(input: &[u8]) -> OSC<'static> {
         match run(input) {
             Some(Command::KittyTextSizing(o)) => o,
             other => panic!("unexpected {other:?}"),

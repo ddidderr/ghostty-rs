@@ -76,7 +76,7 @@ impl ThemeListElement {
     #[must_use]
     pub fn to_uri(&self) -> String {
         let mut out = String::from("file://");
-        for b in self.path.bytes() {
+        for b in ghostty_os::osbytes::config_str_to_bytes(&self.path) {
             // std.Uri path component escaping: unreserved + sub-delims + ":@/".
             if b.is_ascii_alphanumeric()
                 || matches!(
@@ -397,6 +397,17 @@ mod tests {
             rank: None,
         };
         assert_eq!("file:///a%20b/c%25d", t.to_uri());
+    }
+
+    #[test]
+    fn uri_escaping_percent_encodes_original_bytes() {
+        let t = ThemeListElement {
+            location: Location::User,
+            path: ghostty_os::osbytes::bytes_to_config_string(b"/a/\xff\xc3x"),
+            theme: "x".into(),
+            rank: None,
+        };
+        assert_eq!("file:///a/%FF%C3x", t.to_uri());
     }
 
     #[test]

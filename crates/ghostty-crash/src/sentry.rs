@@ -242,6 +242,9 @@ pub(crate) struct Crash<'a> {
     pub value: &'a str,
     /// Sentry mechanism type: `panic` or `signalhandler`.
     pub mechanism: &'a str,
+    /// Signal info, registers and stack of the faulting thread (Darwin
+    /// signal path; see `native.rs`).
+    pub native: Option<&'a crate::native::Native>,
 }
 
 /// Write the event JSON (single line). Mirrors what Sentry produces after
@@ -281,7 +284,13 @@ pub(crate) fn write_event<W: fmt::Write>(w: &mut W, st: &State, c: &Crash<'_>) -
     json_str(w, c.value)?;
     w.write_str(",\"mechanism\":{\"type\":")?;
     json_str(w, c.mechanism)?;
-    w.write_str(",\"handled\":false}}]}}")
+    w.write_str(",\"handled\":false")?;
+    if let Some(n) = c.native {
+        crate::native::write_mechanism_rest_and_stacktrace(w, n)?;
+        w.write_str("}]}}")
+    } else {
+        w.write_str("}}]}}")
+    }
 }
 
 /// Write the envelope header line and the event item header line (the event
@@ -362,6 +371,7 @@ fn write_report(
         kind,
         value,
         mechanism,
+        native: None,
     };
 
     let mut event = String::new();

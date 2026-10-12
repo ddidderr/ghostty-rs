@@ -791,7 +791,10 @@ impl Subprocess {
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
             log::info!("found Ghostty resources dir: {dir}");
-            env.insert("GHOSTTY_RESOURCES_DIR", dir.clone());
+            env.insert(
+                "GHOSTTY_RESOURCES_DIR",
+                ghostty_os::osbytes::config_str_to_os(dir),
+            );
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
@@ -810,15 +813,7 @@ impl Subprocess {
             // Rust-specific: the in-repo dev resources dir (`<ws>/resources`)
             // carries its compiled terminfo inside itself, so prefer that
             // when present.
-            let own = format!("{base}/terminfo");
-            let terminfo = if std::path::Path::new(&format!("{own}/x/xterm-ghostty")).exists() {
-                own
-            } else {
-                let parent = std::path::Path::new(base)
-                    .parent()
-                    .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
-                format!("{parent}/terminfo")
-            };
+            let terminfo = terminfo_dir(base);
             env.insert("TERMINFO", terminfo);
         } else {
             if cfg!(target_vendor = "apple") {
@@ -1225,31 +1220,49 @@ fn add_ghostty_path(env: &mut EnvMap) {
     }
 }
 
+/// The `TERMINFO` directory for a resources dir (reversible config-string
+/// encoding in, raw OS string out).
+fn terminfo_dir(base: &str) -> std::ffi::OsString {
+    let base = ghostty_os::osbytes::config_str_to_os(base);
+    let own = std::path::Path::new(&base).join("terminfo");
+    if own.join("x/xterm-ghostty").exists() {
+        own.into_os_string()
+    } else {
+        let mut parent = std::path::Path::new(&base)
+            .parent()
+            .map_or_else(std::ffi::OsString::new, |p| p.as_os_str().to_owned());
+        parent.push("/terminfo");
+        parent
+    }
+}
+
 /// macOS: export additional data directories from our application bundle
 /// (`XDG_DATA_DIRS` and `MANPATH`).
 pub fn darwin_bundle_env(env: &mut EnvMap, resources_dir: &str) {
     let xdg_data_dir_key = "XDG_DATA_DIRS";
-    let data_dir = format!("{resources_dir}/..");
+    let mut data_dir = ghostty_os::osbytes::config_str_to_os(resources_dir);
+    data_dir.push("/..");
     let current = env.get(xdg_data_dir_key).map_or_else(
-        || "/usr/local/share:/usr/share".to_owned(),
-        |v| v.to_string_lossy().into_owned(),
+        || std::ffi::OsString::from("/usr/local/share:/usr/share"),
+        std::ffi::OsStr::to_owned,
     );
     env.insert(
         xdg_data_dir_key,
-        ghostty_os::append_env(&current, &data_dir),
+        ghostty_os::env::append_env_os(&current, &data_dir),
     );
 
     let manpath_key = "MANPATH";
-    let man_dir = format!("{resources_dir}/../man");
+    let mut man_dir = ghostty_os::osbytes::config_str_to_os(resources_dir);
+    man_dir.push("/../man");
     // Always append with colon in front, as it mean that if
     // `MANPATH` is empty, then it should be treated as an extra
     // path instead of overriding all paths set by OS.
     let current = env
         .get(manpath_key)
-        .map_or_else(String::new, |v| v.to_string_lossy().into_owned());
+        .map_or_else(std::ffi::OsString::new, std::ffi::OsStr::to_owned);
     env.insert(
         manpath_key,
-        ghostty_os::append_env_always(&current, &man_dir),
+        ghostty_os::env::append_env_always_os(&current, &man_dir),
     );
 }
 

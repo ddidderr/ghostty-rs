@@ -242,7 +242,7 @@ pub enum Action {
     EscDispatch(Esc),
 
     /// Execute the OSC command.
-    OscDispatch(osc::Command),
+    OscDispatch(osc::Command<'static>),
 
     /// DCS-related events.
     DcsHook(Dcs),
@@ -358,7 +358,7 @@ impl Parser {
         match self.state {
             State::OscString => {
                 if let Some(cmd) = self.osc_parser.end(Some(c)) {
-                    f(0, Action::OscDispatch(cmd));
+                    f(0, Action::OscDispatch(cmd.into_owned()));
                 }
             }
             State::DcsPassthrough => f(0, Action::DcsUnhook),
@@ -840,7 +840,7 @@ mod tests {
         assert_eq!(
             a[0],
             Some(Action::OscDispatch(Command::ChangeWindowTitle(
-                b"abc".to_vec()
+                b"abc".to_vec().into()
             )))
         );
     }
@@ -860,7 +860,7 @@ mod tests {
         assert_eq!(
             a[0],
             Some(Action::OscDispatch(Command::ChangeWindowTitle(
-                b"abc".to_vec()
+                b"abc".to_vec().into()
             )))
         );
     }

@@ -2542,7 +2542,12 @@ mod clipboard {
             return;
         }
 
-        show_clipboard_confirmation(surface, ClipboardRequest::Osc52Write(clipboard_type), &text);
+        show_clipboard_confirmation(
+            surface,
+            ClipboardRequest::Osc52Write(clipboard_type),
+            &text,
+            false,
+        );
     }
 
     fn clipboard_to_u32(c: Clipboard) -> u32 {
@@ -2596,7 +2601,7 @@ mod clipboard {
             match core.complete_clipboard_request(state, &text, false) {
                 Ok(()) => {}
                 Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
-                    show_clipboard_confirmation(&this, state, &text);
+                    show_clipboard_confirmation(&this, state, &text, false);
                     return;
                 }
                 Err(err) => {
@@ -2622,7 +2627,7 @@ mod clipboard {
         match core.complete_clipboard_request(ClipboardRequest::Paste, text, false) {
             Ok(()) => {}
             Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
-                show_clipboard_confirmation(surface, ClipboardRequest::Paste, text);
+                show_clipboard_confirmation(surface, ClipboardRequest::Paste, text, false);
             }
             Err(err) => log::warn!("failed to complete clipboard request err={err}"),
         }
@@ -2642,7 +2647,7 @@ mod clipboard {
             Ok(()) => {}
             Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
                 let text = ghostty_os::osbytes::bytes_to_config_string(bytes);
-                show_clipboard_confirmation(surface, ClipboardRequest::Paste, &text);
+                show_clipboard_confirmation(surface, ClipboardRequest::Paste, &text, true);
             }
             Err(err) => log::warn!("failed to complete clipboard request err={err}"),
         }
@@ -2656,7 +2661,24 @@ mod clipboard {
         }
     }
 
-    fn show_clipboard_confirmation(surface: &Surface, req: ClipboardRequest, text: &str) {
+    /// Bytes to paste once a paste confirmation was accepted. Only text that
+    /// was byte-escaped for the dialog (`encoded`, from `paste_bytes`) is
+    /// decoded; ordinary text is pasted verbatim, even if it happens to
+    /// contain the escape character.
+    pub(super) fn confirmed_paste_bytes(text: &str, encoded: bool) -> Vec<u8> {
+        if encoded {
+            ghostty_os::osbytes::config_str_to_bytes(text)
+        } else {
+            text.as_bytes().to_vec()
+        }
+    }
+
+    fn show_clipboard_confirmation(
+        surface: &Surface,
+        req: ClipboardRequest,
+        text: &str,
+        encoded: bool,
+    ) {
         // Build a text buffer for our contents
         let contents_buf = gtk::TextBuffer::new(None);
         contents_buf.insert_at_cursor(text);
@@ -2688,8 +2710,8 @@ mod clipboard {
             // Get our text
             let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
             let result = if matches!(req, ClipboardRequest::Paste) {
-                // Undo the byte escape used for non-UTF-8 pastes.
-                core.complete_paste_bytes(&ghostty_os::osbytes::config_str_to_bytes(&text), true)
+                // Undo the byte escape only for non-UTF-8 pastes.
+                core.complete_paste_bytes(&confirmed_paste_bytes(&text, encoded), true)
             } else {
                 core.complete_clipboard_request(req, &text, true)
             };
@@ -3873,6 +3895,19 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmed_paste_decodes_only_encoded_text() {
+        // Ordinary text containing the escape char + U+00FF stays intact.
+        let text = "a\u{fdd0}\u{ff}b";
+        assert_eq!(
+            clipboard::confirmed_paste_bytes(text, false),
+            text.as_bytes()
+        );
+        // Text escaped by `paste_bytes` is decoded back to the raw bytes.
+        let enc = ghostty_os::osbytes::bytes_to_config_string(b"a\xffb");
+        assert_eq!(clipboard::confirmed_paste_bytes(&enc, true), b"a\xffb");
+    }
 
     #[test]
     fn compute_fraction_clamps() {

@@ -1,10 +1,13 @@
 //! OSC 1 (ZIG/src/terminal/osc/parsers/change_window_icon.zig).
-use crate::osc::{Command, Parser};
+use crate::osc::{ByteStorage, Command, Parser};
 
 /// Parse OSC 1
-pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
-    let data = parser.data()?;
-    Some(Command::ChangeWindowIcon(data))
+pub fn parse<S: ByteStorage>(
+    parser: &mut Parser<S>,
+    _terminator_ch: Option<u8>,
+) -> Option<Command<'_>> {
+    parser.data()?;
+    Some(Command::ChangeWindowIcon(parser.payload().into()))
 }
 
 #[cfg(test)]
@@ -19,6 +22,6 @@ mod tests {
             p.next(*c);
         }
         let cmd = p.end(None).unwrap();
-        assert_eq!(cmd, Command::ChangeWindowIcon(b"ab".to_vec()));
+        assert_eq!(cmd, Command::ChangeWindowIcon(b"ab".to_vec().into()));
     }
 }

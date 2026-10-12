@@ -100,8 +100,16 @@ pub fn os_to_config_string(s: &OsStr) -> String {
     }
     #[cfg(not(unix))]
     {
-        s.to_string_lossy().into_owned()
+        valid_str_to_config_string(&s.to_string_lossy())
     }
+}
+
+/// Encode a string that is already valid UTF-8 (e.g. the WTF-8 to UTF-8
+/// conversion of a non-Unix OS string). The only thing that needs escaping is
+/// a literal escape character, so decoding stays a bijection on every
+/// platform. Shared (not cfg gated) so it is testable everywhere.
+pub fn valid_str_to_config_string(s: &str) -> String {
+    bytes_to_config_string(s.as_bytes())
 }
 
 /// Inverse of [`os_to_config_string`].
@@ -140,6 +148,17 @@ mod tests {
         let icons = "\u{f500}\u{f780}\u{f7ff}\u{fd46}\u{e0b0}";
         assert_eq!(bytes_to_config_string(icons.as_bytes()), icons);
         assert_eq!(config_str_to_bytes(icons), icons.as_bytes());
+    }
+
+    #[test]
+    fn valid_str_encoder_escapes_literal_escape_char() {
+        // Shared logic of the non-Unix encoder: U+FDD0 U+00FF must not be
+        // mistaken for the escape of byte 0xFF.
+        let s = "a\u{fdd0}\u{ff}";
+        let e = valid_str_to_config_string(s);
+        assert_eq!(e, "a\u{fdd0}\u{fdd0}\u{ff}");
+        assert_eq!(config_str_to_bytes(&e), s.as_bytes());
+        assert_eq!(valid_str_to_config_string("plain"), "plain");
     }
 
     #[test]
