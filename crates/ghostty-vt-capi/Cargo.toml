@@ -1,0 +1,57 @@
+[package]
+name = "ghostty-vt-capi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "C ABI of libghostty-vt (include/ghostty/vt.h), ported from Ghostty's lib_vt.zig"
+
+# The crate name cannot contain a hyphen, so Cargo produces
+# `libghostty_vt_capi.{so,a}`. `just vt-lib` (and the integration tests)
+# install them as `libghostty-vt.{so,a}`, the names Ghostty ships; the soname
+# is set to `libghostty-vt.so` by build.rs.
+[lib]
+name = "ghostty_vt_capi"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+ghostty-vt.workspace = true
+ghostty-input.workspace = true
+log = "0.4.34"
+
+# The workspace forbids `unsafe`; this crate is the C ABI boundary, so it
+# denies it instead and allows it (with SAFETY comments) in the FFI modules.
+# Everything else is copied from `[workspace.lints]`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"
+# The exported functions are `unsafe extern "C"` mirroring the header contracts.
+missing_safety_doc = "allow"
+# `&mut x` coerced to `*mut T` is the idiomatic way to pass out-params in FFI tests.
+borrow_as_ptr = "allow"
+# Allocations are made with the layout of the pointee, so the cast is aligned.
+cast_ptr_alignment = "allow"
