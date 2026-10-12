@@ -37,6 +37,7 @@
 pub mod binding;
 pub mod clipboard;
 pub mod config;
+pub mod inspector;
 pub mod keyboard;
 pub mod mouse;
 
@@ -250,6 +251,9 @@ pub struct Surface {
 
     /// Used to rate limit BEL handling.
     last_bell_time: Cell<Option<Instant>>,
+
+    /// The terminal inspector, if active (Zig: `inspector: ?*Inspector`).
+    pub(crate) inspector: RefCell<Option<Arc<ghostty_inspector::Shared>>>,
 
     /// Debug screenshot state (see `debug_screenshot`).
     created: Instant,
@@ -474,6 +478,7 @@ impl Surface {
             command_timer: Cell::new(None),
             search: RefCell::new(None),
             last_bell_time: Cell::new(None),
+            inspector: RefCell::new(None),
             created: Instant::now(),
             debug_shot_done: Cell::new(false),
         });
@@ -1798,7 +1803,7 @@ impl Drop for Surface {
 /// (`rt_surface.defaultTermioEnv()`, which already removed the variables it
 /// does not want to leak); only if it provides nothing (the Zig error path)
 /// do we fall back to the process environment (`getEnvMap`).
-fn rt_surface_env(rt: &dyn RtSurface) -> std::collections::HashMap<String, String> {
+fn rt_surface_env(rt: &dyn RtSurface) -> ghostty_os::EnvMap {
     let rt_env = rt.default_termio_env();
     if rt_env.is_empty() {
         return ghostty_os::env::get_env_map();
@@ -1959,5 +1964,17 @@ impl CoreSurface for Surface {
             xdpi: s.xdpi,
             ydpi: s.ydpi,
         }
+    }
+
+    fn activate_inspector(&self) -> Result<(), CoreError> {
+        Surface::activate_inspector(self)
+    }
+
+    fn deactivate_inspector(&self) {
+        Surface::deactivate_inspector(self);
+    }
+
+    fn render_inspector(&self, ui: &ghostty_inspector::imgui::Ui) {
+        Surface::render_inspector(self, ui);
     }
 }

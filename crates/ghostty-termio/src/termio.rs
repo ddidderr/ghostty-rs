@@ -34,6 +34,7 @@ use ghostty_config::types_b::{ClipboardAccess, GraphemeWidthMethod, OSCColorRepo
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::message::Message as RendererMessage;
 use ghostty_renderer::size::Size;
+use ghostty_renderer::state::InspectorHook;
 use ghostty_terminal::kitty::graphics_storage::TerminalInfo;
 use ghostty_terminal::point::{Coordinate, Point};
 use ghostty_terminal::screen::Scroll;
@@ -221,8 +222,9 @@ impl Output {
         // the lock to grab our read data.
         let outbox = {
             let mut term = self.state.lock_terminal();
+            let inspector = term.state().inspector.clone();
             let mut inner = self.inner();
-            self.process_output_locked(&mut term, &mut inner, buf);
+            self.process_output_locked(&mut term, &mut inner, buf, inspector.as_deref());
 
             // If our stream handling caused messages to be sent to the
             // mailbox thread, then we need to wake it up so that it
@@ -241,7 +243,13 @@ impl Output {
     }
 
     /// Process output from the pty but the lock is already held.
-    fn process_output_locked(&self, term: &mut Terminal, inner: &mut OutputInner, buf: &[u8]) {
+    fn process_output_locked(
+        &self,
+        term: &mut Terminal,
+        inner: &mut OutputInner,
+        buf: &[u8],
+        inspector: Option<&dyn InspectorHook>,
+    ) {
         // Schedule a render. We can call this first because we have the lock.
         inner.stream.state.queue_render();
 
@@ -260,7 +268,20 @@ impl Output {
                 .push(RendererMessage::ResetCursorBlink, Timeout::Instant);
         }
 
-        if let Err(err) = inner.stream.process(term, buf) {
+        // If we have an inspector, we enter SLOW MODE because we need to
+        // process a byte at a time alternating between the inspector handler
+        // and the termio handler. This is very slow compared to our
+        // optimizations below but at least users only pay for it if they're
+        // using the inspector.
+        if let Some(insp) = inspector {
+            for &byte in buf {
+                insp.record_pty_read(term, &[byte]);
+
+                if let Err(err) = inner.stream.process_byte(term, byte) {
+                    log::error!("error processing terminal data: {err:?}");
+                }
+            }
+        } else if let Err(err) = inner.stream.process(term, buf) {
             log::error!("error processing terminal data: {err:?}");
         }
     }

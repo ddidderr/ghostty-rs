@@ -3,24 +3,29 @@
 //! implementation with the same layout, key bindings and behaviour.
 //!
 //! Known differences from the vaxis version:
-//!   * hyperlinks (OSC 8) on theme names/paths are not emitted,
-//!   * double/dashed/dotted/curly underlines are drawn as single underlines,
-//!   * the terminal color scheme is not queried live: it defaults to light
+//!   * input is read with `termina` (not crossterm) so terminal responses
+//!     such as the color-scheme report are visible; drawing still goes
+//!     through ratatui's crossterm backend,
+//!   * OSC 8 hyperlinks and the double/dashed/dotted/curly underline styles
+//!     are re-emitted as raw escapes after each frame (see [`Overlay`]),
+//!   * the color scheme is queried (`CSI ? 996 n`) and tracked
+//!     (`CSI ? 2031 h`) (sent unconditionally; vaxis gates on DECRQM 2031 which
+//!     termina cannot parse); it starts as light
 //!     like the Zig code does, but `COLORFGBG` is used as a hint if set.
 
 use std::cell::RefCell;
+use std::fmt::Write as _;
 use std::io::Write;
 
 use ghostty_config::config::Config;
 use ghostty_config::types_a::TerminalColor;
+use ratatui::Frame;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
-    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
-    MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::{Frame, crossterm};
 
 use super::{
     ColorScheme, SMALL_LIST_THRESHOLD, ThemeListElement, absolute_path, should_include_theme,
@@ -189,6 +194,146 @@ fn base64(data: &[u8]) -> String {
     out
 }
 
+/// Underline styles ratatui cannot express (`SGR 4:N`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ul {
+    Double,
+    Curly,
+    Dotted,
+    Dashed,
+}
+
+impl Ul {
+    fn sgr(self) -> &'static str {
+        match self {
+            Ul::Double => "4:2",
+            Ul::Curly => "4:3",
+            Ul::Dotted => "4:4",
+            Ul::Dashed => "4:5",
+        }
+    }
+}
+
+/// A recorded decoration of drawn text (absolute cell coordinates).
+struct Deco {
+    x: u16,
+    y: u16,
+    width: u16,
+    link: Option<String>,
+    ul: Option<Ul>,
+}
+
+/// A decorated run of cells, re-emitted as raw escapes after ratatui has
+/// flushed the frame: text with an OSC 8 hyperlink and/or an extended
+/// underline style. Each run is a single-style, single-row segment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overlay {
+    pub x: u16,
+    pub y: u16,
+    /// The cell text of the run.
+    pub text: String,
+    pub style: Style,
+    pub link: Option<String>,
+    pub ul: Option<Ul>,
+}
+
+impl Overlay {
+    fn capture(buf: &Buffer, d: &Deco) -> Overlay {
+        let mut text = String::new();
+        let mut skip = 0u16;
+        let mut style = Style::default();
+        for dx in 0..d.width {
+            let Some(cell) = buf.cell((d.x + dx, d.y)) else {
+                break;
+            };
+            if dx == 0 {
+                style = cell.style();
+            }
+            if skip > 0 {
+                skip -= 1;
+                continue;
+            }
+            text.push_str(cell.symbol());
+            skip = gw(cell.symbol()).saturating_sub(1);
+        }
+        Overlay {
+            x: d.x,
+            y: d.y,
+            text,
+            style,
+            link: d.link.clone(),
+            ul: d.ul,
+        }
+    }
+}
+
+fn sgr_color(c: Color, fg: bool) -> String {
+    let (base, bright, ext, reset) = if fg {
+        (30, 90, 38, 39)
+    } else {
+        (40, 100, 48, 49)
+    };
+    match c {
+        Color::Reset => reset.to_string(),
+        Color::Black => base.to_string(),
+        Color::Red => (base + 1).to_string(),
+        Color::Green => (base + 2).to_string(),
+        Color::Yellow => (base + 3).to_string(),
+        Color::Blue => (base + 4).to_string(),
+        Color::Magenta => (base + 5).to_string(),
+        Color::Cyan => (base + 6).to_string(),
+        Color::Gray => (base + 7).to_string(),
+        Color::DarkGray => bright.to_string(),
+        Color::LightRed => (bright + 1).to_string(),
+        Color::LightGreen => (bright + 2).to_string(),
+        Color::LightYellow => (bright + 3).to_string(),
+        Color::LightBlue => (bright + 4).to_string(),
+        Color::LightMagenta => (bright + 5).to_string(),
+        Color::LightCyan => (bright + 6).to_string(),
+        Color::White => (bright + 7).to_string(),
+        Color::Rgb(r, g, b) => format!("{ext};2;{r};{g};{b}"),
+        Color::Indexed(i) => format!("{ext};5;{i}"),
+    }
+}
+
+/// The raw escape output that draws `overlays` on top of the frame.
+#[must_use]
+pub fn render_overlays(overlays: &[Overlay]) -> String {
+    let mut out = String::new();
+    for o in overlays {
+        let mut sgr: Vec<String> = vec!["0".to_owned()];
+        if let Some(c) = o.style.fg.map(|c| sgr_color(c, true)) {
+            sgr.push(c);
+        }
+        if let Some(c) = o.style.bg.map(|c| sgr_color(c, false)) {
+            sgr.push(c);
+        }
+        if o.style.add_modifier.contains(Modifier::BOLD) {
+            sgr.push("1".to_owned());
+        }
+        if o.style.add_modifier.contains(Modifier::ITALIC) {
+            sgr.push("3".to_owned());
+        }
+        if o.style.add_modifier.contains(Modifier::UNDERLINED) {
+            sgr.push("4".to_owned());
+        }
+        if let Some(ul) = o.ul {
+            sgr.push(ul.sgr().to_owned());
+        }
+        let _ = write!(out, "\x1b[{};{}H", o.y + 1, o.x + 1);
+        let _ = write!(out, "\x1b[{}m", sgr.join(";"));
+        if let Some(link) = &o.link {
+            let _ = write!(out, "\x1b]8;;{link}\x1b\\");
+        }
+        out.push_str(&o.text);
+        if o.link.is_some() {
+            out.push_str("\x1b]8;;\x1b\\");
+        }
+        out.push_str("\x1b[0m");
+    }
+    out
+}
+
 /// Cached result of loading the currently previewed theme.
 enum Loaded {
     Ok(Box<Config>),
@@ -222,6 +367,7 @@ pub struct Preview {
     /// Where `w` writes the auto theme file (overridable for tests).
     pub auto_theme_path: Option<String>,
     effects: Vec<Effect>,
+    overlays: Vec<Overlay>,
 }
 
 fn initial_scheme() -> Scheme {
@@ -257,6 +403,7 @@ impl Preview {
             loaded: None,
             auto_theme_path: None,
             effects: vec![],
+            overlays: vec![],
         };
         p.update_filtered();
         p
@@ -535,7 +682,12 @@ impl Preview {
     pub fn draw(&mut self, buf: &mut Buffer) -> Option<Position> {
         let area = buf.area;
         let cell = RefCell::new(buf);
-        let win = Win { buf: &cell, area };
+        let decos = RefCell::new(Vec::new());
+        let win = Win {
+            buf: &cell,
+            decos: &decos,
+            area,
+        };
         win.clear();
 
         let theme_list = win.child(0, 0, LIST_WIDTH.min(area.width), area.height);
@@ -607,7 +759,7 @@ impl Preview {
             if style == St::Selected {
                 theme_list.print("\u{276f} ", self.ui_selected(), row, 0);
             }
-            theme_list.print(
+            theme_list.print_ex(
                 &theme.theme,
                 match style {
                     St::Normal => self.ui_standard(),
@@ -616,6 +768,8 @@ impl Preview {
                 },
                 row,
                 2,
+                Some(&theme.to_uri()),
+                None,
             );
             if style == St::Selected {
                 let name_len = gw(&theme.theme);
@@ -732,7 +886,22 @@ impl Preview {
                 }
             }
         }
+
+        // Collect the decorations (hyperlinks, extended underlines) with the
+        // final cell contents/styles for the raw-escape overlay pass.
+        let decos = decos.into_inner();
+        let buf = cell.into_inner();
+        self.overlays = decos
+            .iter()
+            .map(|d| Overlay::capture(buf, d))
+            .collect::<Vec<_>>();
         cursor
+    }
+
+    /// Hyperlink / extended-underline overlays of the last [`Self::draw`].
+    #[must_use]
+    pub fn overlays(&self) -> &[Overlay] {
+        &self.overlays
     }
 
     fn load_current(&mut self) -> Option<&Loaded> {
@@ -785,11 +954,13 @@ impl Preview {
                     middle.saturating_sub(1),
                     (child.area.width / 2).saturating_sub(gw(&text) / 2),
                 );
-                child.print(
+                child.print_ex(
                     &theme.path,
                     ui_err,
                     middle,
                     (child.area.width / 2).saturating_sub(gw(&theme.path) / 2),
+                    Some(&theme.to_uri()),
+                    None,
                 );
                 child.print(
                     err,
@@ -821,8 +992,8 @@ impl Preview {
         let standard_bold = standard.add_modifier(Modifier::BOLD);
         let standard_italic = standard.add_modifier(Modifier::ITALIC);
         let standard_bold_italic = standard.add_modifier(Modifier::BOLD | Modifier::ITALIC);
-        // TODO: vaxis supports double/dashed/dotted/curly underlines.
-        let standard_underline = standard.add_modifier(Modifier::UNDERLINED);
+        // Single underline is a plain SGR 4; the other styles (double,
+        // dashed, dotted, curly) are re-emitted as raw `SGR 4:N` overlays.
 
         let color = |i: usize| {
             let c = config.palette.value[i];
@@ -833,17 +1004,22 @@ impl Preview {
         {
             let child = win.child(x_off, next_start, width, 4);
             child.fill(standard);
-            child.print(
+            let uri = theme.to_uri();
+            child.print_ex(
                 &theme.theme,
                 standard_bold_italic,
                 1,
                 (child.area.width / 2).saturating_sub(gw(&theme.theme) / 2),
+                Some(&uri),
+                None,
             );
-            child.print(
+            child.print_ex(
                 &theme.path,
                 standard,
                 2,
                 (child.area.width / 2).saturating_sub(gw(&theme.path) / 2),
+                Some(&uri),
+                None,
             );
             next_start += child.area.height;
         }
@@ -904,7 +1080,6 @@ impl Preview {
                 (c(1), c(2), c(3), c(4), c(5), c(6));
             let color6ul = color6.add_modifier(Modifier::UNDERLINED);
             let (color10, color12, color238) = (c(10), c(12), c(238));
-            let _ = standard_underline;
             child.fill(standard);
 
             let rule = |row: u16, head: &str| {
@@ -1174,19 +1349,32 @@ impl Preview {
                     row += 1;
                     col = 2;
                 }
+                let mut ul = None;
                 let style = match word {
                     "ipsum" => Style::default().fg(color(2)).bg(bg),
                     "consectetur" => standard_bold,
                     "reprehenderit" => standard_italic,
                     "Praesent" => standard_bold_italic,
-                    "auctor" | "dui" | "erat" | "enim" | "odio" => {
-                        // TODO: distinct underline styles (double, dashed,
-                        // dotted, curly) are drawn as single underlines.
-                        standard.add_modifier(Modifier::UNDERLINED)
+                    "auctor" => standard.add_modifier(Modifier::UNDERLINED),
+                    "dui" => {
+                        ul = Some(Ul::Double);
+                        standard
+                    }
+                    "erat" => {
+                        ul = Some(Ul::Dashed);
+                        standard
+                    }
+                    "enim" => {
+                        ul = Some(Ul::Dotted);
+                        standard
+                    }
+                    "odio" => {
+                        ul = Some(Ul::Curly);
+                        standard
                     }
                     _ => standard,
                 };
-                child.print(word, style, row, col);
+                child.print_ex(word, style, row, col, None, ul);
                 col = col.saturating_add(word_len).saturating_add(1);
             }
         }
@@ -1245,6 +1433,7 @@ fn gw(s: &str) -> u16 {
 #[derive(Clone, Copy)]
 struct Win<'a, 'b> {
     buf: &'a RefCell<&'b mut Buffer>,
+    decos: &'a RefCell<Vec<Deco>>,
     area: Rect,
 }
 
@@ -1267,6 +1456,12 @@ impl Win<'_, '_> {
 
     /// `Window.fill` with a blank cell of the given style.
     fn fill(&self, style: Style) {
+        // Anything previously drawn here is overwritten, including its
+        // hyperlink/underline decorations.
+        let a = self.area;
+        self.decos.borrow_mut().retain(|d| {
+            !(d.y >= a.top() && d.y < a.bottom() && d.x < a.right() && d.x + d.width > a.left())
+        });
         let mut buf = self.buf.borrow_mut();
         for y in self.area.top()..self.area.bottom() {
             for x in self.area.left()..self.area.right() {
@@ -1287,6 +1482,7 @@ impl Win<'_, '_> {
         let h = height.min(self.area.bottom() - y);
         Win {
             buf: self.buf,
+            decos: self.decos,
             area: Rect::new(x, y, w, h),
         }
     }
@@ -1323,6 +1519,21 @@ impl Win<'_, '_> {
     /// `Window.printSegment` without wrapping (text is clipped). Returns the
     /// column after the text.
     fn print(&self, text: &str, style: Style, row: u16, col: u16) -> u16 {
+        self.print_ex(text, style, row, col, None, None)
+    }
+
+    /// `Window.printSegment` with an optional OSC 8 hyperlink and an optional
+    /// extended underline style (ratatui cannot express either, so they are
+    /// recorded and re-emitted as raw escapes after the frame is flushed).
+    fn print_ex(
+        &self,
+        text: &str,
+        style: Style,
+        row: u16,
+        col: u16,
+        link: Option<&str>,
+        ul: Option<Ul>,
+    ) -> u16 {
         if row >= self.area.height || col >= self.area.width {
             return col;
         }
@@ -1330,6 +1541,15 @@ impl Win<'_, '_> {
         let y = self.area.y + row;
         let max = usize::from(self.area.width - col);
         let (nx, _) = self.buf.borrow_mut().set_stringn(x, y, text, max, style);
+        if (link.is_some() || ul.is_some()) && nx > x {
+            self.decos.borrow_mut().push(Deco {
+                x,
+                y,
+                width: nx - x,
+                link: link.map(str::to_owned),
+                ul,
+            });
+        }
         nx - self.area.x
     }
 
@@ -1345,37 +1565,158 @@ impl Win<'_, '_> {
 
 // ---- The terminal driver ----
 
+/// Convert a `termina` key event to the crossterm event type `Preview`
+/// handles. Keys the preview has no use for map to `None`.
+fn convert_key(k: termina::event::KeyEvent) -> Option<KeyEvent> {
+    use termina::event::{KeyCode as T, KeyEventKind as TK, Modifiers as TM};
+    let code = match k.code {
+        T::Char(c) => KeyCode::Char(c),
+        T::Enter => KeyCode::Enter,
+        T::Backspace => KeyCode::Backspace,
+        T::Tab => KeyCode::Tab,
+        T::Escape => KeyCode::Esc,
+        T::Left => KeyCode::Left,
+        T::Right => KeyCode::Right,
+        T::Up => KeyCode::Up,
+        T::Down => KeyCode::Down,
+        T::Home => KeyCode::Home,
+        T::End => KeyCode::End,
+        T::BackTab => KeyCode::BackTab,
+        T::PageUp => KeyCode::PageUp,
+        T::PageDown => KeyCode::PageDown,
+        T::Insert => KeyCode::Insert,
+        T::Delete => KeyCode::Delete,
+        T::Function(n) => KeyCode::F(n),
+        _ => return None,
+    };
+    let mut modifiers = KeyModifiers::NONE;
+    for (t, c) in [
+        (TM::SHIFT, KeyModifiers::SHIFT),
+        (TM::ALT, KeyModifiers::ALT),
+        (TM::CONTROL, KeyModifiers::CONTROL),
+        (TM::SUPER, KeyModifiers::SUPER),
+        (TM::HYPER, KeyModifiers::HYPER),
+        (TM::META, KeyModifiers::META),
+    ] {
+        if k.modifiers.contains(t) {
+            modifiers |= c;
+        }
+    }
+    let kind = match k.kind {
+        TK::Press => KeyEventKind::Press,
+        TK::Release => KeyEventKind::Release,
+        TK::Repeat => KeyEventKind::Repeat,
+    };
+    let mut ev = KeyEvent::new(code, modifiers);
+    ev.kind = kind;
+    Some(ev)
+}
+
+fn convert_mouse(m: termina::event::MouseEvent) -> MouseEvent {
+    use termina::event::{MouseButton as TB, MouseEventKind as TK};
+    let button = |b: TB| match b {
+        TB::Left => MouseButton::Left,
+        TB::Right => MouseButton::Right,
+        TB::Middle => MouseButton::Middle,
+    };
+    let kind = match m.kind {
+        TK::Down(b) => MouseEventKind::Down(button(b)),
+        TK::Up(b) => MouseEventKind::Up(button(b)),
+        TK::Drag(b) => MouseEventKind::Drag(button(b)),
+        TK::Moved => MouseEventKind::Moved,
+        TK::ScrollDown => MouseEventKind::ScrollDown,
+        TK::ScrollUp => MouseEventKind::ScrollUp,
+        TK::ScrollLeft => MouseEventKind::ScrollLeft,
+        TK::ScrollRight => MouseEventKind::ScrollRight,
+    };
+    MouseEvent {
+        kind,
+        column: m.column,
+        row: m.row,
+        modifiers: KeyModifiers::NONE,
+    }
+}
+
+/// Feed one terminal input event to the preview. Handles the terminal's
+/// color-scheme report (`CSI ? 997 ; 1|2 n`, sent in answer to
+/// `CSI ? 996 n` and on every change while `CSI ? 2031 h` is active), which
+/// vaxis delivers as its `color_scheme` event.
+fn handle_terminal_event(app: &mut Preview, ev: termina::Event) {
+    use termina::escape::csi::{Csi, Mode, ThemeMode};
+    match ev {
+        termina::Event::Key(k) => {
+            if let Some(k) = convert_key(k) {
+                app.update(&Event::Key(k));
+            }
+        }
+        termina::Event::Mouse(m) => app.update(&Event::Mouse(convert_mouse(m))),
+        termina::Event::Csi(Csi::Mode(Mode::ReportTheme(t))) => {
+            app.color_scheme = match t {
+                ThemeMode::Dark => Scheme::Dark,
+                ThemeMode::Light => Scheme::Light,
+            };
+        }
+        _ => {}
+    }
+}
+
 /// Run the interactive preview (Zig: `preview`). Blocks until the user quits.
 pub fn preview(themes: Vec<ThemeListElement>, theme_filter: ColorScheme) -> Result<(), Error> {
     let mut app = Preview::new(themes, theme_filter);
-    let mut terminal = ratatui::try_init()?;
-    let result = run_loop(&mut terminal, &mut app);
-    ratatui::restore();
-    result
+    run_loop(&mut app)
 }
 
-fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut Preview) -> Result<(), Error> {
-    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
-    use crossterm::terminal::SetTitle;
+fn run_loop(app: &mut Preview) -> Result<(), Error> {
+    use ratatui::Terminal as RatTerminal;
+    use ratatui::backend::CrosstermBackend;
+    use termina::escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode};
+    use termina::{PlatformTerminal, Terminal as _};
 
-    {
-        let out = terminal.backend_mut();
-        crossterm::execute!(
-            out,
-            SetTitle("\u{1f47b} Ghostty Theme Preview \u{1f47b}"),
-            EnableMouseCapture
-        )?;
-    }
+    let mut tty = PlatformTerminal::new()?;
+    tty.enter_raw_mode()?;
 
+    // Alternate screen, title, mouse reporting.
+    write!(
+        tty,
+        "\x1b[?1049h\x1b]2;\u{1f47b} Ghostty Theme Preview \u{1f47b}\x1b\\\
+         \x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"
+    )?;
+
+    // Request the current color scheme (`CSI ? 996 n`) and subscribe to
+    // changes (`CSI ? 2031 h`). vaxis gates this on a DECRQM 2031 answer,
+    // but termina cannot parse that report, so (like most TUIs) both are
+    // sent unconditionally: terminals without support ignore them.
+    let theme_mode = DecPrivateMode::Code(DecPrivateModeCode::Theme);
+    write!(
+        tty,
+        "{}{}",
+        Csi::Mode(Mode::QueryTheme),
+        Csi::Mode(Mode::SetDecPrivateMode(theme_mode)),
+    )?;
+    tty.flush()?;
+
+    let mut terminal = RatTerminal::new(CrosstermBackend::new(std::io::stdout()))?;
     let result = (|| -> Result<(), Error> {
         while !app.should_quit {
-            terminal.draw(|f| draw_frame(app, f))?;
+            let mut cursor = None;
+            terminal.draw(|f| cursor = draw_frame(app, f))?;
+
+            // Hyperlinks and extended underlines ratatui can't express.
+            if !app.overlays().is_empty() {
+                let backend = terminal.backend_mut();
+                write!(backend, "{}", render_overlays(app.overlays()))?;
+                if let Some(pos) = cursor {
+                    write!(backend, "\x1b[{};{}H", pos.y + 1, pos.x + 1)?;
+                }
+                backend.flush()?;
+            }
+
             // Block for an event, then drain everything that is pending.
-            let first = event::read()?;
-            app.update(&first);
-            while event::poll(std::time::Duration::ZERO)? {
-                let ev = event::read()?;
-                app.update(&ev);
+            let first = tty.read(|_| true)?;
+            handle_terminal_event(app, first);
+            while tty.poll(|_| true, Some(std::time::Duration::ZERO))? {
+                let ev = tty.read(|_| true)?;
+                handle_terminal_event(app, ev);
             }
             for effect in app.take_effects() {
                 match effect {
@@ -1390,15 +1731,23 @@ fn run_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut Preview) -> Resul
         Ok(())
     })();
 
-    let _ = crossterm::execute!(terminal.backend_mut(), DisableMouseCapture);
+    let _ = terminal.show_cursor();
+    let _ = write!(
+        tty,
+        "{}\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l",
+        Csi::Mode(Mode::ResetDecPrivateMode(theme_mode)),
+    );
+    let _ = tty.flush();
+    let _ = tty.enter_cooked_mode();
     result
 }
 
-fn draw_frame(app: &mut Preview, f: &mut Frame<'_>) {
+fn draw_frame(app: &mut Preview, f: &mut Frame<'_>) -> Option<Position> {
     let cursor = app.draw(f.buffer_mut());
     if let Some(pos) = cursor {
         f.set_cursor_position(pos);
     }
+    cursor
 }
 
 #[cfg(test)]
@@ -1615,6 +1964,86 @@ mod tests {
         assert!(swatch);
         // Background of the preview is the theme background.
         assert_eq!(Color::Rgb(255, 255, 255), buf[(100, 0)].bg);
+    }
+
+    #[test]
+    fn hyperlinks_and_underline_overlays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = app(&tmp);
+        let _ = render(&mut p, 120, 60);
+        let ov = p.overlays().to_vec();
+        // List entries (4) + header name + header path are hyperlinks.
+        let links: Vec<&Overlay> = ov.iter().filter(|o| o.link.is_some()).collect();
+        assert!(links.len() >= 6, "{links:?}");
+        let alpha = links
+            .iter()
+            .find(|o| o.text == "alpha" && o.x == 2)
+            .unwrap();
+        assert!(alpha.link.as_deref().unwrap().starts_with("file:///"));
+        assert!(alpha.link.as_deref().unwrap().ends_with("/alpha"));
+        // The five lorem ipsum words get their own underline overlays.
+        let uls: Vec<(String, Ul)> = ov
+            .iter()
+            .filter_map(|o| o.ul.map(|u| (o.text.clone(), u)))
+            .collect();
+        for (word, ul) in [
+            ("dui", Ul::Double),
+            ("erat", Ul::Dashed),
+            ("enim", Ul::Dotted),
+            ("odio", Ul::Curly),
+        ] {
+            assert!(uls.contains(&(word.to_owned(), ul)), "{word}: {uls:?}");
+        }
+        // And the raw escapes carry OSC 8 and the 4:N styles.
+        let raw = render_overlays(&ov);
+        assert!(raw.contains("\x1b]8;;file:///"));
+        assert!(raw.contains("\x1b]8;;\x1b\\"));
+        for sgr in ["4:2", "4:3", "4:4", "4:5"] {
+            assert!(raw.contains(sgr), "{sgr}");
+        }
+    }
+
+    #[test]
+    fn popup_drops_covered_overlays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = app(&tmp);
+        p.update(&ch('?'));
+        let _ = render(&mut p, 120, 40);
+        // The help window covers the middle of the screen: no overlay may
+        // intersect it.
+        let (w, h) = (60u16, 22u16);
+        let (x0, y0) = (60 - w / 2, 20 - h / 2);
+        for o in p.overlays() {
+            let inside = o.y >= y0 && o.y < y0 + h && o.x < x0 + w && o.x + 1 > x0;
+            assert!(!inside, "{o:?}");
+        }
+    }
+
+    #[test]
+    fn terminal_theme_report_sets_scheme() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = app(&tmp);
+        let mut parser = termina::Parser::default();
+        parser.parse(b"\x1b[?997;1n", false);
+        handle_terminal_event(&mut p, parser.pop().unwrap());
+        assert_eq!(Scheme::Dark, p.color_scheme);
+        parser.parse(b"\x1b[?997;2n", false);
+        handle_terminal_event(&mut p, parser.pop().unwrap());
+        assert_eq!(Scheme::Light, p.color_scheme);
+    }
+
+    #[test]
+    fn termina_key_conversion() {
+        use termina::event::{KeyCode as T, Modifiers};
+        let k = convert_key(termina::event::KeyEvent::new(
+            T::Char('x'),
+            Modifiers::CONTROL,
+        ))
+        .unwrap();
+        assert_eq!(KeyCode::Char('x'), k.code);
+        assert!(k.modifiers.contains(KeyModifiers::CONTROL));
+        assert_eq!(KeyCode::Esc, convert_key(T::Escape.into()).unwrap().code);
+        assert!(convert_key(T::CapsLock.into()).is_none());
     }
 
     #[test]

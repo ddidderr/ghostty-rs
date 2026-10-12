@@ -13,7 +13,6 @@
 //! async-signal-safe, like their Zig counterparts are expected to be).
 
 use std::{
-    collections::HashMap,
     ffi::{CString, NulError, c_char},
     os::fd::OwnedFd,
     panic::{AssertUnwindSafe, catch_unwind},
@@ -25,6 +24,7 @@ use rustix::{
     process::{self, WaitOptions},
     stdio,
 };
+use std::os::unix::ffi::OsStrExt;
 
 /// Function executed /in the child process/ after the fork, but before
 /// exec'ing the command. If the function returns `Some(code)`, the child
@@ -173,7 +173,7 @@ pub struct Command {
     /// Environment variables for the child process. If this is `None`,
     /// inherits the environment variables from this process. These are the
     /// exact environment variables to set; these are /not/ merged.
-    pub env: Option<HashMap<String, String>>,
+    pub env: Option<ghostty_os::EnvMap>,
 
     /// Working directory to change to in the child process. If not set, the
     /// working directory of the calling process is preserved. Failure to
@@ -249,7 +249,12 @@ impl Command {
         let envp = match &self.env {
             Some(map) => map
                 .iter()
-                .map(|(k, v)| CString::new(format!("{k}={v}")))
+                .map(|(k, v)| {
+                    let mut b = k.as_bytes().to_vec();
+                    b.push(b'=');
+                    b.extend_from_slice(v.as_bytes());
+                    CString::new(b)
+                })
                 .collect::<Result<_, _>>()?,
             // Inherit: snapshot our environment before the fork (nothing may
             // allocate in the child).
@@ -738,11 +743,37 @@ mod tests {
 
         let mut cmd = sh("echo $VALUE");
         cmd.stdout = Some(stdout.try_clone().unwrap().into());
-        cmd.env = Some(HashMap::from([("VALUE".to_owned(), "hello".to_owned())]));
+        cmd.env = Some(ghostty_os::EnvMap::from_iter([("VALUE", "hello")]));
         cmd.start().unwrap();
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
 
         assert_eq!("hello\n", read_all(stdout));
+    }
+
+    #[test]
+    fn non_utf8_env_value_is_preserved() {
+        use std::os::unix::ffi::OsStringExt;
+        let td = TempDir::init().unwrap();
+        let stdout = test_file(&td, "stdout.txt");
+
+        let mut cmd = sh("printf %s \"$VALUE\"");
+        cmd.stdout = Some(stdout.try_clone().unwrap().into());
+        let mut env = ghostty_os::EnvMap::new();
+        env.insert(
+            "VALUE",
+            std::ffi::OsString::from_vec(vec![b'a', 0xff, b'b']),
+        );
+        cmd.env = Some(env);
+        cmd.start().unwrap();
+        assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
+
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::fs::File::open(td.path().join("stdout.txt")).unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert_eq!(bytes, vec![b'a', 0xff, b'b']);
     }
 
     #[test]

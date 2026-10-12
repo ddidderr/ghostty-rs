@@ -1225,7 +1225,17 @@ impl ActionKey {
         }
     }
 
-    /// The doc comment of the action (Zig `help_strings.KeybindAction`).
+    /// The Zig `help_strings.KeybindAction` string: [`ActionKey::docs`]
+    /// without the single trailing newline every doc literal carries. (A
+    /// trailing empty `///` line in the Zig source is a second `\n`.)
+    #[must_use]
+    pub fn help_string(self) -> &'static str {
+        let d = self.docs();
+        d.strip_suffix('\n').unwrap_or(d)
+    }
+
+    /// The doc comment of the action (Zig `help_strings.KeybindAction`),
+    /// each literal ending in one extra newline.
     pub fn docs(self) -> &'static str {
         match self {
             ActionKey::Ignore => {
@@ -1438,6 +1448,7 @@ Valid arguments are:
 
     Adjust the selection to the beginning or the end of the line
     respectively.
+
 "##
             }
             ActionKey::JumpToPrompt => {
@@ -1468,6 +1479,7 @@ Valid actions are:
 
     The default OS editor is determined by using `open` on macOS
     and `xdg-open` on Linux.
+
 "##
             }
             ActionKey::WriteScreenFile => {
@@ -1574,6 +1586,7 @@ Valid arguments:
     Creates a new split along the larger direction.
     For example, if the parent split is currently wider than it is tall,
     then a left-right split would be created, and vice versa.
+
 "##
             }
             ActionKey::GotoSplit => {
@@ -1940,6 +1953,7 @@ The value determines the crash location:
   - `render`
 
     Crash on the render thread for the focused surface.
+
 "##
             }
         }

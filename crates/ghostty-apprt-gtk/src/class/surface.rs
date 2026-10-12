@@ -38,6 +38,7 @@ use gtk::{gdk, gio, glib};
 use crate::class::application::Application;
 use crate::class::clipboard_confirmation_dialog::ClipboardConfirmationDialog;
 use crate::class::config::Config;
+use crate::class::inspector_window::InspectorWindow;
 use crate::class::key_state_overlay::KeyStateOverlay;
 use crate::class::resize_overlay::ResizeOverlay;
 use crate::class::search_overlay::SearchOverlay;
@@ -246,18 +247,66 @@ impl Surface {
             .is_ok()
     }
 
-    /// Show/hide the inspector.
-    ///
-    /// TODO(inspector): the inspector window is deferred; this is a no-op
-    /// that reports success like Zig does after (not) creating a window.
+    /// Show/hide the inspector (Zig: `controlInspector`).
     pub fn control_inspector(&self, value: Inspector) -> bool {
-        log::debug!("inspector action {value:?} ignored (inspector deferred)");
+        // Let's see if we have an inspector already.
+        let priv_ = self.imp();
+        if let Some(inspector) = priv_.inspector.upgrade() {
+            match value {
+                Inspector::Show => {}
+                // Our weak ref will set our private value to null
+                Inspector::Toggle | Inspector::Hide => inspector.destroy(),
+            }
+        } else {
+            match value {
+                Inspector::Toggle | Inspector::Show => {
+                    let inspector = InspectorWindow::new(self);
+                    inspector.present_window();
+                    priv_.inspector.set(Some(&inspector));
+                }
+                Inspector::Hide => {}
+            }
+        }
+
         true
     }
 
     /// Redraw our inspector, if there is one associated with this surface.
-    /// TODO(inspector): deferred.
-    pub fn redraw_inspector(&self) {}
+    pub fn redraw_inspector(&self) {
+        if let Some(v) = self.imp().inspector.upgrade() {
+            v.queue_render();
+        }
+    }
+
+    /// Debug input replay: click in the inspector window. Returns false if
+    /// there is no inspector.
+    pub fn debug_inspector_click(&self, x: f64, y: f64) -> bool {
+        let Some(v) = self.imp().inspector.upgrade() else {
+            return false;
+        };
+        v.debug_click(x, y);
+        true
+    }
+
+    /// Debug input replay: scroll in the inspector window. Returns false if
+    /// there is no inspector.
+    pub fn debug_inspector_scroll(&self, x: f64, y: f64, dy: f64) -> bool {
+        let Some(v) = self.imp().inspector.upgrade() else {
+            return false;
+        };
+        v.debug_scroll(x, y, dy);
+        true
+    }
+
+    /// Debug input replay: write the next rendered frame of the inspector
+    /// window to `path` (PNG). Returns false if there is no inspector.
+    pub fn debug_inspector_screenshot(&self, path: &str) -> bool {
+        let Some(v) = self.imp().inspector.upgrade() else {
+            return false;
+        };
+        v.debug_screenshot(path);
+        true
+    }
 
     /// Handle a key sequence action from the apprt.
     pub fn key_sequence_action(&self, value: &KeySequence) {
@@ -963,33 +1012,38 @@ impl Surface {
         self.imp().cursor_pos.get()
     }
 
-    pub fn default_termio_env(&self) -> Vec<(String, String)> {
+    pub fn default_termio_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         let application = app();
-        let mut env: Vec<(String, String)> = std::env::vars().collect();
-        let remove = |env: &mut Vec<(String, String)>, k: &str| env.retain(|(n, _)| n != k);
+        // Byte-preserving environment (Zig `internal_os.getEnvMap`).
+        let mut env = ghostty_os::env::get_env_map();
 
-        remove(&mut env, "LANG");
         if let Some(language) = application.saved_language() {
-            env.push(("LANG".to_owned(), language));
+            env.insert("LANG", language);
+        } else {
+            env.remove("LANG");
         }
 
         // Don't leak these GTK environment variables to child processes.
-        remove(&mut env, "GDK_DEBUG");
-        remove(&mut env, "GDK_DISABLE");
-        remove(&mut env, "GSK_RENDERER");
+        env.remove("GDK_DEBUG");
+        env.remove("GDK_DISABLE");
+        env.remove("GSK_RENDERER");
 
         // Remove some environment variables that are set when Ghostty is
         // launched from a `.desktop` file, by D-Bus activation, or systemd.
-        remove(&mut env, "GIO_LAUNCHED_DESKTOP_FILE");
-        remove(&mut env, "GIO_LAUNCHED_DESKTOP_FILE_PID");
-        remove(&mut env, "DBUS_STARTER_ADDRESS");
-        remove(&mut env, "DBUS_STARTER_BUS_TYPE");
-        remove(&mut env, "INVOCATION_ID");
-        remove(&mut env, "JOURNAL_STREAM");
-        remove(&mut env, "NOTIFY_SOCKET");
+        env.remove("GIO_LAUNCHED_DESKTOP_FILE");
+        env.remove("GIO_LAUNCHED_DESKTOP_FILE_PID");
+        env.remove("DBUS_STARTER_ADDRESS");
+        env.remove("DBUS_STARTER_BUS_TYPE");
+        env.remove("INVOCATION_ID");
+        env.remove("JOURNAL_STREAM");
+        env.remove("NOTIFY_SOCKET");
 
-        // Snap path filtering (`build_config.snap`) is a build-time option
-        // of the Zig build and is not supported here.
+        // Unset environment varies set by snaps if we're running in a snap.
+        // This allows Ghostty to further launch additional snaps. (Zig gates
+        // this on the `snap` build option; running inside a snap implies it.)
+        if env.get("SNAP").is_some() {
+            ghostty_os::filter_snap_paths(&mut env);
+        }
 
         // This is a hack because it ties ourselves (optionally) to the
         // Window class. The right solution we should do is emit a signal
@@ -999,16 +1053,20 @@ impl Surface {
             .ancestor(Window::static_type())
             .and_then(|w| w.downcast::<Window>().ok())
         {
-            if let Err(e) = window.winproto().add_subprocess_env(&mut env) {
+            // winproto only ever adds (UTF-8) variables.
+            let mut extra: Vec<(String, String)> = Vec::new();
+            if let Err(e) = window.winproto().add_subprocess_env(&mut extra) {
                 log::warn!("winproto add_subprocess_env failed: {e}");
             }
+            for (k, v) in extra {
+                env.insert(k, v);
+            }
             if window.is_quick_terminal() {
-                env.retain(|(n, _)| n != "GHOSTTY_QUICK_TERMINAL");
-                env.push(("GHOSTTY_QUICK_TERMINAL".to_owned(), "1".to_owned()));
+                env.insert("GHOSTTY_QUICK_TERMINAL", "1");
             }
         }
 
-        env
+        env.into_iter().collect()
     }
 
     pub fn clipboard_request(&self, clipboard_type: Clipboard, state: ClipboardRequest) -> bool {
@@ -1939,7 +1997,7 @@ impl RtSurface for RtSurfaceHandle {
         }
     }
 
-    fn default_termio_env(&self) -> Vec<(String, String)> {
+    fn default_termio_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         self.gobj()
             .map(|s| s.default_termio_env())
             .unwrap_or_default()
@@ -2365,6 +2423,9 @@ mod imp {
         /// The source that handles setting our child property.
         pub idle_rechild: Cell<Option<glib::SourceId>>,
 
+        /// A weak reference to an inspector window.
+        pub inspector: glib::WeakRef<InspectorWindow>,
+
         pub action_group: RefCell<Option<gio::SimpleActionGroup>>,
         pub vadj_handler: RefCell<Option<(gtk::Adjustment, glib::SignalHandlerId)>>,
 
@@ -2457,6 +2518,7 @@ mod imp {
                 precision_scroll: Cell::new(false),
                 progress_bar_timer: Cell::new(None),
                 idle_rechild: Cell::new(None),
+                inspector: glib::WeakRef::new(),
                 action_group: RefCell::new(None),
                 vadj_handler: RefCell::new(None),
                 context: Cell::new(NewSurfaceContext::Window),
@@ -2632,6 +2694,15 @@ mod imp {
         }
 
         fn dispose(&self) {
+            // The inspector window holds on to our core surface to
+            // deactivate the inspector; Zig does that from a weak notify
+            // during our dispose. Closing the window here makes the inspector
+            // widget deactivate the inspector while the core surface is
+            // still alive.
+            if let Some(inspector) = self.inspector.upgrade() {
+                inspector.destroy();
+            }
+
             if let Some((adj, id)) = self.vadj_handler.take() {
                 adj.disconnect(id);
             }

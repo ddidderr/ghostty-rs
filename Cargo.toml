@@ -14,6 +14,7 @@ ghostty-config.workspace = true
 ghostty-apprt-gtk.workspace = true
 ghostty-apprt.workspace = true
 ghostty-cli.workspace = true
+ghostty-os.workspace = true
 log = "0.4"
 
 [lints]
@@ -22,6 +23,11 @@ workspace = true
 [workspace]
 resolver = "3"
 members = [".", "crates/*"]
+
+# The upstream Ghostty version this rewrite tracks (Zig: `build.zig.zon`
+# `.version`); consumed by `crates/ghostty-cli/build.rs`.
+[workspace.metadata.ghostty]
+app-version = "1.3.1"
 
 [workspace.package]
 version = "0.1.0"
@@ -38,12 +44,14 @@ ghostty-font = { path = "crates/ghostty-font" }
 ghostty-renderer = { path = "crates/ghostty-renderer" }
 ghostty-termio = { path = "crates/ghostty-termio" }
 ghostty-os = { path = "crates/ghostty-os" }
+ghostty-onig = { path = "crates/ghostty-onig" }
 ghostty-datastruct = { path = "crates/ghostty-datastruct" }
 ghostty-core = { path = "crates/ghostty-core" }
 ghostty-apprt-gtk = { path = "crates/ghostty-apprt-gtk" }
 ghostty-apprt = { path = "crates/ghostty-apprt" }
 ghostty-cli = { path = "crates/ghostty-cli" }
 ghostty-bench = { path = "crates/ghostty-bench" }
+ghostty-inspector = { path = "crates/ghostty-inspector" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

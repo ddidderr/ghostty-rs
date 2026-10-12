@@ -14,7 +14,8 @@ use ghostty_cli::build_info::{self, BuildInfo, Version};
 use ghostty_core::global::{self, InitOptions};
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    // Byte-safe argv (`std::env::args()` panics on non-UTF-8 arguments).
+    let args: Vec<String> = ghostty_os::args::collect_lossy();
 
     // We first start by initializing our global state. This sets up
     // process-level state we need to run the terminal. We detect whether a
@@ -92,17 +93,9 @@ fn build_info() -> BuildInfo {
     let gtk = gtk_version::get_runtime_version();
     let adw = adw_version::get_runtime_version();
     BuildInfo {
-        gtk_build: Some(Version {
-            major: 4,
-            minor: 14,
-            micro: 0,
-        }),
+        gtk_build: Some(version(gtk_version::COMPTIME_VERSION)),
         gtk_runtime: Some(version((gtk.0, gtk.1, gtk.2))),
-        adw_build: Some(Version {
-            major: 1,
-            minor: 5,
-            micro: 0,
-        }),
+        adw_build: Some(version(adw_version::COMPTIME_VERSION)),
         adw_runtime: Some(version((adw.0, adw.1, adw.2))),
         ..BuildInfo::default()
     }

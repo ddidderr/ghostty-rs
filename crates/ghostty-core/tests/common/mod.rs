@@ -143,12 +143,12 @@ impl RtSurface for FakeRt {
             }
         }
     }
-    fn default_termio_env(&self) -> Vec<(String, String)> {
+    fn default_termio_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
         // Like GTK: the process environment minus what the runtime does not
         // want to leak (here HOME stands in for GDK_DISABLE & co), plus extras.
-        let mut env: Vec<(String, String)> =
-            std::env::vars().filter(|(k, _)| k != "HOME").collect();
-        env.push(("TERM_PROGRAM_TEST".to_owned(), "1".to_owned()));
+        let mut env: Vec<(std::ffi::OsString, std::ffi::OsString)> =
+            std::env::vars_os().filter(|(k, _)| k != "HOME").collect();
+        env.push(("TERM_PROGRAM_TEST".into(), "1".into()));
         env
     }
     fn gl_proc_address(&self, name: &str) -> *const std::ffi::c_void {

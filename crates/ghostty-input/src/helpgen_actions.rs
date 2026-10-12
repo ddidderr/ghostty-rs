@@ -94,7 +94,7 @@ pub fn generate(writer: &mut String, format: Format, show_docs: bool) {
         }
 
         if show_docs {
-            let mut iter = key.docs().split('\n').peekable();
+            let mut iter = key.help_string().split('\n').peekable();
             while let Some(s) = iter.next() {
                 // If it is the last line and empty, then skip it.
                 if iter.peek().is_none() && s.is_empty() {

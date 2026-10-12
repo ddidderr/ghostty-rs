@@ -975,6 +975,13 @@ impl Surface {
     ) -> Result<bool, CoreError> {
         let cfg = self.cfg();
 
+        // If we have an inspector, we always queue a render
+        let _inspector_render = self
+            .inspector
+            .borrow()
+            .is_some()
+            .then(|| RenderOnDrop(self));
+
         // Always record our latest mouse state
         let hidden = {
             let mut m = self.mouse.borrow_mut();
@@ -1915,6 +1922,10 @@ impl Surface {
         // The mouse position in the viewport
         let pos_vp = self.pos_to_viewport(f64::from(pos.x), f64::from(pos.y));
 
+        // If we have an inspector, we need to always record position
+        // information
+        self.inspector_record_cursor_pos(f64::from(pos.x), f64::from(pos.y));
+
         // We always reset the over link status because it will be
         // reprocessed below. But we need the old value to know if we need to
         // undo mouse shape changes.
@@ -2215,6 +2226,15 @@ fn button_from_index(i: usize) -> Option<MouseButton> {
         11 => MouseButton::Eleven,
         _ => return None,
     })
+}
+
+/// Queues a render when dropped (Zig: `defer self.queueRender()`).
+struct RenderOnDrop<'a>(&'a Surface);
+
+impl Drop for RenderOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.queue_render();
+    }
 }
 
 #[cfg(test)]

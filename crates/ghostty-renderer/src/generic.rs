@@ -1723,7 +1723,11 @@ impl Renderer {
                 mouse_mods: st.mouse.mods,
                 preedit,
                 scrollbar,
-                overlay_features: st.overlay_features.clone(),
+                overlay_features: st
+                    .inspector
+                    .as_ref()
+                    .map(|i| i.overlay_features())
+                    .unwrap_or_default(),
             }
         };
 

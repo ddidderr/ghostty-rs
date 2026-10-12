@@ -81,6 +81,69 @@ struct State {
     xdg_wm_dialog_present: bool,
     /// Activation tokens requested but not yet `done`.
     pending_tokens: usize,
+    /// The registry name of each global we bound (interface -> name), used
+    /// to unset the global when the compositor removes it.
+    bound_names: std::collections::HashMap<&'static str, u32>,
+}
+
+impl State {
+    /// Bind a newly advertised global if it is one we support
+    /// (Zig `registryListener` `.global`).
+    fn registry_global(
+        &mut self,
+        registry: &WlRegistry,
+        qh: &QueueHandle<State>,
+        name: u32,
+        interface: &str,
+    ) {
+        log::debug!("found global {interface}");
+
+        // We don't actually do anything with this other than checking
+        // for its existence, so we process this separately.
+        if interface == "xdg_wm_dialog_v1" {
+            self.xdg_wm_dialog_present = true;
+            return;
+        }
+
+        macro_rules! try_bind {
+            ($field:ident, $t:ty) => {
+                if interface == <$t as Proxy>::interface().name {
+                    log::debug!("matched {}", interface);
+                    self.$field = Some(registry.bind::<$t, _, _>(name, 1, qh, ()));
+                    self.bound_names
+                        .insert(<$t as Proxy>::interface().name, name);
+                }
+            };
+        }
+        try_bind!(kde_blur_manager, OrgKdeKwinBlurManager);
+        try_bind!(kde_decoration_manager, OrgKdeKwinServerDecorationManager);
+        try_bind!(kde_slide_manager, OrgKdeKwinSlideManager);
+        try_bind!(xdg_activation, XdgActivationV1);
+    }
+
+    /// A global is suddenly no longer available: destroy and unset it as the
+    /// protocol mandates (Zig `registryListener` `.global_remove`).
+    fn registry_global_remove(&mut self, name: u32) {
+        macro_rules! try_remove {
+            ($field:ident, $t:ty) => {
+                let iface = <$t as Proxy>::interface().name;
+                if self.bound_names.get(iface) == Some(&name) {
+                    self.bound_names.remove(iface);
+                    // Dropping the proxy releases it client-side.
+                    self.$field = None;
+                }
+            };
+        }
+        try_remove!(kde_blur_manager, OrgKdeKwinBlurManager);
+        try_remove!(kde_decoration_manager, OrgKdeKwinServerDecorationManager);
+        try_remove!(kde_slide_manager, OrgKdeKwinSlideManager);
+        if self.bound_names.get("xdg_activation_v1") == Some(&name) {
+            self.bound_names.remove("xdg_activation_v1");
+            if let Some(a) = self.xdg_activation.take() {
+                a.destroy();
+            }
+        }
+    }
 }
 
 struct Shared {
@@ -105,6 +168,14 @@ impl Shared {
         }
     }
 }
+
+/// Interface names of the globals we bind.
+const BOUND_INTERFACES: [&str; 4] = [
+    "org_kde_kwin_blur_manager",
+    "org_kde_kwin_server_decoration_manager",
+    "org_kde_kwin_slide_manager",
+    "xdg_activation_v1",
+];
 
 fn bind<I: Proxy + 'static>(
     globals: &wayland_client::globals::GlobalList,
@@ -162,6 +233,22 @@ impl App {
         state.kde_decoration_manager = bind(&globals, &qh);
         state.kde_slide_manager = bind(&globals, &qh);
         state.xdg_activation = bind(&globals, &qh);
+        globals.contents().with_list(|list| {
+            for g in list {
+                let bound = match g.interface.as_str() {
+                    "org_kde_kwin_blur_manager" => state.kde_blur_manager.is_some(),
+                    "org_kde_kwin_server_decoration_manager" => {
+                        state.kde_decoration_manager.is_some()
+                    }
+                    "org_kde_kwin_slide_manager" => state.kde_slide_manager.is_some(),
+                    "xdg_activation_v1" => state.xdg_activation.is_some(),
+                    _ => false,
+                };
+                if bound && let Some(name) = BOUND_INTERFACES.iter().find(|n| **n == g.interface) {
+                    state.bound_names.insert(name, g.name);
+                }
+            }
+        });
 
         // Do another round-trip to get the default decoration mode
         queue
@@ -530,14 +617,21 @@ fn entered_monitor(host: &dyn WindowHost, monitor: &gdk::Monitor) {
 
 impl Dispatch<WlRegistry, GlobalListContents> for State {
     fn event(
-        _: &mut Self,
-        _: &WlRegistry,
-        _: wayland_client::protocol::wl_registry::Event,
+        state: &mut Self,
+        registry: &WlRegistry,
+        event: wayland_client::protocol::wl_registry::Event,
         _: &GlobalListContents,
         _: &Connection,
-        _: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
-        // Globals appearing/disappearing after init are not tracked.
+        use wayland_client::protocol::wl_registry::Event;
+        match event {
+            Event::Global {
+                name, interface, ..
+            } => state.registry_global(registry, qh, name, &interface),
+            Event::GlobalRemove { name } => state.registry_global_remove(name),
+            _ => {}
+        }
     }
 }
 

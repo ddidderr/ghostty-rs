@@ -22,11 +22,11 @@ pub struct State {
     /// The terminal data.
     pub terminal: Terminal,
 
-    /// The overlay features currently requested by the terminal inspector
-    /// (Zig: `inspector: ?*Inspector` and `inspector.rendererInfo()
-    /// .overlayFeatures()`). Empty while the inspector is not active.
-    // TODO(integration): the inspector is deferred (Phase 7); it fills this.
-    pub overlay_features: Vec<OverlayFeature>,
+    /// The terminal inspector, if any (Zig: `inspector: ?*Inspector`). This
+    /// is `None` while the inspector is not active. It is accessed under the
+    /// same lock as the terminal (lock order: this state, then the
+    /// inspector's own lock).
+    pub inspector: Option<Arc<dyn InspectorHook>>,
 
     /// Dead key state. This will render the current dead key preedit text
     /// over the cursor. This currently only ever renders a single codepoint.
@@ -39,6 +39,20 @@ pub struct State {
     pub mouse: Mouse,
 }
 
+/// The view of the terminal inspector that the renderer and termio need
+/// (the inspector crate itself depends on this crate, so the Zig
+/// `*Inspector` pointer is expressed as a trait object).
+pub trait InspectorHook: Send + Sync + std::fmt::Debug {
+    /// The overlay features requested in the inspector's renderer window
+    /// (Zig: `inspector.rendererInfo().overlayFeatures()`).
+    fn overlay_features(&self) -> Vec<OverlayFeature>;
+
+    /// Record data read from the pty before it is processed by the terminal
+    /// (Zig: `Inspector.recordPtyRead`). Termio calls this one byte at a
+    /// time while an inspector is active.
+    fn record_pty_read(&self, t: &Terminal, data: &[u8]);
+}
+
 /// The shared, mutex-protected renderer state.
 pub type SharedState = Arc<Mutex<State>>;
 
@@ -46,7 +60,7 @@ impl State {
     pub fn new(terminal: Terminal) -> State {
         State {
             terminal,
-            overlay_features: Vec::new(),
+            inspector: None,
             preedit: None,
             mouse: Mouse::default(),
         }

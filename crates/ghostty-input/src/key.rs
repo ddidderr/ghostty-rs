@@ -1,7 +1,8 @@
 //! Key events and key codes (ZIG/src/input/key.zig).
 //!
-//! The Zig `imguiKey` helper (cimgui constants) is intentionally not ported;
-//! the inspector is deferred (see notes).
+//! The Zig `imguiKey` helper (cimgui constants) lives in the inspector crate
+//! (`ghostty_inspector::keys::imgui_key`) so that this crate stays free of
+//! the ImGui dependency.
 
 pub use crate::key_mods::Mods;
 

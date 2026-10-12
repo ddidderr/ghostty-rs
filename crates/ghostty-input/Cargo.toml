@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ghostty-vt.workspace = true
+ghostty-unicode.workspace = true
 indexmap = "2.14.2"
 thiserror = "2.0.21"
 

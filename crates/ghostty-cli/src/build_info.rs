@@ -49,15 +49,11 @@ pub struct BuildInfo {
 impl Default for BuildInfo {
     fn default() -> Self {
         BuildInfo {
-            version_string: "1.3.1".to_string(),
-            commit: None,
-            release_channel: "stable".to_string(),
-            build_mode: if cfg!(debug_assertions) {
-                ".Debug"
-            } else {
-                ".ReleaseFast"
-            }
-            .to_string(),
+            // Derived by `build.rs` (git describe / workspace app-version).
+            version_string: env!("GHOSTTY_VERSION_STRING").to_string(),
+            commit: Some(env!("GHOSTTY_COMMIT").to_string()).filter(|c| !c.is_empty()),
+            release_channel: env!("GHOSTTY_RELEASE_CHANNEL").to_string(),
+            build_mode: env!("GHOSTTY_BUILD_MODE").to_string(),
             app_runtime: ".gtk".to_string(),
             font_backend: ".fontconfig_freetype".to_string(),
             renderer: "renderer.generic.Renderer(renderer.OpenGL)".to_string(),

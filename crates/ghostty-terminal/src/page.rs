@@ -977,6 +977,21 @@ impl Page {
     pub fn lookup_hyperlink(&self, index: usize) -> Option<u16> {
         self.hyperlink_map.get(&index).copied()
     }
+    /// Bytes of string storage currently in use (Zig:
+    /// `string_alloc.usedBytes`); used by the inspector.
+    pub fn string_used_bytes(&self) -> usize {
+        let used: usize = self
+            .string_alloc
+            .used
+            .iter()
+            .map(|w| w.count_ones() as usize)
+            .sum();
+        used * self.string_alloc.chunk
+    }
+    /// Total bytes of string storage (Zig: `string_alloc.capacityBytes`).
+    pub fn string_capacity_bytes(&self) -> usize {
+        self.string_alloc.chunks * self.string_alloc.chunk
+    }
     /// Number of hyperlink cells.
     pub fn hyperlink_count(&self) -> usize {
         self.hyperlink_map.len()

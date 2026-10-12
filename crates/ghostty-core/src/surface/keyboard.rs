@@ -17,6 +17,7 @@ use ghostty_input::binding::set::Value;
 use ghostty_input::binding::{Action as BindingAction, Flags, Scope, Set, Trigger, TriggerKey};
 use ghostty_input::key_encode;
 use ghostty_input::{Action as KeyAction, Key, KeyEvent, Mods};
+use ghostty_inspector as inspector;
 use ghostty_terminal::terminal::{MouseEvents, ScrollViewport, Terminal};
 use ghostty_termio::message::Message as IoMessage;
 use ghostty_vt::modes::Mode;
@@ -331,10 +332,40 @@ impl Surface {
         // level.
         let event = Self::remap_event(&cfg, &event_orig);
 
+        // Setup our inspector event if we have an inspector.
+        let mut insp_ev = self
+            .inspector
+            .borrow()
+            .as_ref()
+            .map(|_| inspector::KeyEvent::new(&event));
+
+        let result = self.key_callback_remapped(&cfg, &event, insp_ev.as_mut());
+
+        // When we're done processing, we always want to add the event to
+        // the inspector. We have to check for the inspector again because
+        // our keybinding might have closed it.
+        if let Some(ev) = insp_ev
+            && let Some(insp) = self.inspector()
+        {
+            insp.lock().record_key_event(ev);
+            self.queue_render();
+        }
+
+        result
+    }
+
+    /// The remainder of [`Surface::key_callback`] after the key remapping and
+    /// the inspector event setup.
+    fn key_callback_remapped(
+        &self,
+        cfg: &DerivedConfig,
+        event: &KeyEvent<'_>,
+        mut insp_ev: Option<&mut inspector::KeyEvent>,
+    ) -> Result<InputEffect, CoreError> {
         // Handle keybindings first. We need to handle this on all events
         // (press, repeat, release) because a press may perform a binding but
         // a release should not encode if we consumed the press.
-        if let Some(v) = self.maybe_handle_binding(&cfg, &event) {
+        if let Some(v) = self.maybe_handle_binding(cfg, event, insp_ev.as_deref_mut()) {
             return Ok(v);
         }
 
@@ -359,7 +390,7 @@ impl Surface {
         // highlight state.
         let mouse_mods = self.mouse.borrow().mods;
         if !mouse_mods.equal(event.mods) {
-            self.refresh_mouse_for_mods_change(&event);
+            self.refresh_mouse_for_mods_change(event);
         }
 
         // Process the cursor state logic. This will update the cursor shape
@@ -381,7 +412,7 @@ impl Surface {
             *pressed = 'event: {
                 // We need to unset the allocated fields that will become
                 // invalid
-                let mut copy = OwnedKeyEvent::from_event(&event);
+                let mut copy = OwnedKeyEvent::from_event(event);
                 copy.utf8.clear();
 
                 // If we have a previous pressed key and we're releasing it
@@ -411,7 +442,7 @@ impl Surface {
 
         // Encode and send our key. If we didn't encode anything, then we
         // return the effect as ignored.
-        let Some(write_req) = self.encode_key(&event) else {
+        let Some(write_req) = self.encode_key(event, insp_ev) else {
             // No valid request means that we didn't encode anything.
             return Ok(InputEffect::Ignored);
         };
@@ -491,6 +522,7 @@ impl Surface {
         &self,
         cfg: &DerivedConfig,
         event: &KeyEvent<'_>,
+        mut insp_ev: Option<&mut inspector::KeyEvent>,
     ) -> Option<InputEffect> {
         match event.action {
             // Release events never trigger a binding but we need to check
@@ -586,7 +618,7 @@ impl Surface {
                 // Store this event so that we can drain and encode on
                 // invalid. We don't need to cap this because it is
                 // naturally capped by the config validation.
-                if let Some(req) = self.encode_key(event) {
+                if let Some(req) = self.encode_key(event, insp_ev.as_deref_mut()) {
                     self.keyboard.borrow_mut().sequence_queued.push(req);
                 }
 
@@ -683,6 +715,9 @@ impl Surface {
             // Store our last trigger so we don't encode the release event
             self.keyboard.borrow_mut().last_trigger = Some(event.binding_hash());
 
+            if let Some(ev) = insp_ev {
+                ev.binding = actions;
+            }
             return Some(InputEffect::Consumed);
         }
 
@@ -869,7 +904,11 @@ impl Surface {
 
     /// Encodes the key event into a write request. Returns `None` if
     /// nothing was encoded.
-    fn encode_key(&self, event: &KeyEvent<'_>) -> Option<IoMessage> {
+    fn encode_key(
+        &self,
+        event: &KeyEvent<'_>,
+        insp_ev: Option<&mut inspector::KeyEvent>,
+    ) -> Option<IoMessage> {
         // Build our encoding options, which requires the lock.
         let opts = {
             let t = self.lock_terminal();
@@ -885,6 +924,11 @@ impl Surface {
         // Special-case: we did nothing.
         if data.is_empty() {
             return None;
+        }
+
+        // Copy the encoded data into the inspector event if we have one.
+        if let Some(ev) = insp_ev {
+            ev.pty.clone_from(&data);
         }
 
         Some(IoMessage::write_req(&data))

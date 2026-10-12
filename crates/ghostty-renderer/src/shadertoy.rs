@@ -8,6 +8,7 @@
 //! `docs/rewrite/notes/ghostty-renderer-R1.md` for the (small) source
 //! adaptations needed for naga's Vulkan-flavoured GLSL frontend.
 
+use crate::shadertoy_sampler;
 use std::io::Read;
 use std::path::Path;
 
@@ -250,7 +251,13 @@ pub fn spirv_from_glsl(src: &str, errlog: Option<&mut ShaderLog>) -> Result<Comp
 /// * the `mainImage` prototype and `main` are moved after the user code
 ///   (naga requires callee definitions before their callers).
 fn adapt_for_naga(full: &str) -> String {
-    let mut s = full
+    // Only the verbatim prefix gets the constructs below; the user's code is
+    // only touched by the combined-sampler rewrite.
+    let (prefix, user) = match full.strip_prefix(PREFIX) {
+        Some(rest) => (PREFIX, rest),
+        None => (full, ""),
+    };
+    let mut s = prefix
         .replacen("#version 430 core", "#version 460 core", 1)
         .replace("    uniform ", "    ")
         .replacen("layout(location = 0) in vec4 gl_FragCoord;", "", 1)
@@ -276,6 +283,12 @@ fn adapt_for_naga(full: &str) -> String {
             "",
             1,
         );
+    if !user.is_empty() {
+        // `texture2D` is a type for naga (and the `sampler2D` parameter
+        // rewrite): the prefix macro is replaced by rewriting the calls.
+        s = s.replacen("#define texture2D texture", "", 1);
+        s.push_str(&shadertoy_sampler::rewrite(user));
+    }
     s.push_str("\nvoid main() { mainImage (_fragColor, gl_FragCoord.xy); }\n");
     s
 }
@@ -404,6 +417,56 @@ mod tests {
         let src = "float helper(vec2 p) { return p.x / iResolution.x; }\n\
                    void mainImage(out vec4 c, in vec2 p) { c = vec4(helper(p), texture2D(iChannel0, p / iResolution.xy).g, iTime, 1.0); }\n";
         compile_shadertoy(src, None).unwrap();
+    }
+
+    #[test]
+    fn sampler2d_parameter_helper_compiles() {
+        let src = "vec4 fetch(sampler2D tex, vec2 uv) { return texture(tex, uv); }\n\
+                   void mainImage(out vec4 c, in vec2 p) { c = fetch(iChannel0, p / iResolution.xy); }\n";
+        let mut log = ShaderLog::default();
+        let r = compile_shadertoy(src, Some(&mut log));
+        assert!(r.is_ok(), "{}", log.info);
+    }
+
+    fn compiles(src: &str) {
+        let mut log = ShaderLog::default();
+        let c = compile_shadertoy(src, Some(&mut log));
+        assert!(c.is_ok(), "{}\n{}", log.info, log.debug);
+        glsl_from_compiled(&c.unwrap()).unwrap();
+    }
+
+    #[test]
+    fn sampler2d_parameter_forwarding_and_prototype() {
+        compiles(
+            "vec4 inner(in sampler2D s, vec2 uv);\n\
+             vec4 outer(sampler2D t, vec2 uv) { return inner(t, uv) + inner(t, uv * 2.0); }\n\
+             vec4 inner(in sampler2D s, vec2 uv) { return texture(s, uv); }\n\
+             void mainImage(out vec4 c, in vec2 p) { c = outer(iChannel0, p / iResolution.xy); }\n",
+        );
+    }
+
+    #[test]
+    fn sampler2d_parameter_other_texture_functions() {
+        compiles(
+            "vec4 f(sampler2D s, vec2 uv) {\n\
+                 vec2 sz = vec2(textureSize(s, 0));\n\
+                 vec4 a = textureLod(s, uv, 0.0);\n\
+                 vec4 b = texelFetch(s, ivec2(uv * sz), 0);\n\
+                 return a + b + texture2D(s, uv);\n\
+             }\n\
+             void mainImage(out vec4 c, in vec2 p) { c = f(iChannel0, p / iResolution.xy); }\n",
+        );
+    }
+
+    #[test]
+    fn combined_sampler_builtin_uses_compile() {
+        compiles(
+            "void mainImage(out vec4 c, in vec2 p) {\n\
+                 vec2 uv = p / iResolution.xy;\n\
+                 c = textureLod(iChannel0, uv, 0.0) + texelFetch(iChannel0, ivec2(p), 0)\n\
+                   + vec4(textureSize(iChannel0, 0), 0.0, 0.0) + texture2D(iChannel0, uv);\n\
+             }\n",
+        );
     }
 
     #[test]

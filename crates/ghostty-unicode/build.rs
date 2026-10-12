@@ -18,6 +18,7 @@ mod props;
 mod ucd;
 
 use std::env;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
@@ -31,6 +32,7 @@ fn main() {
     println!("cargo:rerun-if-changed=src/lut.rs");
     println!("cargo:rerun-if-changed=src/props.rs");
     println!("cargo:rerun-if-changed=ucd");
+    println!("cargo:rerun-if-changed=ucd/CaseFolding.txt");
 
     let ucd = ucd::Ucd::load(&ucd_dir);
 
@@ -54,4 +56,52 @@ fn main() {
         emoji.write_rust("bool", ToString::to_string),
     )
     .unwrap();
+
+    generate_case_folding(&ucd_dir, &out);
+}
+
+/// Generates `case_folding_full.rs` from `CaseFolding.txt`: the `C` (common)
+/// and `F` (full) statuses, which is uucode's `case_folding_full`.
+fn generate_case_folding(ucd_dir: &std::path::Path, out: &std::path::Path) {
+    let text = fs::read_to_string(ucd_dir.join("CaseFolding.txt")).unwrap();
+    let mut entries: Vec<(u32, Vec<u32>)> = Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(';').map(str::trim).collect();
+        if fields.len() < 3 || (fields[1] != "C" && fields[1] != "F") {
+            continue;
+        }
+        let cp = u32::from_str_radix(fields[0], 16).unwrap();
+        let mapping: Vec<u32> = fields[2]
+            .split_whitespace()
+            .map(|v| u32::from_str_radix(v, 16).unwrap())
+            .collect();
+        assert!(!mapping.is_empty() && mapping.len() <= 3);
+        entries.push((cp, mapping));
+    }
+    entries.sort_by_key(|e| e.0);
+    entries.dedup_by_key(|e| e.0);
+
+    let mut src = String::new();
+    writeln!(
+        src,
+        "static CASE_FOLDING_FULL: [(u32, [u32; 3]); {}] = [",
+        entries.len()
+    )
+    .unwrap();
+    for (cp, m) in &entries {
+        let mut a = [0u32; 3];
+        a[..m.len()].copy_from_slice(m);
+        writeln!(
+            src,
+            "    ({cp:#x}, [{:#x}, {:#x}, {:#x}]),",
+            a[0], a[1], a[2]
+        )
+        .unwrap();
+    }
+    src.push_str("];\n");
+    fs::write(out.join("case_folding_full.rs"), src).unwrap();
 }

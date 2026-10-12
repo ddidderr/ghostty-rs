@@ -112,6 +112,37 @@ impl Action {
         format!("cli/{}.zig", self.name().replace('-', "_"))
     }
 
+    /// The non-internal option fields of the action's `Options` struct with
+    /// their type classification (Zig: `Action.options()` + `@typeInfo`).
+    /// Used by the build-data generator for shell completions.
+    #[must_use]
+    pub fn option_fields(self) -> Vec<(&'static str, ghostty_config::cli_args::FieldKind)> {
+        use ghostty_config::cli_args::FieldKind;
+        use ghostty_config::macros::ConfigStruct;
+        fn of<T: ConfigStruct>() -> Vec<(&'static str, FieldKind)> {
+            T::FIELDS
+                .iter()
+                .filter(|f| !f.name.starts_with('_'))
+                .map(|f| (f.name, f.kind))
+                .collect()
+        }
+        match self {
+            Action::Version | Action::EditConfig | Action::CrashReport | Action::Boo => Vec::new(),
+            Action::Help => of::<crate::help::Options>(),
+            Action::ListFonts => of::<crate::list_fonts::Options>(),
+            Action::ListKeybinds => of::<crate::list_keybinds::Options>(),
+            Action::ListThemes => of::<crate::list_themes::Options>(),
+            Action::ListColors => of::<crate::list_colors::Options>(),
+            Action::ListActions => of::<crate::list_actions::Options>(),
+            Action::SshCache => of::<crate::ssh_cache::Options>(),
+            Action::ShowConfig => of::<crate::show_config::Options>(),
+            Action::ValidateConfig => of::<crate::validate_config::Options>(),
+            Action::ShowFace => of::<crate::show_face::Options>(),
+            // `class: ?[:0]const u8` (the other fields are internal).
+            Action::NewWindow => vec![("class", FieldKind::OptionalOther)],
+        }
+    }
+
     /// The help text of the action (the doc comment of the Zig `run`
     /// function, i.e. `help_strings.Action.<name>`), without trailing newline.
     #[must_use]

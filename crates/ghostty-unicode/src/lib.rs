@@ -8,6 +8,7 @@
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod case_folding;
 pub mod emoji_table;
 pub mod grapheme;
 pub mod lut;

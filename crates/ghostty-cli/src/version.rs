@@ -92,7 +92,13 @@ mod tests {
     #[test]
     fn version_output_layout() {
         let mut buf = Vec::new();
-        write_version(&mut buf, &BuildInfo::default(), false).unwrap();
+        let info = BuildInfo {
+            version_string: "1.3.1".into(),
+            commit: None,
+            release_channel: "stable".into(),
+            ..BuildInfo::default()
+        };
+        write_version(&mut buf, &info, false).unwrap();
         let s = String::from_utf8(buf).unwrap();
         assert!(s.starts_with(
             "Ghostty 1.3.1\n\nVersion\n  - version: 1.3.1\n  - channel: stable\nBuild Config\n"

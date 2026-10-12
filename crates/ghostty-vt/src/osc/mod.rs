@@ -442,6 +442,17 @@ impl Parser {
         Some(self.buffer.clone())
     }
 
+    /// Zig `writer.writeByte(0)` capacity check: when the fixed buffer is
+    /// full there is no room for the NUL terminator, so the parser becomes
+    /// invalid and this returns false.
+    pub fn reserve_nul(&mut self) -> bool {
+        if self.writer == Writer::Fixed && self.buffer.len() >= Self::MAX_BUF {
+            self.state = State::Invalid;
+            return false;
+        }
+        true
+    }
+
     /// Like [`Parser::data`] but without reserving room for the NUL
     /// terminator (for parsers that, like Zig's color parsers, read
     /// `writer.buffered()` directly).

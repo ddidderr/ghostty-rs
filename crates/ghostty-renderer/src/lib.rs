@@ -25,6 +25,7 @@ pub mod options;
 pub mod overlay;
 pub mod row;
 pub mod shadertoy;
+mod shadertoy_sampler;
 pub mod size;
 pub mod state;
 pub mod thread;

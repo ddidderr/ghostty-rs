@@ -65,10 +65,38 @@ impl From<crate::comma_splitter::Error> for ArgError {
     }
 }
 
+/// Coarse classification of a field's Zig type, used by the build-data
+/// generator (shell completions) which switches on `@typeInfo(field.type)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// `bool`
+    Bool,
+    /// `?bool`
+    OptionalBool,
+    /// An enum with the given variant names.
+    Enum(&'static [&'static str]),
+    /// `?Enum`
+    OptionalEnum(&'static [&'static str]),
+    /// An optional of any other type (`?T`).
+    OptionalOther,
+    /// A packed struct of bools without `parseCLI`, with its field names.
+    Packed(&'static [&'static str]),
+    /// `RepeatablePath`
+    RepeatablePath,
+    /// Anything else.
+    Other,
+}
+
 /// A type that can be the value of a configuration / CLI field.
 pub trait ConfigField: Clone + PartialEq + Default + fmt::Debug {
     /// For enum types, the list of valid values (used in error messages).
     const VALID_VALUES: Option<&'static [&'static str]> = None;
+
+    /// Classification of this type for completion generation.
+    const KIND: FieldKind = match Self::VALID_VALUES {
+        Some(v) => FieldKind::Enum(v),
+        None => FieldKind::Other,
+    };
 
     /// Parse `value` (the text after `=`, `None` if there was no `=`) into
     /// `self`. Repeatable types accumulate; scalar types overwrite.
@@ -424,6 +452,8 @@ pub fn parse_int_base0(s: &str) -> Option<i128> {
 // ConfigField impls for primitives
 
 impl ConfigField for bool {
+    const KIND: FieldKind = FieldKind::Bool;
+
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         *self = parse_bool(value.unwrap_or("t"))?;
         Ok(())
@@ -481,6 +511,12 @@ impl ConfigField for String {
 }
 
 impl<T: ConfigField> ConfigField for Option<T> {
+    const KIND: FieldKind = match T::KIND {
+        FieldKind::Bool => FieldKind::OptionalBool,
+        FieldKind::Enum(v) => FieldKind::OptionalEnum(v),
+        _ => FieldKind::OptionalOther,
+    };
+
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         // For optional fields, we just treat it as the child type.
         if let Some(v) = self {
@@ -550,8 +586,9 @@ impl<I: Iterator<Item = String>> ArgIter for ArgsIterator<I> {
 
 /// Create an args iterator for the process args. This will skip argv0.
 #[must_use]
-pub fn args_iterator() -> ArgsIterator<std::iter::Skip<std::env::Args>> {
-    ArgsIterator::new(std::env::args().skip(1))
+pub fn args_iterator() -> ArgsIterator<std::iter::Skip<std::vec::IntoIter<String>>> {
+    // Byte-safe: never panics on non-UTF-8 arguments.
+    ArgsIterator::new(ghostty_os::args::collect_lossy().into_iter().skip(1))
 }
 
 /// An iterator valid for arg parsing from a slice.

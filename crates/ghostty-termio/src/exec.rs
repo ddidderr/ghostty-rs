@@ -212,6 +212,9 @@ impl Exec {
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let wakeup = Wakeup::new()?;
                 if let Some(cmd) = fp.cmd.take() {
+                    // Keep a signal handle so stop() can still SIGHUP the
+                    // host process group after the watcher owns the command.
+                    fp.signal = Some(cmd.signal_handle());
                     let w = wakeup.clone();
                     cmd.wait_callback(move |r| {
                         let _ = tx.send(r.map_err(|e| format!("{e}")));
@@ -724,10 +727,9 @@ enum Process {
 struct FlatpakProcess {
     pid: u32,
     /// Taken by the exit watcher (`wait_callback` consumes the command).
-    /// TODO(integration): ghostty-os' `FlatpakHostCommand::wait_callback`
-    /// takes `self`, so after the watcher is installed we can no longer
-    /// `signal()` the command from `stop()`.
     cmd: Option<ghostty_os::flatpak::FlatpakHostCommand>,
+    /// Signal handle that outlives the command's move into the watcher.
+    signal: Option<ghostty_os::flatpak::FlatpakSignalHandle>,
 }
 
 struct Subprocess {
@@ -756,7 +758,7 @@ impl Subprocess {
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
             log::info!("found Ghostty resources dir: {dir}");
-            env.insert("GHOSTTY_RESOURCES_DIR".into(), dir.clone());
+            env.insert("GHOSTTY_RESOURCES_DIR", dir.clone());
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
@@ -766,8 +768,8 @@ impl Subprocess {
         // For now, we just look up a bundled dir but in the future we should
         // also load the terminfo database and look for it.
         if let Some(base) = &cfg.resources_dir {
-            env.insert("TERM".into(), cfg.term.clone());
-            env.insert("COLORTERM".into(), "truecolor".into());
+            env.insert("TERM", cfg.term.clone());
+            env.insert("COLORTERM", "truecolor");
 
             // Assume that the resources directory is adjacent to the terminfo
             // database
@@ -784,10 +786,10 @@ impl Subprocess {
                     .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
                 format!("{parent}/terminfo")
             };
-            env.insert("TERMINFO".into(), terminfo);
+            env.insert("TERMINFO", terminfo);
         } else {
-            env.insert("TERM".into(), "xterm-256color".into());
-            env.insert("COLORTERM".into(), "truecolor".into());
+            env.insert("TERM", "xterm-256color");
+            env.insert("COLORTERM", "truecolor");
         }
 
         // Add our binary to the path if we can find it.
@@ -795,8 +797,8 @@ impl Subprocess {
 
         // Set environment variables used by some programs (such as neovim) to detect
         // which terminal emulator and version they're running under.
-        env.insert("TERM_PROGRAM".into(), "ghostty".into());
-        env.insert("TERM_PROGRAM_VERSION".into(), VERSION_STRING.into());
+        env.insert("TERM_PROGRAM", "ghostty");
+        env.insert("TERM_PROGRAM_VERSION", VERSION_STRING);
 
         // VTE_VERSION is set by gnome-terminal and other VTE-based terminals.
         // We don't want our child processes to think we're running under VTE.
@@ -858,7 +860,7 @@ impl Subprocess {
 
         // Add the environment variables that override any others.
         for (k, v) in cfg.env_override.iter() {
-            env.insert(k.to_owned(), v.to_owned());
+            env.insert(k, v);
         }
 
         // Build our args list
@@ -876,7 +878,7 @@ impl Subprocess {
         // https://github.com/kovidgoyal/kitty/issues/1595
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if let Some(pwd) = &cwd {
-            env.insert("PWD".into(), pwd.clone());
+            env.insert("PWD", pwd.clone());
         }
 
         Ok(Subprocess {
@@ -1014,6 +1016,7 @@ impl Subprocess {
             );
             self.process = Some(Process::Flatpak(FlatpakProcess {
                 pid,
+                signal: Some(cmd.signal_handle()),
                 cmd: Some(cmd),
             }));
             return Ok((pty.master.try_clone()?, pty.master.try_clone()?));
@@ -1086,15 +1089,16 @@ impl Subprocess {
                 }
             }
             Process::Flatpak(fp) => {
-                if let Some(cmd) = &fp.cmd {
-                    if let Err(err) = cmd.signal(1 /* SIGHUP */, true) {
-                        log::error!("error sending SIGHUP to command, may hang: {err}");
+                let res = match (&fp.cmd, &fp.signal) {
+                    (Some(cmd), _) => cmd.signal(1 /* SIGHUP */, true),
+                    (None, Some(h)) => h.signal(1 /* SIGHUP */, true),
+                    (None, None) => {
+                        log::warn!("no signal handle for flatpak host command pid={}", fp.pid);
+                        Ok(())
                     }
-                } else {
-                    log::warn!(
-                        "cannot signal flatpak host command pid={} after the watcher took it",
-                        fp.pid
-                    );
+                };
+                if let Err(err) = res {
+                    log::error!("error sending SIGHUP to command, may hang: {err}");
                 }
             }
         }
@@ -1147,22 +1151,27 @@ fn add_ghostty_path(env: &mut EnvMap) {
     // We always set this so that if the shell overwrites the path
     // scripts still have a way to find the Ghostty binary when
     // running in Ghostty.
-    env.insert("GHOSTTY_BIN_DIR".into(), exe_dir.clone());
+    env.insert("GHOSTTY_BIN_DIR", exe_dir.clone());
 
     // Append if we have a path. We want to append so that ghostty is
     // the last priority in the path. If we don't have a path set
     // then we just set it to the directory of the binary.
-    if let Some(path) = env.get("PATH").cloned() {
+    if let Some(path) = env.get("PATH").map(std::ffi::OsStr::to_owned) {
         // Verify that our path doesn't already contain this entry
+        use std::os::unix::ffi::OsStrExt;
         if path
-            .split(':')
-            .any(|entry| !entry.is_empty() && entry == exe_dir)
+            .as_bytes()
+            .split(|&b| b == b':')
+            .any(|entry| !entry.is_empty() && entry == exe_dir.as_bytes())
         {
             return;
         }
-        env.insert("PATH".into(), ghostty_os::env::append_env(&path, &exe_dir));
+        env.insert(
+            "PATH",
+            ghostty_os::env::append_env_os(&path, std::ffi::OsStr::new(&exe_dir)),
+        );
     } else {
-        env.insert("PATH".into(), exe_dir);
+        env.insert("PATH", exe_dir);
     }
 }
 

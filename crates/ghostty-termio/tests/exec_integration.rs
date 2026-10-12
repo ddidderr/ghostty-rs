@@ -287,9 +287,13 @@ fn large_write_with_backpressure_is_delivered_in_order() {
     // queue (the pty buffer is far smaller) and the output reader at the
     // same time (cat would otherwise block on a full pty).
     let mut f = start(
-        sh("stty raw -echo; head -c 262144 | wc -c; echo done"),
+        sh("stty raw -echo; echo ready; head -c 262144 | wc -c; echo done"),
         |_| {},
     );
+    // Writing before `stty raw` applies would go through the cooked-mode
+    // line discipline, which silently drops bytes past MAX_CANON (4095)
+    // on a line without a newline.
+    f.wait_text("ready");
     let chunk = vec![b'x'; 4096];
     for _ in 0..64 {
         f.write(&chunk);
@@ -555,7 +559,7 @@ fn change_config_message_updates_palette_and_colors() {
 fn process_output_manual_api() {
     // Termio can also be fed manually (no child involved).
     let config = base_config();
-    let mut ecfg = exec::Config::new(std::collections::HashMap::new(), "xterm-256color");
+    let mut ecfg = exec::Config::new(ghostty_os::EnvMap::new(), "xterm-256color");
     ecfg.command = Some(sh("true"));
     let (tx, _rx) = unbounded();
     let termio = Termio::init(Options {

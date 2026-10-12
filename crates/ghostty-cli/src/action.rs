@@ -53,7 +53,7 @@ pub trait ActionEnum: Sized + Copy {
 
 /// Detect the action from the process CLI args (Zig: `detectArgs`).
 pub fn detect_args<E: ActionEnum>() -> Result<Option<E>, DetectError> {
-    detect_iter(std::env::args())
+    detect_iter(ghostty_os::args::collect_lossy())
 }
 
 /// Detect the action from any iterator. Each iterator value should yield

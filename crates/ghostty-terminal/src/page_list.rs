@@ -863,6 +863,11 @@ impl PageList {
         let i = page.cell_index(usize::from(p.x), usize::from(p.y)).ok()?;
         page.cells.get_mut(i)
     }
+    /// The handle of the internal tracked viewport pin, if any (used by the
+    /// inspector to label it).
+    pub fn viewport_pin_handle(&self) -> Option<TrackedPin> {
+        self.viewport_pin
+    }
     /// Number of live pages in list order.
     pub fn total_pages(&self) -> usize {
         self.nodes.iter().filter(|n| n.is_some()).count()

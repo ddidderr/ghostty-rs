@@ -11,25 +11,49 @@ fn parse_unsigned<T: std::str::FromStr>(bytes: &[u8]) -> Option<T> {
 
 /// Parse OSC 9, which could be an iTerm2 notification or a ConEmu extension.
 pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<Command> {
-    // Zig prologue: writer must exist. (The NUL-terminator capacity check is
-    // folded into `data()`.)
-    let data = parser.data()?;
+    // Zig prologue: writer must exist. The NUL-terminator reservation is NOT
+    // done here: Zig only appends the NUL (`writer.writeByte(0)`) in the
+    // branches that return text, so full-buffer control commands (sleep,
+    // xterm emulation, progress, ...) still parse.
+    let data = parser.buffered()?;
 
     // Check first to see if this is a ConEmu OSC
     // https://conemu.github.io/en/AnsiEscapeCodes.html#ConEmu_specific_OSC
-    if let Some(cmd) = conemu(&data) {
+    if let Some((cmd, needs_nul)) = conemu(&data) {
+        if needs_nul && !parser.reserve_nul() {
+            return None;
+        }
         return Some(cmd);
     }
 
     // If it's not a ConEmu OSC, it's an iTerm2 notification
+    if !parser.reserve_nul() {
+        return None;
+    }
     Some(Command::ShowDesktopNotification {
         title: Vec::new(),
         body: data,
     })
 }
 
-/// Returns None where the Zig code does `break :conemu`.
-fn conemu(data: &[u8]) -> Option<Command> {
+/// Returns None where the Zig code does `break :conemu`. The flag is true
+/// when the Zig branch appends a NUL terminator (needs buffer room).
+fn conemu(data: &[u8]) -> Option<(Command, bool)> {
+    let r = conemu_inner(data)?;
+    let needs_nul = matches!(
+        r,
+        Command::ConemuComment(_)
+            | Command::ConemuShowMessageBox(_)
+            | Command::ConemuChangeTabTitle(_)
+            | Command::ConemuGuimacro(_)
+            | Command::ConemuRunProcess(_)
+            | Command::ConemuOutputEnvironmentVariable(_)
+            | Command::ReportPwd { .. }
+    );
+    Some((r, needs_nul))
+}
+
+fn conemu_inner(data: &[u8]) -> Option<Command> {
     if data.is_empty() {
         return None;
     }
@@ -216,6 +240,39 @@ mod tests {
             run(input),
             Command::ConemuXtermEmulation { keyboard, output }
         );
+    }
+
+    fn run_opt(input: &str) -> Option<Command> {
+        let mut p = Parser::init(false);
+        for ch in input.bytes() {
+            p.next(ch);
+        }
+        p.end(Some(0x1b))
+    }
+
+    #[test]
+    fn full_buffer_control_commands_do_not_need_nul() {
+        let fill = Parser::MAX_BUF;
+        // OSC 9;1 sleep with a buffer that has no room for a NUL: Zig never
+        // appends one for this command, so it still parses (default 100ms).
+        let input = format!("9;1;{}", "x".repeat(fill - 2));
+        assert_eq!(
+            run_opt(&input),
+            Some(Command::ConemuSleep { duration_ms: 100 })
+        );
+        // OSC 9;5 wait for input.
+        let input = format!("9;5{}", "x".repeat(fill - 1));
+        assert_eq!(run_opt(&input), Some(Command::ConemuWaitInput));
+    }
+
+    #[test]
+    fn full_buffer_text_commands_are_invalid() {
+        let fill = Parser::MAX_BUF;
+        // These append a NUL in Zig, which fails on a full buffer.
+        let input = format!("9;6;{}", "a".repeat(fill - 2));
+        assert_eq!(run_opt(&input), None);
+        let input = format!("9;{}", "a".repeat(fill));
+        assert_eq!(run_opt(&input), None);
     }
 
     #[test]

@@ -14,6 +14,10 @@
 //! text hello world        # IM commit of the rest of the line
 //! wait 200                # milliseconds
 //! screenshot /abs/out.png # dump the renderer's last frame (PNG)
+//! inspector-screenshot /abs/out.png # dump the next frame of the terminal
+//!                                   # inspector window (PNG)
+//! inspector-click 100 20  # left click in the inspector (logical px)
+//! inspector-scroll 100 200 -3  # mouse wheel in the inspector
 //! quit                    # quit the application
 //! ```
 //!
@@ -34,12 +38,15 @@ use crate::class::surface::Surface;
 use crate::class::window::Window;
 
 /// One parsed command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     Key(String),
     Text(String),
     Wait(u64),
     Screenshot(String),
+    InspectorScreenshot(String),
+    InspectorClick(f64, f64),
+    InspectorScroll(f64, f64, f64),
     Quit,
 }
 
@@ -59,6 +66,31 @@ pub fn parse(script: &str) -> Result<Vec<Step>, String> {
             "text" if !rest.is_empty() => Step::Text(rest.to_owned()),
             "wait" => Step::Wait(rest.parse().map_err(|_| err("wait needs milliseconds"))?),
             "screenshot" if !rest.is_empty() => Step::Screenshot(rest.to_owned()),
+            "inspector-screenshot" if !rest.is_empty() => {
+                Step::InspectorScreenshot(rest.to_owned())
+            }
+            "inspector-click" => {
+                let v: Vec<f64> = rest
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| err("inspector-click needs x y"))?;
+                let [x, y] = v[..] else {
+                    return Err(err("inspector-click needs x y"));
+                };
+                Step::InspectorClick(x, y)
+            }
+            "inspector-scroll" => {
+                let v: Vec<f64> = rest
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| err("inspector-scroll needs x y dy"))?;
+                let [x, y, dy] = v[..] else {
+                    return Err(err("inspector-scroll needs x y dy"));
+                };
+                Step::InspectorScroll(x, y, dy)
+            }
             "quit" => Step::Quit,
             _ => return Err(err(&format!("bad command {line:?}"))),
         });
@@ -190,6 +222,30 @@ impl Runner {
                     Some(s) => s.debug_screenshot(&path),
                     None => log::warn!("debug input: no active surface"),
                 },
+                Step::InspectorClick(x, y) => match self.active_surface() {
+                    Some(s) => {
+                        if !s.debug_inspector_click(x, y) {
+                            log::warn!("debug input: the surface has no inspector");
+                        }
+                    }
+                    None => log::warn!("debug input: no active surface"),
+                },
+                Step::InspectorScroll(x, y, dy) => match self.active_surface() {
+                    Some(s) => {
+                        if !s.debug_inspector_scroll(x, y, dy) {
+                            log::warn!("debug input: the surface has no inspector");
+                        }
+                    }
+                    None => log::warn!("debug input: no active surface"),
+                },
+                Step::InspectorScreenshot(path) => match self.active_surface() {
+                    Some(s) => {
+                        if !s.debug_inspector_screenshot(&path) {
+                            log::warn!("debug input: the surface has no inspector");
+                        }
+                    }
+                    None => log::warn!("debug input: no active surface"),
+                },
             }
         }
     }
@@ -228,8 +284,7 @@ mod tests {
 
     #[test]
     fn parse_script() {
-        let s =
-            "# c\n\nkey ctrl+shift+t\ntext hello world\nwait 200\nscreenshot /tmp/a.png\nquit\n";
+        let s = "# c\n\nkey ctrl+shift+t\ntext hello world\nwait 200\nscreenshot /tmp/a.png\ninspector-screenshot /tmp/i.png\ninspector-click 10 20\ninspector-scroll 1 2 -3\nquit\n";
         assert_eq!(
             parse(s).expect("valid script"),
             vec![
@@ -237,6 +292,9 @@ mod tests {
                 Step::Text("hello world".into()),
                 Step::Wait(200),
                 Step::Screenshot("/tmp/a.png".into()),
+                Step::InspectorScreenshot("/tmp/i.png".into()),
+                Step::InspectorClick(10.0, 20.0),
+                Step::InspectorScroll(1.0, 2.0, -3.0),
                 Step::Quit
             ]
         );

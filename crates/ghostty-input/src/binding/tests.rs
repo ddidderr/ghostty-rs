@@ -1508,6 +1508,20 @@ fn trigger_hash_folds_case() {
 }
 
 #[test]
+fn trigger_full_unicode_case_folding() {
+    // Simple folds beyond to_lowercase: micro sign, long s, final sigma.
+    assert!(uni('\u{00B5}').folded_equal(&uni('\u{03BC}')));
+    assert!(uni('\u{017F}').folded_equal(&uni('s')));
+    assert!(uni('\u{03C2}').folded_equal(&uni('\u{03C3}')));
+    // Multi-codepoint full folds: capital sharp s folds to "ss", as does
+    // U+00DF itself.
+    assert!(uni('\u{1E9E}').folded_equal(&uni('\u{00DF}')));
+    assert_eq!(uni('\u{1E9E}').hash(), uni('\u{00DF}').hash());
+    // Non-equivalent codepoints stay distinct.
+    assert!(!uni('\u{00DF}').folded_equal(&uni('s')));
+}
+
+#[test]
 fn trigger_display_roundtrip() {
     for s in ["super+ctrl+alt+shift+a", "catch_all", "ctrl+arrow_up", "+"] {
         let t = Trigger::parse(s).unwrap();

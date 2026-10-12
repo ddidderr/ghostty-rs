@@ -1733,10 +1733,10 @@ impl Window {
 
     /// Toggle the Ghostty inspector for the active surface.
     fn toggle_inspector(&self) {
-        // TODO(inspector): deferred; the inspector is not ported yet.
-        if let Some(surface) = self.get_active_surface() {
-            log::debug!("toggle-inspector requested for {surface:?} (inspector deferred)");
-        }
+        let Some(surface) = self.get_active_surface() else {
+            return;
+        };
+        surface.control_inspector(ghostty_apprt::action::Inspector::Toggle);
     }
 }
 

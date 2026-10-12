@@ -3,12 +3,12 @@
 //! The shell scripts live in `resources/shell-integration/` at the workspace
 //! root (copied verbatim from `src/shell-integration/`).
 
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
-use ghostty_os::{env::prepend_env, homedir, shell::ShellCommandBuilder};
+use ghostty_os::{env::prepend_env_os, homedir, shell::ShellCommandBuilder};
 
 /// The environment passed to the child (Zig `std.process.EnvMap`).
-pub type EnvMap = HashMap<String, String>;
+pub type EnvMap = ghostty_os::EnvMap;
 
 /// Shell types we support
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,7 +144,7 @@ pub fn setup_features(env: &mut EnvMap, features: ShellIntegrationFeatures, curs
     }
 
     if !buf.is_empty() {
-        env.insert("GHOSTTY_SHELL_FEATURES".to_owned(), buf);
+        env.insert("GHOSTTY_SHELL_FEATURES", buf);
     }
 }
 
@@ -218,15 +218,15 @@ fn setup_bash(
     }
 
     // Preserve an existing ENV value. We're about to overwrite it.
-    if let Some(v) = env.get("ENV").cloned() {
-        env.insert("GHOSTTY_BASH_ENV".to_owned(), v);
+    if let Some(v) = env.get("ENV").map(std::ffi::OsStr::to_owned) {
+        env.insert("GHOSTTY_BASH_ENV", v);
     }
 
     // Set our new ENV to point to our integration script.
     let script_path = format!("{resource_dir}/shell-integration/bash/ghostty.bash");
     match std::fs::File::open(&script_path) {
         Ok(_) => {
-            env.insert("ENV".to_owned(), script_path);
+            env.insert("ENV", script_path);
         }
         Err(err) => {
             log::warn!("unable to open {script_path}: {err}");
@@ -235,9 +235,9 @@ fn setup_bash(
         }
     }
 
-    env.insert("GHOSTTY_BASH_INJECT".to_owned(), inject);
+    env.insert("GHOSTTY_BASH_INJECT", inject);
     if let Some(v) = rcfile {
-        env.insert("GHOSTTY_BASH_RCFILE".to_owned(), v);
+        env.insert("GHOSTTY_BASH_RCFILE", v);
     }
 
     // In POSIX mode, HISTFILE defaults to ~/.sh_history, so unless we're
@@ -245,8 +245,8 @@ fn setup_bash(
     if !env.contains_key("HISTFILE")
         && let Some(home) = homedir::home()?
     {
-        env.insert("HISTFILE".to_owned(), format!("{home}/.bash_history"));
-        env.insert("GHOSTTY_BASH_UNEXPORT_HISTFILE".to_owned(), "1".to_owned());
+        env.insert("HISTFILE", format!("{home}/.bash_history"));
+        env.insert("GHOSTTY_BASH_UNEXPORT_HISTFILE", "1");
     }
 
     // Return a copy of our modified command line to use as the shell command.
@@ -271,10 +271,7 @@ fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
     // Set an env var so we can remove this from XDG_DATA_DIRS later.
     // This happens in the shell integration config itself. We do this
     // so that our modifications don't interfere with other commands.
-    env.insert(
-        "GHOSTTY_SHELL_INTEGRATION_XDG_DIR".to_owned(),
-        integ_path.clone(),
-    );
+    env.insert("GHOSTTY_SHELL_INTEGRATION_XDG_DIR", integ_path.clone());
 
     // If no XDG_DATA_DIRS set use the default value as specified.
     // This ensures that the default directories aren't lost by setting
@@ -283,9 +280,9 @@ fn setup_xdg_data_dirs(resource_dir: &str, env: &mut EnvMap) -> bool {
     let key = "XDG_DATA_DIRS";
     let current = env
         .get(key)
-        .map_or("/usr/local/share:/usr/share", String::as_str);
-    let new = prepend_env(current, &integ_path);
-    env.insert(key.to_owned(), new);
+        .unwrap_or_else(|| std::ffi::OsStr::new("/usr/local/share:/usr/share"));
+    let new = prepend_env_os(current, std::ffi::OsStr::new(&integ_path));
+    env.insert(key, new);
 
     true
 }
@@ -356,8 +353,8 @@ fn setup_nushell(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Opt
 /// config then loads the true user config.
 fn setup_zsh(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<Command> {
     // Preserve an existing ZDOTDIR value. We're about to overwrite it.
-    if let Some(old) = env.get("ZDOTDIR").cloned() {
-        env.insert("GHOSTTY_ZSH_ZDOTDIR".to_owned(), old);
+    if let Some(old) = env.get("ZDOTDIR").map(std::ffi::OsStr::to_owned) {
+        env.insert("GHOSTTY_ZSH_ZDOTDIR", old);
     }
 
     // Set our new ZDOTDIR to point to our shell resource directory.
@@ -367,7 +364,7 @@ fn setup_zsh(command: &Command, resource_dir: &str, env: &mut EnvMap) -> Option<
         log::warn!("unable to open {integ_path}");
         return None;
     }
-    env.insert("ZDOTDIR".to_owned(), integ_path);
+    env.insert("ZDOTDIR", integ_path);
 
     Some(command.clone())
 }
@@ -494,7 +491,7 @@ mod tests {
         );
         assert_eq!(
             "cursor:blink,path,ssh-env,ssh-terminfo,sudo,title",
-            env["GHOSTTY_SHELL_FEATURES"]
+            env.get("GHOSTTY_SHELL_FEATURES").unwrap().to_str().unwrap()
         );
 
         // all features disabled
@@ -513,7 +510,10 @@ mod tests {
             },
             true,
         );
-        assert_eq!("ssh-env,sudo", env["GHOSTTY_SHELL_FEATURES"]);
+        assert_eq!(
+            "ssh-env,sudo",
+            env.get("GHOSTTY_SHELL_FEATURES").unwrap().to_str().unwrap()
+        );
 
         // blinking cursor
         let only_cursor = ShellIntegrationFeatures {
@@ -522,19 +522,28 @@ mod tests {
         };
         let mut env = EnvMap::new();
         setup_features(&mut env, only_cursor, true);
-        assert_eq!("cursor:blink", env["GHOSTTY_SHELL_FEATURES"]);
+        assert_eq!(
+            "cursor:blink",
+            env.get("GHOSTTY_SHELL_FEATURES").unwrap().to_str().unwrap()
+        );
 
         // steady cursor
         let mut env = EnvMap::new();
         setup_features(&mut env, only_cursor, false);
-        assert_eq!("cursor:steady", env["GHOSTTY_SHELL_FEATURES"]);
+        assert_eq!(
+            "cursor:steady",
+            env.get("GHOSTTY_SHELL_FEATURES").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
     fn default_features() {
         let mut env = EnvMap::new();
         setup_features(&mut env, ShellIntegrationFeatures::default(), true);
-        assert_eq!("cursor:blink,path,title", env["GHOSTTY_SHELL_FEATURES"]);
+        assert_eq!(
+            "cursor:blink,path,title",
+            env.get("GHOSTTY_SHELL_FEATURES").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -544,8 +553,14 @@ mod tests {
 
         let command = setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
-        assert_eq!("1", env["GHOSTTY_BASH_INJECT"]);
-        assert_eq!(format!("{}/ghostty.bash", res.shell_path), env["ENV"]);
+        assert_eq!(
+            "1",
+            env.get("GHOSTTY_BASH_INJECT").unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            format!("{}/ghostty.bash", res.shell_path),
+            env.get("ENV").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -575,12 +590,18 @@ mod tests {
         let mut env = EnvMap::new();
         let command = setup_bash(&sh("bash --norc"), &res.path, &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
-        assert_eq!("1 --norc", env["GHOSTTY_BASH_INJECT"]);
+        assert_eq!(
+            "1 --norc",
+            env.get("GHOSTTY_BASH_INJECT").unwrap().to_str().unwrap()
+        );
 
         let mut env = EnvMap::new();
         let command = setup_bash(&sh("bash --noprofile"), &res.path, &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
-        assert_eq!("1 --noprofile", env["GHOSTTY_BASH_INJECT"]);
+        assert_eq!(
+            "1 --noprofile",
+            env.get("GHOSTTY_BASH_INJECT").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -590,11 +611,17 @@ mod tests {
 
         let command = setup_bash(&sh("bash --rcfile profile.sh"), &res.path, &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
-        assert_eq!("profile.sh", env["GHOSTTY_BASH_RCFILE"]);
+        assert_eq!(
+            "profile.sh",
+            env.get("GHOSTTY_BASH_RCFILE").unwrap().to_str().unwrap()
+        );
 
         let command = setup_bash(&sh("bash --init-file profile.sh"), &res.path, &mut env).unwrap();
         assert_eq!("bash --posix", shell_str(command.as_ref()));
-        assert_eq!("profile.sh", env["GHOSTTY_BASH_RCFILE"]);
+        assert_eq!(
+            "profile.sh",
+            env.get("GHOSTTY_BASH_RCFILE").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -605,15 +632,27 @@ mod tests {
         temp_env::with_var("HOME", Some("/home/test"), || {
             let mut env = EnvMap::new();
             setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
-            assert!(env["HISTFILE"].ends_with(".bash_history"));
-            assert_eq!("1", env["GHOSTTY_BASH_UNEXPORT_HISTFILE"]);
+            assert!(
+                env.get("HISTFILE")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .ends_with(".bash_history")
+            );
+            assert_eq!(
+                "1",
+                env.get("GHOSTTY_BASH_UNEXPORT_HISTFILE")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            );
         });
 
         // HISTFILE set
         let mut env = EnvMap::new();
-        env.insert("HISTFILE".into(), "my_history".into());
+        env.insert("HISTFILE", "my_history");
         setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
-        assert_eq!("my_history", env["HISTFILE"]);
+        assert_eq!("my_history", env.get("HISTFILE").unwrap().to_str().unwrap());
         assert!(!env.contains_key("GHOSTTY_BASH_UNEXPORT_HISTFILE"));
     }
 
@@ -621,11 +660,17 @@ mod tests {
     fn bash_env() {
         let res = TmpResourcesDir::new(Shell::Bash);
         let mut env = EnvMap::new();
-        env.insert("ENV".into(), "env.sh".into());
+        env.insert("ENV", "env.sh");
 
         setup_bash(&sh("bash"), &res.path, &mut env).unwrap();
-        assert_eq!("env.sh", env["GHOSTTY_BASH_ENV"]);
-        assert_eq!(format!("{}/ghostty.bash", res.shell_path), env["ENV"]);
+        assert_eq!(
+            "env.sh",
+            env.get("GHOSTTY_BASH_ENV").unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            format!("{}/ghostty.bash", res.shell_path),
+            env.get("ENV").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -667,11 +712,14 @@ mod tests {
         assert!(setup_xdg_data_dirs(&res.path, &mut env));
         assert_eq!(
             format!("{}/shell-integration", res.path),
-            env["GHOSTTY_SHELL_INTEGRATION_XDG_DIR"]
+            env.get("GHOSTTY_SHELL_INTEGRATION_XDG_DIR")
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
         assert_eq!(
             format!("{}/shell-integration:/usr/local/share:/usr/share", res.path),
-            env["XDG_DATA_DIRS"]
+            env.get("XDG_DATA_DIRS").unwrap().to_str().unwrap()
         );
     }
 
@@ -679,16 +727,19 @@ mod tests {
     fn xdg_existing_xdg_data_dirs() {
         let res = TmpResourcesDir::new(Shell::Fish);
         let mut env = EnvMap::new();
-        env.insert("XDG_DATA_DIRS".into(), "/opt/share".into());
+        env.insert("XDG_DATA_DIRS", "/opt/share");
 
         assert!(setup_xdg_data_dirs(&res.path, &mut env));
         assert_eq!(
             format!("{}/shell-integration", res.path),
-            env["GHOSTTY_SHELL_INTEGRATION_XDG_DIR"]
+            env.get("GHOSTTY_SHELL_INTEGRATION_XDG_DIR")
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
         assert_eq!(
             format!("{}/shell-integration:/opt/share", res.path),
-            env["XDG_DATA_DIRS"]
+            env.get("XDG_DATA_DIRS").unwrap().to_str().unwrap()
         );
     }
 
@@ -710,9 +761,18 @@ mod tests {
         assert_eq!("nu --execute 'use ghostty *'", shell_str(command.as_ref()));
         assert_eq!(
             format!("{}/shell-integration", res.path),
-            env["GHOSTTY_SHELL_INTEGRATION_XDG_DIR"]
+            env.get("GHOSTTY_SHELL_INTEGRATION_XDG_DIR")
+                .unwrap()
+                .to_str()
+                .unwrap()
         );
-        assert!(env["XDG_DATA_DIRS"].starts_with(&format!("{}/shell-integration", res.path)));
+        assert!(
+            env.get("XDG_DATA_DIRS")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with(&format!("{}/shell-integration", res.path))
+        );
     }
 
     #[test]
@@ -747,7 +807,10 @@ mod tests {
 
         let command = setup_zsh(&sh("zsh"), &res.path, &mut env);
         assert_eq!("zsh", shell_str(command.as_ref()));
-        assert_eq!(res.shell_path, env["ZDOTDIR"]);
+        assert_eq!(
+            res.shell_path,
+            env.get("ZDOTDIR").unwrap().to_str().unwrap()
+        );
         assert!(!env.contains_key("GHOSTTY_ZSH_ZDOTDIR"));
     }
 
@@ -755,12 +818,18 @@ mod tests {
     fn zsh_zdotdir() {
         let res = TmpResourcesDir::new(Shell::Zsh);
         let mut env = EnvMap::new();
-        env.insert("ZDOTDIR".into(), "$HOME/.config/zsh".into());
+        env.insert("ZDOTDIR", "$HOME/.config/zsh");
 
         let command = setup_zsh(&sh("zsh"), &res.path, &mut env);
         assert_eq!("zsh", shell_str(command.as_ref()));
-        assert_eq!(res.shell_path, env["ZDOTDIR"]);
-        assert_eq!("$HOME/.config/zsh", env["GHOSTTY_ZSH_ZDOTDIR"]);
+        assert_eq!(
+            res.shell_path,
+            env.get("ZDOTDIR").unwrap().to_str().unwrap()
+        );
+        assert_eq!(
+            "$HOME/.config/zsh",
+            env.get("GHOSTTY_ZSH_ZDOTDIR").unwrap().to_str().unwrap()
+        );
     }
 
     #[test]
@@ -780,7 +849,13 @@ mod tests {
         let mut env = EnvMap::new();
         let r = setup(root, &sh("bash"), &mut env, None).unwrap().unwrap();
         assert_eq!(r.shell, Shell::Bash);
-        assert!(env["ENV"].ends_with("shell-integration/bash/ghostty.bash"));
+        assert!(
+            env.get("ENV")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .ends_with("shell-integration/bash/ghostty.bash")
+        );
         assert!(
             Path::new(root)
                 .join("shell-integration/nushell/vendor/autoload/ghostty.nu")

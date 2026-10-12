@@ -206,6 +206,8 @@ impl RepeatablePath {
 }
 
 impl ConfigField for RepeatablePath {
+    const KIND: crate::cli_args::FieldKind = crate::cli_args::FieldKind::RepeatablePath;
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let Some(item) = Path::parse(input)? else {
             self.value.clear();

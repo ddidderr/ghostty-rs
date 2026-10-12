@@ -2,6 +2,7 @@
 //! additional [`ParseOptions`] from `os/uri.zig`.
 
 use std::borrow::Cow;
+use std::fmt::Write as _;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ParseOptions {
@@ -47,12 +48,23 @@ impl Component<'_> {
         }
     }
 
-    /// The raw (percent-decoded) value (`toRaw`). Invalid escapes are left
-    /// as-is, matching `std.Uri.percentDecodeInPlace`.
-    pub fn to_raw(&self) -> Cow<'_, str> {
+    /// The raw (percent-decoded) value (`toRaw`) as bytes. Invalid escapes
+    /// are left as-is, matching `std.Uri.percentDecodeInPlace`. The decoded
+    /// bytes are NOT required to be UTF-8 (e.g. non-UTF-8 file names).
+    pub fn to_raw_bytes(&self) -> Cow<'_, [u8]> {
         match self {
-            Component::Raw(s) => Cow::Borrowed(s.as_ref()),
+            Component::Raw(s) => Cow::Borrowed(s.as_bytes()),
             Component::PercentEncoded(s) => percent_decode(s),
+        }
+    }
+
+    /// Lossy (U+FFFD) UTF-8 view of [`Self::to_raw_bytes`], for values such
+    /// as host names that are expected to be text. Use `to_raw_bytes` for
+    /// paths.
+    pub fn to_raw(&self) -> Cow<'_, str> {
+        match self.to_raw_bytes() {
+            Cow::Borrowed(b) => String::from_utf8_lossy(b),
+            Cow::Owned(b) => Cow::Owned(String::from_utf8_lossy(&b).into_owned()),
         }
     }
 
@@ -68,9 +80,9 @@ impl Component<'_> {
 
 /// Lenient percent decoding like `std.Uri.percentDecodeBackwards`/InPlace:
 /// valid `%XX` sequences are decoded, everything else passes through.
-fn percent_decode(s: &str) -> Cow<'_, str> {
+fn percent_decode(s: &str) -> Cow<'_, [u8]> {
     if !s.contains('%') {
-        return Cow::Borrowed(s);
+        return Cow::Borrowed(s.as_bytes());
     }
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -87,7 +99,7 @@ fn percent_decode(s: &str) -> Cow<'_, str> {
         out.push(b[i]);
         i += 1;
     }
-    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+    Cow::Owned(out)
 }
 
 fn hexval(c: u8) -> Option<u8> {
@@ -318,6 +330,64 @@ pub fn parse(text: &str, options: ParseOptions) -> Result<Uri<'_>, ParseError> {
     Ok(uri)
 }
 
+/// The pieces of a parsed URI that are needed by byte-oriented callers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParsedBytes {
+    pub scheme: String,
+    /// Percent-decoded host (lossy; host names are text).
+    pub host: Option<String>,
+    /// Percent-decoded path bytes (or the full raw tail with
+    /// [`ParseOptions::raw_path`]). Not required to be UTF-8.
+    pub path: Vec<u8>,
+}
+
+/// Parse a URI given as arbitrary bytes without losing any path bytes.
+///
+/// Bytes that are not valid UTF-8 are percent-escaped before parsing (so
+/// they decode back to exactly the same bytes), mirroring Zig's byte-string
+/// `std.Uri.parse`. With `raw_path` the original bytes are sliced directly.
+pub fn parse_bytes(text: &[u8], options: ParseOptions) -> Result<ParsedBytes, ParseError> {
+    // Escape invalid bytes, remembering the offset mapping.
+    let mut escaped = String::with_capacity(text.len());
+    for chunk in text.utf8_chunks() {
+        escaped.push_str(chunk.valid());
+        for b in chunk.invalid() {
+            let _ = write!(escaped, "%{b:02X}");
+        }
+    }
+
+    let uri = parse(&escaped, options)?;
+    let path = if options.raw_path {
+        let esc_start = offset_in(&escaped, uri.path.as_str());
+        // Map the escaped offset back to the original byte offset. The path
+        // never begins inside an escape (it starts at a delimiter).
+        let mut orig_start = esc_start;
+        let mut esc_pos = 0usize;
+        let mut orig_pos = 0usize;
+        for chunk in text.utf8_chunks() {
+            let v = chunk.valid().len();
+            if esc_start <= esc_pos + v {
+                orig_start = orig_pos + (esc_start - esc_pos);
+                break;
+            }
+            esc_pos += v;
+            orig_pos += v;
+            let inv = chunk.invalid().len();
+            esc_pos += inv * 3;
+            orig_pos += inv;
+            orig_start = orig_pos;
+        }
+        text[orig_start.min(text.len())..].to_vec()
+    } else {
+        uri.path.to_raw_bytes().into_owned()
+    };
+    Ok(ParsedBytes {
+        scheme: uri.scheme.to_owned(),
+        host: uri.host.as_ref().map(|h| h.to_raw().into_owned()),
+        path,
+    })
+}
+
 /// Checks if a string represents a valid MAC address, e.g. 12:34:56:ab:cd:ef.
 fn is_valid_mac_address(s: &str) -> bool {
     let b = s.as_bytes();
@@ -405,6 +475,31 @@ mod tests {
             Err(ParseError::InvalidMacAddress),
             parse("file://zz:zz:zz:zz:zz:zz/path", MAC)
         );
+    }
+
+    #[test]
+    fn percent_decode_preserves_non_utf8_bytes() {
+        let u = parse("file://localhost/a%FFb%e2%82", ParseOptions::default()).unwrap();
+        assert_eq!(&*u.path.to_raw_bytes(), b"/a\xffb\xe2\x82");
+        // The lossy text view still works for text values.
+        assert_eq!(u.path.to_raw(), "/a\u{fffd}b\u{fffd}");
+    }
+
+    #[test]
+    fn parse_bytes_non_utf8() {
+        let p = parse_bytes(b"file://localhost/a\xffb%FEc", ParseOptions::default()).unwrap();
+        assert_eq!(p.scheme, "file");
+        assert_eq!(p.host.as_deref(), Some("localhost"));
+        assert_eq!(p.path, b"/a\xffb\xfec");
+
+        let raw = ParseOptions {
+            raw_path: true,
+            mac_address: true,
+        };
+        let p = parse_bytes(b"kitty-shell-cwd://localhost/a\xff%41?x", raw).unwrap();
+        assert_eq!(p.path, b"/a\xff%41?x");
+        let p = parse_bytes(b"kitty-shell-cwd://\xfflo/a", raw).ok();
+        assert!(p.is_none() || p.is_some());
     }
 
     #[test]

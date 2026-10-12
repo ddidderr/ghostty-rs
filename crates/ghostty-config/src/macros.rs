@@ -31,6 +31,8 @@ pub struct FieldInfo<T> {
     pub name: &'static str,
     /// Raw doc comment lines.
     pub doc: &'static [&'static str],
+    /// Classification of the field's type (for completion generation).
+    pub kind: crate::cli_args::FieldKind,
     /// Deep equality of this field between two structs.
     pub eq: fn(&T, &T) -> bool,
     /// Format this field as in `+show-config`.
@@ -139,6 +141,7 @@ macro_rules! config_struct {
                     $crate::macros::FieldInfo {
                         name: $key,
                         doc: &[$($doc),*],
+                        kind: <$ty as $crate::cli_args::ConfigField>::KIND,
                         eq: |a: &$name, b: &$name| a.$field == b.$field,
                         format: |a: &$name, name: &str, w: &mut dyn ::core::fmt::Write| {
                             let mut f = $crate::formatter::EntryFormatter::new(name, w);
@@ -268,6 +271,9 @@ macro_rules! config_packed {
         }
 
         impl $crate::cli_args::ConfigField for $name {
+            const KIND: $crate::cli_args::FieldKind =
+                $crate::cli_args::FieldKind::Packed(Self::NAMES);
+
             fn parse_cli(
                 &mut self,
                 value: ::core::option::Option<&str>,

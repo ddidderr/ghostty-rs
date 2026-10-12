@@ -84,7 +84,7 @@ pub struct FlatpakHostCommand {
 
     /// Environment variables for the child process. If this is None, this
     /// does not send any environment variables.
-    pub env: Option<HashMap<String, String>>,
+    pub env: Option<crate::env::EnvMap>,
 
     /// File descriptors to send to the child process. It is up to the
     /// caller to create the file descriptors and set them up. They are
@@ -113,14 +113,6 @@ impl FlatpakHostCommand {
         }
     }
 
-    fn state(&self) -> State {
-        *self
-            .shared
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
     /// Spawn the command. This will start the host command. On return,
     /// the pid will be available. This must only be called with the
     /// state in "init".
@@ -128,7 +120,19 @@ impl FlatpakHostCommand {
         let request = Request {
             argv: self.argv.clone(),
             cwd: self.cwd.clone(),
-            env: self.env.clone().unwrap_or_default(),
+            // The Development.HostCommand DBus method takes `a{ss}`, which
+            // can only carry UTF-8, so non-UTF-8 bytes are replaced here.
+            env: self
+                .env
+                .iter()
+                .flat_map(crate::env::EnvMap::iter)
+                .map(|(k, v)| {
+                    (
+                        k.to_string_lossy().into_owned(),
+                        v.to_string_lossy().into_owned(),
+                    )
+                })
+                .collect(),
             fds: [
                 self.stdin
                     .try_clone()
@@ -211,6 +215,38 @@ impl FlatpakHostCommand {
             .name("flatpak-host-wait".into())
             .spawn(move || callback(self.wait()))?;
         Ok(())
+    }
+
+    /// Send a signal to the started command. This does nothing if the
+    /// command is not in the started state.
+    pub fn signal(&self, sig: u8, pg: bool) -> Result<(), Error> {
+        self.signal_handle().signal(sig, pg)
+    }
+
+    /// A cloneable handle that can signal this command even after the
+    /// command itself has been moved into an exit watcher
+    /// (`wait_callback`). Zig's `FlatpakHostCommand` is a pointer shared
+    /// between the exit watcher and `Exec.stop`; this is the equivalent.
+    pub fn signal_handle(&self) -> FlatpakSignalHandle {
+        FlatpakSignalHandle {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+/// Handle used to signal a host command independent of its owner.
+#[derive(Clone)]
+pub struct FlatpakSignalHandle {
+    shared: Arc<Shared>,
+}
+
+impl FlatpakSignalHandle {
+    fn state(&self) -> State {
+        *self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Send a signal to the started command. This does nothing if the
@@ -390,6 +426,23 @@ mod tests {
         assert_eq!(cmd.wait(), Err(Error::FlatpakMustBeStarted));
         // Signalling an unstarted command is a no-op.
         assert_eq!(cmd.signal(15, false), Ok(()));
+    }
+
+    #[test]
+    fn signal_handle_survives_wait_callback() {
+        let (r, w) = crate::pipe::pipe().unwrap();
+        let w2 = w.try_clone().unwrap();
+        let cmd = FlatpakHostCommand::new(vec!["true".into()], r, w, w2);
+        let handle = cmd.signal_handle();
+        let (tx, rx) = std::sync::mpsc::channel();
+        cmd.wait_callback(move |r| {
+            let _ = tx.send(r);
+        })
+        .unwrap();
+        // The watcher owns the command; the handle still works (no-op
+        // since never started) and the watcher reports the state error.
+        assert_eq!(handle.signal(1, true), Ok(()));
+        assert_eq!(rx.recv().unwrap(), Err(Error::FlatpakMustBeStarted));
     }
 
     #[test]

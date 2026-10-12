@@ -9,6 +9,7 @@ ghostty-vt.workspace = true
 ghostty-input.workspace = true
 ghostty-config.workspace = true
 ghostty-datastruct.workspace = true
+ghostty-inspector.workspace = true
 ghostty-terminal.workspace = true
 ghostty-renderer.workspace = true
 thiserror = "2.0.21"

@@ -47,7 +47,10 @@ pub(crate) mod testutil;
 // Functions and types (mirrors the flat exports of `os/main.zig`).
 pub use dbus::launched_by_dbus_activation;
 pub use desktop::{DesktopEnvironment, desktop_environment, launched_from_desktop};
-pub use env::{append_env, append_env_always, get_env_map, getenv, getenv_not_empty, prepend_env};
+pub use env::{
+    EnvMap, append_env, append_env_always, append_env_os, filter_snap_paths, get_env_map, getenv,
+    getenv_not_empty, prepend_env, prepend_env_os,
+};
 pub use file::{Rlimit, alloc_tmp_dir, fix_max_files, restore_max_files};
 pub use flatpak::{FlatpakHostCommand, is_flatpak};
 pub use homedir::{expand_home, home};

@@ -242,11 +242,19 @@ pub trait CoreSurface {
         Err("screenshots are not supported".into())
     }
 
-    // ---- inspector (deferred) -------------------------------------------
+    // ---- inspector ----------------------------------------------------
+    /// `activateInspector`: begin collecting inspection data. This does not
+    /// affect the GUI, the runtime shows/hides the inspector UI itself.
     fn activate_inspector(&self) -> Result<(), CoreError> {
         Ok(())
     }
+    /// `deactivateInspector`: stop collecting inspection data.
     fn deactivate_inspector(&self) {}
+    /// `Inspector.render`: draw the inspector into the current Dear ImGui
+    /// frame (the main thread; called from the inspector widget's render).
+    fn render_inspector(&self, ui: &ghostty_inspector::imgui::Ui) {
+        let _ = ui;
+    }
 }
 
 /// Implemented by this crate (GTK `Application`); handed to core.
@@ -278,7 +286,7 @@ pub trait RtSurface {
     fn set_clipboard(&self, clipboard: Clipboard, contents: &[(String, String)], confirm: bool);
     /// `defaultTermioEnv`: env vars to set for the child (GDK/GTK related
     /// cleanups).
-    fn default_termio_env(&self) -> Vec<(String, String)>;
+    fn default_termio_env(&self) -> Vec<(std::ffi::OsString, std::ffi::OsString)>;
     fn redraw_inspector(&self) {}
     /// Resolve an OpenGL function pointer for the surface's GL context
     /// (GTK: dlsym on libepoxy). Called with the context current. Null if

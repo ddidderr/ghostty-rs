@@ -11,9 +11,10 @@ use onig::{MatchParam, Regex, Region, SearchOptions};
 /// Units are Oniguruma retry steps (internal backtracking/retry counter),
 /// not bytes/characters/time.
 ///
-/// Deviation: the `onig` crate only exposes the retry limit *in match*
-/// (Zig also sets the retry limit in search); both abort matching with an
-/// error which is treated as "no further matches".
+/// This is Zig's `setRetryLimitInSearch`: a whole-search budget (set via
+/// the `ghostty-onig` wrapper since the `onig` crate does not expose it).
+/// Exceeding it aborts matching with an error which is treated as "no
+/// further matches".
 const ONI_SEARCH_RETRY_LIMIT: u32 = 100_000;
 
 /// A string and a map from each byte of the string to the pin it came from.
@@ -52,7 +53,7 @@ impl<'a> SearchIterator<'a> {
         // Use per-search match params so we can bound regex retry steps
         // (Oniguruma's internal backtracking work counter).
         let mut match_param = MatchParam::default();
-        match_param.set_retry_limit_in_match(ONI_SEARCH_RETRY_LIMIT);
+        ghostty_onig::set_retry_limit_in_search(&mut match_param, ONI_SEARCH_RETRY_LIMIT);
 
         let haystack = &self.map.string[self.offset..];
         let mut region = Region::new();
@@ -192,6 +193,19 @@ mod tests {
             );
         }
 
+        assert!(it.next_match().is_none());
+    }
+
+    #[test]
+    fn string_map_search_iterator_retry_limit_bounds_catastrophic_regex() {
+        // Exponential backtracking: without the whole-search retry limit
+        // this would effectively never finish.
+        let re = Regex::new("(a+)+$").unwrap();
+        let mut s = Screen::new(Options::new(60, 5, 0)).unwrap();
+        s.test_write_string(&format!("{}b", "a".repeat(50)))
+            .unwrap();
+        let map = line_map(&s, 10, 0);
+        let mut it = map.search_iterator(&re);
         assert!(it.next_match().is_none());
     }
 

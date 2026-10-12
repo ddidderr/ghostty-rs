@@ -21,6 +21,7 @@ WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 | `ghostty-renderer` | renderer/ generic, OpenGL (+ opengl/*), cell, cursor, image, link, size, State, Thread, Overlay, shadertoy, row, shaders/glsl | config, font, terminal |
 | `ghostty-termio` | termio/*, pty.zig, Command.zig, shell-integration resources | config, terminal, os |
 | `ghostty-cli` | cli/* actions (+list-themes, +show-config, +list-keybinds, ...) | config, input, os, font |
+| `ghostty-inspector` | inspector/* (Dear ImGui terminal inspector: widgets, key + VT event recording) | input, renderer, terminal, vt, font, `dear-imgui-rs` |
 | `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, apprt/action.zig, apprt/structs.zig, apprt/surface.zig, global.zig | everything below |
 | `ghostty-apprt` | apprt/action.zig, structs.zig, surface.zig, ipc.zig (core↔runtime contract types) | vt, input, config, datastruct |
 | `ghostty-apprt-gtk` | apprt/gtk/* | core, config, input |
@@ -75,7 +76,7 @@ WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 ## Out of scope / deferred
 
 - macOS (Swift app, Metal, CoreText), Windows, WASM, libghostty C API.
-- The ImGui inspector is deferred until everything else works (Phase 7).
+- (The ImGui inspector was deferred and is now ported: `docs/rewrite/notes/ghostty-inspector.md`.)
 
 ## Intentional omissions (decided by the orchestrator)
 

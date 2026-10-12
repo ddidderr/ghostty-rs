@@ -933,19 +933,15 @@ impl StreamHandler<'_> {
             return Ok(());
         }
 
-        let Ok(url_str) = std::str::from_utf8(url) else {
-            log::warn!("invalid url in OSC 7: not utf-8");
-            return Ok(());
-        };
-
         // Attempt to parse this file-style URI using options appropriate
         // for this OSC 7 context (e.g. kitty-shell-cwd expects the full,
-        // unencoded path).
-        let uri = match ghostty_os::uri::parse(
-            url_str,
+        // unencoded path). Parsing is byte based so non-UTF-8 path bytes
+        // survive percent-decoding.
+        let uri = match ghostty_os::uri::parse_bytes(
+            url,
             ghostty_os::uri::ParseOptions {
                 mac_address: true,
-                raw_path: url_str.starts_with("kitty-shell-cwd://"),
+                raw_path: url.starts_with(b"kitty-shell-cwd://"),
             },
         ) {
             Ok(uri) => uri,
@@ -967,12 +963,11 @@ impl StreamHandler<'_> {
             log::warn!("OSC 7 uri must contain a hostname: UriMissingHost");
             return Ok(());
         };
-        let host = host.to_raw();
 
         // OSC 7 is a little sketchy because anyone can send any value from
         // any host (such an SSH session). The best practice terminals follow
         // is to valid the hostname to be local.
-        let host_valid = match ghostty_os::hostname::is_local(&host) {
+        let host_valid = match ghostty_os::hostname::is_local(host) {
             Ok(v) => v,
             Err(err) => {
                 log::warn!("failed to get hostname for OSC 7 validation: {err:?}");
@@ -985,17 +980,18 @@ impl StreamHandler<'_> {
         }
 
         // We need the raw path, which might require unescaping.
-        let path = uri.path.to_raw().into_owned();
+        let path = uri.path;
 
-        log::debug!("terminal pwd: {path}");
-        self.terminal.set_pwd(path.as_bytes())?;
+        log::debug!("terminal pwd: {}", String::from_utf8_lossy(&path));
+        self.terminal.set_pwd(&path)?;
 
         // Report it to the surface.
-        self.surface_message_writer(SurfaceMessage::PwdChange(WriteReq::init(path.as_bytes())));
+        self.surface_message_writer(SurfaceMessage::PwdChange(WriteReq::init(&path)));
 
         // If we haven't seen a title, use our pwd as the title.
         if !self.st.seen_title {
-            self.window_title(&path);
+            // Titles are text; only the title is lossy.
+            self.window_title(&String::from_utf8_lossy(&path));
             self.st.seen_title = false;
         }
         Ok(())
