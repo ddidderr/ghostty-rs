@@ -41,3 +41,10 @@ End-to-end run, vttest-ish smoke tests, perf, inspector (maybe), docs, CHANGELOG
 After each work package: orchestrator reads the agent report + notes, spot-checks
 code (esp. tricky logic), runs quality gate on the workspace, commits. Larger
 cores get an `/astrareview` or Codex review pass.
+
+## Stopping criterion for review rounds (decided 2026-10-12)
+Audit rounds RV1–RV17 converged to P3-only findings (no P1 in the last five
+rounds). To avoid an endless review loop, RV18 is the final audit round. From
+it, only P1/P2 findings, user-visible behaviour in normal use, memory-safety
+issues and regressions are fixed; remaining P3 nitpicks are recorded in
+docs/rewrite/KNOWN_DIFFERENCES.md instead of triggering further rounds.
