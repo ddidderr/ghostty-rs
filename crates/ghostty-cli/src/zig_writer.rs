@@ -4,6 +4,13 @@
 //! file when it overflows or when the action calls `flush`, so two writers on
 //! the same file (as in `+show-face`) interleave in flush order, not call
 //! order. This type keeps that ordering.
+//!
+//! Two upstream data-loss behaviours are deliberately NOT replicated (see
+//! `docs/rewrite/notes/final-Z17.md`): Zig's positional `pwrite` at the
+//! writer's own offset 0 (writers overwrite each other and existing content
+//! when stdout is a regular file) and buffers that are never flushed. Data is
+//! always appended at the current end and anything still buffered is flushed
+//! when the writer is dropped.
 
 #[cfg(unix)]
 use std::os::fd::AsFd;
@@ -69,7 +76,7 @@ impl ZigWriter {
         }
     }
 
-    /// `File.Writer.end`.
+    /// `File.Writer.end`: a flush (Zig also truncates; not replicated).
     pub fn end(&mut self) -> io::Result<()> {
         self.flush()
     }
@@ -88,6 +95,12 @@ impl ZigWriter {
                 w.flush()
             }
         }
+    }
+}
+
+impl Drop for ZigWriter {
+    fn drop(&mut self) {
+        let _ = self.flush();
     }
 }
 
@@ -153,5 +166,33 @@ mod tests {
         assert_eq!(&*mem.0.borrow(), b"abcdefg");
         w.write_all(b"h").unwrap();
         assert_eq!(&*mem.0.borrow(), b"abcdefg");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regular_file_output_is_complete_and_appended() {
+        let mut tmp = tempfile::tempfile().unwrap();
+        std::io::Write::write_all(&mut tmp, b"pre\n").unwrap();
+        let sink: Sink = Rc::new(RefCell::new(Target::Fd(tmp.try_clone().unwrap())));
+        let mut a = ZigWriter::new(sink.clone(), 1024);
+        let mut b = ZigWriter::new(sink, 1024);
+        a.write_all(b"0123456789\n").unwrap();
+        b.write_all(b"abc\n").unwrap();
+        a.flush().unwrap();
+        b.flush().unwrap();
+        let mut out = String::new();
+        std::io::Seek::rewind(&mut tmp).unwrap();
+        std::io::Read::read_to_string(&mut tmp, &mut out).unwrap();
+        assert_eq!(out, "pre\n0123456789\nabc\n");
+    }
+
+    #[test]
+    fn unflushed_buffer_is_flushed_on_drop() {
+        let mem = Mem::default();
+        let sink: Sink = stream_sink(mem.clone());
+        let mut w = ZigWriter::new(sink, 4096);
+        w.write_all(b"kept").unwrap();
+        drop(w);
+        assert_eq!(&*mem.0.borrow(), b"kept");
     }
 }

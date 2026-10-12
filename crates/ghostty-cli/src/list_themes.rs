@@ -233,6 +233,8 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     crate::parse_options(&mut opts, args)?;
 
     let stdout = std::io::stdout();
+    // Zig's stderr is a 4096 byte buffer that it never flushes (the messages
+    // below are lost). That is an upstream bug: we flush when it is dropped.
     let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 4096);
 
     let resources_dir = resources_dir();
