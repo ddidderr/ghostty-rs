@@ -70,7 +70,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z6 | Breakpad-equivalent minidumps on macOS (Mach exception port) + Windows; screen-file open path | sonnet | ✅ | |
 | RV5 | final targeted Codex check | codex astra | ✅ | 7/13 resolved, 6 partial + 10 sweep groups, 2 regressions → Z7 |
 | Z7 | type-safe encoded OS strings + all RV5 findings (incl. Mach handler hang, open.rs regression, color OSC alloc) | sonnet | ✅ | 3376 tests, all cross-checks green |
-| RV6 | final Codex verification + sweep + verdict | codex astra | 🟨 | |
+| RV6 | final Codex verification + sweep + verdict | codex astra | ✅ | 22/23 resolved; 7 small gap groups → Z8 |
+| Z8 | RV6 gaps: crash abort handoff, SHELL/PATH bytes, Windows env, show-config round-trip, lib locale | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
