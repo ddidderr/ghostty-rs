@@ -1344,11 +1344,18 @@ fn getpgid(pid: Pid) -> Option<Pid> {
     // We loop while pgid == my_pgid. The expectation if we have a valid
     // pid is that setsid will eventually be called because it is the
     // FIRST thing the child process does and as far as I can tell,
-    // setsid cannot fail. (Zig loops forever; we give up after ~5s.)
-    for _ in 0..500 {
+    // setsid cannot fail. Like Zig we wait without a cap, with one
+    // exception (DEVIANT_FIXES.md): if the child already exited without
+    // ever creating its own group (still an unreaped zombie, whose pgid
+    // stays ours forever) Zig would spin here forever.
+    loop {
         match rustix::process::getpgid(Some(pid)) {
             Ok(pgid) => {
                 if Some(pgid) == my_pgid {
+                    if child_exited(pid) {
+                        log::warn!("child exited before creating its process group");
+                        return None;
+                    }
                     log::warn!("pgid is our own, retrying");
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
@@ -1364,7 +1371,20 @@ fn getpgid(pid: Pid) -> Option<Pid> {
             }
         }
     }
-    None
+}
+
+/// Whether `pid` has terminated (without reaping it).
+fn child_exited(pid: Pid) -> bool {
+    use rustix::process::{WaitId, WaitIdOptions, waitid};
+    match waitid(
+        WaitId::Pid(pid),
+        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+    ) {
+        Ok(Some(_)) => true,
+        Ok(None) => false,
+        // Not our child (or already reaped): nothing more to wait for.
+        Err(_) => true,
+    }
 }
 
 /// Builds the argv array for the process we should exec for the
@@ -1739,5 +1759,44 @@ mod tests {
     fn exit_code_mapping() {
         assert_eq!(exit_code(Exit::Exited(3)), 3);
         assert_eq!(exit_code(Exit::Signal(9)), 9);
+    }
+
+    #[cfg(unix)]
+    fn pid_of(child: &std::process::Child) -> Pid {
+        Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap()
+    }
+
+    /// Like Zig, there is no cap on waiting for the child's `setsid`: a
+    /// child that creates its group later than the old ~5 s cap's
+    /// granularity is still found (a short delay here keeps the test fast).
+    #[cfg(unix)]
+    #[test]
+    fn getpgid_waits_for_late_setsid() {
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.4; exec setsid sleep 3"])
+            .spawn()
+            .unwrap();
+        let pid = pid_of(&child);
+        let start = std::time::Instant::now();
+        let pgid = getpgid(pid);
+        assert_eq!(pgid, Some(pid));
+        assert!(start.elapsed() >= Duration::from_millis(300));
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// Deviation from Zig (DEVIANT_FIXES.md): a child that exited without
+    /// ever calling `setsid` (unreaped zombie, pgid == ours) does not make
+    /// the wait spin forever.
+    #[cfg(unix)]
+    #[test]
+    fn getpgid_gives_up_on_exited_child_without_setsid() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = pid_of(&child);
+        std::thread::sleep(Duration::from_millis(200));
+        let start = std::time::Instant::now();
+        assert_eq!(getpgid(pid), None);
+        assert!(start.elapsed() < Duration::from_secs(2));
+        let _ = child.wait();
     }
 }
