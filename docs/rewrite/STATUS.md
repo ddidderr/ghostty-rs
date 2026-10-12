@@ -34,8 +34,10 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | V2 | resources bundling (themes, terminfo), INTEGRATION_TODO cleanup | sonnet | ✅ | termio/gtk parts commit with V1 |
 | RV1 | Codex read-only audit core Surface vs Zig | codex astra | ✅ | 9 findings (notes/review-core-codex.md) → handed to V1 |
 | P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | ✅ | stream at Zig parity; screen-clone 2.6x |
-| V1b | finish V1: clippy, audit fixes, GTK replay check | sonnet | 🟨 | |
+| V1b | finish V1: clippy, audit fixes, GTK replay check | sonnet | ✅ | GTK typing/tabs/splits/copy-paste/font-size verified |
 | P2 | perf: screen-clone, osc-parser | sonnet | ✅ | clone at parity; render 2.4x |
+| I1 | inspector (ImGui) crate + GTK widgets + core hooks | sonnet | 🟨 | |
+| RV2 | Codex completeness audit (every Zig file → Rust) | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -53,3 +55,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: CORE committed — `cargo run` opens a working terminal (2890 tests). Phase 7 verification: V1, V2, RV1 launched.
 - 2026-10-12: P1 (perf parity on terminal-stream) and V2 cleanup committed.
 - 2026-10-12: V1 stalled (large transcript); restarted fresh as V1b. P2 launched.
+- 2026-10-12: V1b + P2 committed (2983 tests). I1 inspector + RV2 completeness audit launched.
