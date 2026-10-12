@@ -223,9 +223,8 @@ impl OptionKey {
             // If we're looking for exit_code we special case it.
             // as the first value.
             if self == OptionKey::ExitCode {
-                return std::str::from_utf8(full)
+                return ghostty_zigfmt::parse_int::<i32>(full, 10)
                     .ok()
-                    .and_then(|s| s.parse::<i32>().ok())
                     .map(OptionValue::Int);
             }
 
@@ -427,6 +426,16 @@ pub fn parse<S: ByteStorage>(
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zig_parse_int_exit_code() {
+        assert_eq!(run("133;D;1_0").unwrap().exit_code(), Some(10));
+        assert_eq!(run("133;D;+5").unwrap().exit_code(), Some(5));
+        assert_eq!(run("133;D;-5").unwrap().exit_code(), Some(-5));
+        assert_eq!(run("133;D;0x10").unwrap().exit_code(), None);
+        assert_eq!(run("133;D;1_").unwrap().exit_code(), None);
+        assert_eq!(run("133;D;99999999999").unwrap().exit_code(), None);
+    }
 
     fn run(input: &str) -> Option<Command<'static>> {
         let mut p = Parser::init(false);

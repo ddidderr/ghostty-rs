@@ -55,36 +55,11 @@ pub enum Value {
     Str(String),
 }
 
-/// Equivalent of `std.fmt.parseInt(usize, s, 10)`.
 fn parse_int(s: &str) -> Result<usize, VariableError> {
-    let b = s.as_bytes();
-    let (neg, digits) = match b.first() {
-        Some(b'-') => (true, &b[1..]),
-        Some(b'+') => (false, &b[1..]),
-        _ => (false, b),
-    };
-    if digits.is_empty() {
-        return Err(VariableError::InvalidCharacter);
-    }
-    let mut v: usize = 0;
-    let mut overflow = false;
-    for &c in digits {
-        if !c.is_ascii_digit() {
-            return Err(VariableError::InvalidCharacter);
-        }
-        match v
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(usize::from(c - b'0')))
-        {
-            Some(n) => v = n,
-            None => overflow = true,
-        }
-    }
-    // Negative values (other than zero) overflow an unsigned type.
-    if overflow || (neg && v != 0) {
-        return Err(VariableError::Overflow);
-    }
-    Ok(v)
+    ghostty_zigfmt::parse_int::<usize>(s.as_bytes(), 10).map_err(|e| match e {
+        ghostty_zigfmt::ParseIntError::Overflow => VariableError::Overflow,
+        ghostty_zigfmt::ParseIntError::InvalidCharacter => VariableError::InvalidCharacter,
+    })
 }
 
 fn parse_prefixed(prefix: u8, value: &str) -> Result<usize, VariableError> {
@@ -319,6 +294,24 @@ mod tests {
     use Variable::*;
 
     use super::*;
+
+    #[test]
+    fn zig_parse_int_differences() {
+        assert_eq!(parse_int("1_0"), Ok(10));
+        assert_eq!(parse_int("+5"), Ok(5));
+        assert_eq!(parse_int("-0"), Ok(0));
+        assert_eq!(parse_int("-1"), Err(VariableError::Overflow));
+        assert_eq!(parse_int("0x10"), Err(VariableError::InvalidCharacter));
+        assert_eq!(parse_int("1_"), Err(VariableError::InvalidCharacter));
+        assert_eq!(parse_int(""), Err(VariableError::InvalidCharacter));
+        assert_eq!(
+            parse_int("99999999999999999999999"),
+            Err(VariableError::Overflow)
+        );
+        assert_eq!(PaneId.parse("%1_2"), Ok(Value::Usize(12)));
+        assert_eq!(WindowId.parse("@+7"), Ok(Value::Usize(7)));
+        assert_eq!(WindowWidth.parse("8_0"), Ok(Value::Usize(80)));
+    }
 
     fn flag(v: Variable) {
         assert_eq!(v.parse("1"), Ok(Value::Bool(true)));

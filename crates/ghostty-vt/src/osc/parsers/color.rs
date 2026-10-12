@@ -141,30 +141,10 @@ fn tokenize(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
     buf.split(|&c| c == b';').filter(|t| !t.is_empty())
 }
 
-/// Zig `std.fmt.parseInt(u9, s, 10)`: optional sign, digits only.
+/// Zig `std.fmt.parseInt(u9, s, 10)`.
 fn parse_u9(s: &[u8]) -> Option<u16> {
-    let (neg, digits) = match s.first()? {
-        b'+' => (false, &s[1..]),
-        b'-' => (true, &s[1..]),
-        _ => (false, s),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut acc: u32 = 0;
-    for &c in digits {
-        if !c.is_ascii_digit() {
-            return None;
-        }
-        acc = acc * 10 + (c - b'0') as u32;
-        if acc > 511 {
-            return None;
-        }
-    }
-    if neg && acc != 0 {
-        return None;
-    }
-    Some(acc as u16)
+    let v = ghostty_zigfmt::parse_int::<i32>(s, 10).ok()?;
+    u16::try_from(v).ok().filter(|v| *v <= 511)
 }
 
 /// Parse any color operation string. This should NOT include the operation
@@ -541,6 +521,21 @@ pub struct ColoredTarget {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn zig_parse_u9_differences() {
+        assert_eq!(Some(10), parse_u9(b"1_0"));
+        assert_eq!(Some(500), parse_u9(b"5_0_0"));
+        assert_eq!(Some(5), parse_u9(b"+5"));
+        assert_eq!(Some(0), parse_u9(b"-0"));
+        assert_eq!(None, parse_u9(b"-1"));
+        assert_eq!(None, parse_u9(b"0x10"));
+        assert_eq!(None, parse_u9(b"1_"));
+        assert_eq!(None, parse_u9(b"_1"));
+        assert_eq!(Some(511), parse_u9(b"511"));
+        assert_eq!(None, parse_u9(b"512"));
+        assert_eq!(None, parse_u9(b"99999999999"));
+    }
 
     const RED: Rgb = Rgb { r: 255, g: 0, b: 0 };
     const BLUE: Rgb = Rgb { r: 0, g: 0, b: 255 };

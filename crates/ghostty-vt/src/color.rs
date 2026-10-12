@@ -463,29 +463,9 @@ pub struct Rgb {
 /// Alias matching the Zig name.
 pub type RGB = Rgb;
 
-/// Zig `std.fmt.parseUnsigned(u16, value, 16)` semantics (optional leading
-/// `+`; a leading `-` is only valid if the value is zero; no underscores).
+/// Zig `std.fmt.parseUnsigned(u16, value, 16)`.
 fn parse_unsigned_hex_u16(value: &[u8]) -> Option<u16> {
-    let (neg, digits) = match value.first()? {
-        b'+' => (false, &value[1..]),
-        b'-' => (true, &value[1..]),
-        _ => (false, value),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut acc: u32 = 0;
-    for &c in digits {
-        let d = (c as char).to_digit(16)?;
-        acc = acc * 16 + d;
-        if acc > u16::MAX as u32 {
-            return None;
-        }
-    }
-    if neg && acc != 0 {
-        return None;
-    }
-    Some(acc as u16)
+    ghostty_zigfmt::parse_unsigned::<u16>(value, 16).ok()
 }
 
 impl Rgb {
@@ -537,8 +517,7 @@ impl Rgb {
     ///
     /// The value should be between 0.0 and 1.0, inclusive.
     fn from_intensity(value: &[u8]) -> Result<u8, InvalidFormat> {
-        let s = std::str::from_utf8(value).map_err(|_| InvalidFormat)?;
-        let i: f64 = s.parse().map_err(|_| InvalidFormat)?;
+        let i: f64 = ghostty_zigfmt::parse_float::<f64>(value).map_err(|_| InvalidFormat)?;
         if !(0.0..=1.0).contains(&i) && !i.is_nan() {
             return Err(InvalidFormat);
         }
@@ -853,6 +832,30 @@ impl Lab {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // Zig `std.fmt.parseUnsigned` / `parseFloat` differences from Rust's.
+    #[test]
+    fn zig_parse_hex_u16_underscore_and_sign() {
+        assert_eq!(Some(0x1f), parse_unsigned_hex_u16(b"1_f"));
+        assert_eq!(Some(0x1f), parse_unsigned_hex_u16(b"1__f"));
+        assert_eq!(None, parse_unsigned_hex_u16(b"+f"));
+        assert_eq!(None, parse_unsigned_hex_u16(b"-0"));
+        assert_eq!(None, parse_unsigned_hex_u16(b"_1"));
+        assert_eq!(None, parse_unsigned_hex_u16(b"f_"));
+        assert_eq!(None, parse_unsigned_hex_u16(b"0x1"));
+    }
+
+    #[test]
+    fn zig_parse_float_intensity() {
+        // hex floats and `_` separators are valid Zig floats.
+        assert_eq!(Ok(127), Rgb::from_intensity(b"0x1p-1"));
+        assert_eq!(Ok(127), Rgb::from_intensity(b"0.5_0"));
+        assert!(Rgb::from_intensity(b"0_.5").is_err());
+        assert_eq!(Ok(127), Rgb::from_intensity(b"+.5"));
+        assert_eq!(Ok(255), Rgb::from_intensity(b"1."));
+        assert!(Rgb::from_intensity(b"1.5").is_err());
+        assert!(Rgb::from_intensity(b"").is_err());
+    }
 
     fn rgb(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }

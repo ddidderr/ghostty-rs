@@ -56,6 +56,7 @@ ghostty-font = { path = "crates/ghostty-font" }
 ghostty-renderer = { path = "crates/ghostty-renderer" }
 ghostty-termio = { path = "crates/ghostty-termio" }
 ghostty-os = { path = "crates/ghostty-os" }
+ghostty-zigfmt = { path = "crates/ghostty-zigfmt" }
 ghostty-onig = { path = "crates/ghostty-onig" }
 ghostty-datastruct = { path = "crates/ghostty-datastruct" }
 ghostty-core = { path = "crates/ghostty-core" }

@@ -1618,6 +1618,7 @@ dependencies = [
  "crossbeam-channel",
  "gettext-rs",
  "ghostty-vt",
+ "ghostty-zigfmt",
  "libc",
  "log",
  "nix 0.31.3",
@@ -1698,6 +1699,7 @@ dependencies = [
  "ghostty-os",
  "ghostty-unicode",
  "ghostty-vt",
+ "ghostty-zigfmt",
  "log",
  "onig",
  "png",
@@ -1740,6 +1742,7 @@ name = "ghostty-vt"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
+ "ghostty-zigfmt",
  "log",
  "memchr",
  "thiserror 2.0.21",
@@ -1765,6 +1768,10 @@ dependencies = [
  "log",
  "temp-env",
 ]
+
+[[package]]
+name = "ghostty-zigfmt"
+version = "0.1.0"
 
 [[package]]
 name = "gio"

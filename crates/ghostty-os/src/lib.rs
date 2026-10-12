@@ -32,7 +32,7 @@ pub mod file_type;
 #[cfg(unix)]
 pub mod flatpak;
 pub mod osbytes;
-pub mod zig_fmt;
+pub use ghostty_zigfmt as zig_fmt;
 #[cfg(windows)]
 pub mod flatpak {
     //! Flatpak does not exist on Windows.

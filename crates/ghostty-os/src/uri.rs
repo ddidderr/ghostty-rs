@@ -89,9 +89,10 @@ fn percent_decode(s: &str) -> Cow<'_, [u8]> {
     while i < b.len() {
         if b[i] == b'%'
             && i + 2 < b.len()
-            && let (Some(h), Some(l)) = (hexval(b[i + 1]), hexval(b[i + 2]))
+            // `std.fmt.parseInt(u8, "XX", 16)`: accepts a sign and `_`.
+            && let Ok(v) = crate::zig_fmt::parse_int::<u8>(&b[i + 1..i + 3], 16)
         {
-            out.push((h << 4) | l);
+            out.push(v);
             i += 3;
             continue;
         }
@@ -99,15 +100,6 @@ fn percent_decode(s: &str) -> Cow<'_, [u8]> {
         i += 1;
     }
     Cow::Owned(out)
-}
-
-fn hexval(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
 }
 
 /// `std.Uri`.
@@ -217,8 +209,7 @@ fn parse_authority<'a>(authority: &'a str, uri: &mut Uri<'a>) -> Result<(), Pars
             // if not part of the V6 address field
             end_of_host = end_of_host.min(index);
             uri.port = Some(
-                authority[index + 1..]
-                    .parse::<u16>()
+                crate::zig_fmt::parse_int::<u16>(&authority.as_bytes()[index + 1..], 10)
                     .map_err(|_| ParseError::InvalidPort)?,
             );
         }
@@ -228,8 +219,7 @@ fn parse_authority<'a>(authority: &'a str, uri: &mut Uri<'a>) -> Result<(), Pars
         // if not part of the userinfo field
         end_of_host = end_of_host.min(index);
         uri.port = Some(
-            authority[index + 1..]
-                .parse::<u16>()
+            crate::zig_fmt::parse_int::<u16>(&authority.as_bytes()[index + 1..], 10)
                 .map_err(|_| ParseError::InvalidPort)?,
         );
     }
@@ -410,6 +400,24 @@ fn is_valid_mac_address(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zig_parse_int_port_and_percent() {
+        let u = parse("http://host:8_0/p", ParseOptions::default()).unwrap();
+        assert_eq!(u.port, Some(80));
+        let u = parse("http://host:+80/p", ParseOptions::default()).unwrap();
+        assert_eq!(u.port, Some(80));
+        assert!(parse("http://host:0x50/p", ParseOptions::default()).is_err());
+        assert!(parse("http://host:65536/p", ParseOptions::default()).is_err());
+        assert!(parse("http://host:-1/p", ParseOptions::default()).is_err());
+        // `%XX` is decoded with `parseInt(u8, XX, 16)`: sign and nothing else.
+        let u = parse(
+            "file://localhost/a%+Ab%-0c%_1d%1_e%41",
+            ParseOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(&*u.path.to_raw_bytes(), b"/a\x0ab\x00c%_1d%1_eA");
+    }
 
     const MAC: ParseOptions = ParseOptions {
         mac_address: true,

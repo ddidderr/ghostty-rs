@@ -216,9 +216,8 @@ impl Field {
                     if value.iter().any(|c| !c.is_ascii_digit()) {
                         return None;
                     }
-                    std::str::from_utf8(value)
+                    ghostty_zigfmt::parse_int::<u64>(value, 10)
                         .ok()
-                        .and_then(|s| s.parse::<u64>().ok())
                         .map(FieldValue::U64)
                 }
                 // String fields

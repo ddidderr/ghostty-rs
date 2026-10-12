@@ -8,6 +8,8 @@
 //! standard library once the Zig grammar has accepted the input (Zig's
 //! algorithm is also correctly rounded); hex floats follow `convertHex`.
 
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+
 /// `std.fmt.ParseIntError`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParseIntError {

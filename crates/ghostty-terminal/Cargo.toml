@@ -11,6 +11,7 @@ flate2 = "1.1.10"
 ghostty-datastruct.workspace = true
 ghostty-unicode.workspace = true
 ghostty-vt.workspace = true
+ghostty-zigfmt.workspace = true
 log = "0.4.34"
 png = "0.18.1"
 thiserror = "2.0.21"

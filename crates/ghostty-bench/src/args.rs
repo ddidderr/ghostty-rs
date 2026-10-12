@@ -6,10 +6,37 @@ use std::{
     fs::File,
     io::{self, Read},
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
 use ghostty_os::osbytes::{os_bytes, os_from_bytes};
+
+/// Typed option value parsed like `cli/args.zig` `parseIntoField`
+/// (`std.fmt.parseInt(T, v, 0)` / `std.fmt.parseFloat`).
+pub trait ZigArg: Sized {
+    fn parse_zig(v: &[u8]) -> Option<Self>;
+}
+
+macro_rules! zig_arg_int {
+    ($($t:ty),*) => {$(
+        impl ZigArg for $t {
+            fn parse_zig(v: &[u8]) -> Option<Self> {
+                ghostty_os::zig_fmt::parse_int::<$t>(v, 0).ok()
+            }
+        }
+    )*};
+}
+zig_arg_int!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+
+impl ZigArg for f64 {
+    fn parse_zig(v: &[u8]) -> Option<Self> {
+        ghostty_os::zig_fmt::parse_float::<f64>(v).ok()
+    }
+}
+impl ZigArg for f32 {
+    fn parse_zig(v: &[u8]) -> Option<Self> {
+        ghostty_os::zig_fmt::parse_float::<f32>(v).ok()
+    }
+}
 
 /// Parsed `--key[=value]` arguments.
 #[derive(Debug, Default)]
@@ -65,12 +92,10 @@ impl Args {
     }
 
     /// Take a typed value, falling back to `default`.
-    pub fn take<T: FromStr>(&mut self, key: &str, default: T) -> Result<T, String> {
+    pub fn take<T: ZigArg>(&mut self, key: &str, default: T) -> Result<T, String> {
         match self.take_os(key)? {
             None => Ok(default),
-            Some(v) => v
-                .to_str()
-                .and_then(|s| s.parse().ok())
+            Some(v) => T::parse_zig(&os_bytes(&v))
                 .ok_or_else(|| format!("invalid value for --{key}: {}", v.to_string_lossy())),
         }
     }
@@ -144,6 +169,19 @@ mod tests {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     use super::*;
+
+    #[test]
+    fn take_uses_zig_parse_int_base_0() {
+        let args = ["--terminal-rows=0x10", "--terminal-cols=1_0", "--p=0x1p-1"];
+        let mut a = Args::parse(args.map(OsString::from)).unwrap();
+        assert_eq!(a.take("terminal-rows", 0u16).unwrap(), 16);
+        assert_eq!(a.take("terminal-cols", 0u16).unwrap(), 10);
+        assert_eq!(a.take("p", 0f64).unwrap(), 0.5);
+        let mut a = Args::parse([OsString::from("--n=+5")]).unwrap();
+        assert_eq!(a.take("n", 0u16).unwrap(), 5);
+        let mut a = Args::parse([OsString::from("--n=-1")]).unwrap();
+        assert!(a.take("n", 0u16).is_err());
+    }
 
     #[test]
     fn data_path_keeps_non_utf8_bytes() {

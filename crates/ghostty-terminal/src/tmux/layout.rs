@@ -41,22 +41,8 @@ pub enum ParseError {
 }
 
 fn parse_usize(s: &[u8]) -> Result<usize, ParseError> {
-    // std.fmt.parseInt(usize, s, 10): optional '+', digits only.
-    let s = s.strip_prefix(b"+").unwrap_or(s);
-    if s.is_empty() {
-        return Err(ParseError::SyntaxError);
-    }
-    let mut v: usize = 0;
-    for &c in s {
-        if !c.is_ascii_digit() {
-            return Err(ParseError::SyntaxError);
-        }
-        v = v
-            .checked_mul(10)
-            .and_then(|v| v.checked_add(usize::from(c - b'0')))
-            .ok_or(ParseError::SyntaxError)?;
-    }
-    Ok(v)
+    // std.fmt.parseInt(usize, s, 10) (underscores, sign rules).
+    ghostty_zigfmt::parse_int::<usize>(s, 10).map_err(|_| ParseError::SyntaxError)
 }
 
 fn index_of_any(s: &[u8], set: &[u8]) -> Option<usize> {
@@ -190,6 +176,23 @@ impl Checksum {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zig_parse_int_differences() {
+        // `std.fmt.parseInt(usize, _, 10)`: `_` separators, `+`/`-0` signs.
+        let l = p("1_0x2_0,+3,-0,4").unwrap();
+        assert_eq!((l.width, l.height, l.x, l.y), (10, 20, 3, 0));
+        assert_eq!(pane(&l), 4);
+        assert_eq!(p("1_x2,3,4,5").err(), Some(ParseError::SyntaxError));
+        assert_eq!(p("0x10x2,3,4,5").err(), Some(ParseError::SyntaxError));
+        assert_eq!(p("10x2,-1,4,5").err(), Some(ParseError::SyntaxError));
+        assert_eq!(parse_usize(b"1__0"), Ok(10));
+        assert_eq!(parse_usize(b"_1"), Err(ParseError::SyntaxError));
+        assert_eq!(
+            parse_usize(b"99999999999999999999999"),
+            Err(ParseError::SyntaxError)
+        );
+    }
 
     fn p(s: &str) -> Result<Layout, ParseError> {
         Layout::parse(s.as_bytes())

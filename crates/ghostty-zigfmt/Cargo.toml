@@ -1,0 +1,11 @@
+[package]
+name = "ghostty-zigfmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Exact ports of Zig std.fmt.parseInt / parseUnsigned / parseFloat"
+
+[dependencies]
+
+[lints]
+workspace = true

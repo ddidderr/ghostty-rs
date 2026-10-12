@@ -976,7 +976,7 @@ impl Viewer {
             let tabs = data.str(Variable::PaneTabs);
             if !tabs.is_empty() {
                 for tab_str in tabs.split(',') {
-                    let Ok(col) = tab_str.parse::<usize>() else {
+                    let Ok(col) = ghostty_zigfmt::parse_int::<usize>(tab_str.as_bytes(), 10) else {
                         continue;
                     };
                     let Some(col_cell) = to_cell(col) else {

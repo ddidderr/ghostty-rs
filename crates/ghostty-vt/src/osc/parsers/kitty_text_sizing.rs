@@ -67,28 +67,8 @@ enum UpdateError {
 
 /// Equivalent of Zig `std.fmt.parseInt(u4, value, 10)`.
 fn parse_u4(value: &[u8]) -> Option<u8> {
-    let (neg, digits) = match value.first() {
-        Some(b'+') => (false, &value[1..]),
-        Some(b'-') => (true, &value[1..]),
-        _ => (false, value),
-    };
-    if digits.is_empty() {
-        return None;
-    }
-    let mut acc: u32 = 0;
-    for &c in digits {
-        if !c.is_ascii_digit() {
-            return None;
-        }
-        acc = acc * 10 + (c - b'0') as u32;
-        if acc > 15 {
-            return None;
-        }
-    }
-    if neg && acc != 0 {
-        return None;
-    }
-    Some(acc as u8)
+    let v = ghostty_zigfmt::parse_int::<i32>(value, 10).ok()?;
+    u8::try_from(v).ok().filter(|v| *v <= 15)
 }
 
 impl OSC<'_> {
@@ -212,6 +192,20 @@ pub fn parse<S: ByteStorage>(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zig_parse_u4_differences() {
+        assert_eq!(Some(10), parse_u4(b"1_0"));
+        assert_eq!(Some(5), parse_u4(b"+5"));
+        assert_eq!(Some(0), parse_u4(b"-0"));
+        assert_eq!(Some(15), parse_u4(b"15"));
+        assert_eq!(None, parse_u4(b"16"));
+        assert_eq!(None, parse_u4(b"5_0_0"));
+        assert_eq!(None, parse_u4(b"-1"));
+        assert_eq!(None, parse_u4(b"0x1"));
+        assert_eq!(None, parse_u4(b"1_"));
+        assert_eq!(None, parse_u4(b"99999999999"));
+    }
 
     fn run(input: &[u8]) -> Option<Command<'static>> {
         let mut p = Parser::init(false);

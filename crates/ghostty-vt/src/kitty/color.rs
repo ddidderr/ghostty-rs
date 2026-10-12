@@ -166,16 +166,10 @@ impl Kind {
         if let Some(s) = Special::from_name(key) {
             return Some(Kind::Special(s));
         }
-        // Zig parseUnsigned(u8, key, 10): optional '+', digits only.
-        let digits = match key.first()? {
-            b'+' => &key[1..],
-            _ => key,
-        };
-        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-            return None;
-        }
-        let s = std::str::from_utf8(digits).ok()?;
-        s.parse::<u8>().ok().map(Kind::Palette)
+        // Zig parseUnsigned(u8, key, 10).
+        ghostty_zigfmt::parse_unsigned::<u8>(key, 10)
+            .ok()
+            .map(Kind::Palette)
     }
 }
 
@@ -232,6 +226,16 @@ impl fmt::Display for Kind {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn zig_parse_unsigned_palette_key() {
+        assert!(matches!(Kind::parse(b"1_0"), Some(Kind::Palette(10))));
+        assert!(Kind::parse(b"+5").is_none());
+        assert!(Kind::parse(b"-0").is_none());
+        assert!(Kind::parse(b"0x10").is_none());
+        assert!(Kind::parse(b"256").is_none());
+        assert!(Kind::parse(b"1_").is_none());
+    }
 
     #[test]
     fn request_records_round_trip() {

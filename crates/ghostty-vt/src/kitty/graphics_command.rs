@@ -24,45 +24,20 @@ pub enum Error {
     Overflow,
 }
 
-/// Mirrors `std.fmt.parseInt(T, buf, 10)` for 32-bit targets: optional sign,
-/// at least one digit, range checked.
+/// Mirrors `std.fmt.parseInt(u32|i32, buf, 10)` (Zig `kv` value parsing),
+/// including `_` digit separators and Zig's sign rules.
 fn parse_int(buf: &[u8], signed: bool) -> Result<u32, Error> {
-    // kv_temp is at most 11 bytes so an i64 always suffices unless there
-    // are overflow digits, which we detect via checked arithmetic.
-    let (neg, digits) = match buf.first() {
-        Some(b'+') if buf.len() > 1 => (false, &buf[1..]),
-        Some(b'-') if buf.len() > 1 => (true, &buf[1..]),
-        _ => (false, buf),
+    use ghostty_zigfmt::ParseIntError;
+    let map = |e| match e {
+        ParseIntError::Overflow => Error::Overflow,
+        ParseIntError::InvalidCharacter => Error::InvalidCharacter,
     };
-    if digits.is_empty() {
-        return Err(Error::InvalidCharacter);
-    }
-    let mut v: i64 = 0;
-    let mut overflow = false;
-    for &c in digits {
-        if !c.is_ascii_digit() {
-            return Err(Error::InvalidCharacter);
-        }
-        match v
-            .checked_mul(10)
-            .and_then(|x| x.checked_add(i64::from(c - b'0')))
-        {
-            Some(x) => v = x,
-            None => overflow = true,
-        }
-    }
-    if overflow {
-        return Err(Error::Overflow);
-    }
-    if neg {
-        v = -v;
-    }
     if signed {
-        i32::try_from(v)
+        ghostty_zigfmt::parse_int::<i32>(buf, 10)
             .map(|x| x as u32)
-            .map_err(|_| Error::Overflow)
+            .map_err(map)
     } else {
-        u32::try_from(v).map_err(|_| Error::Overflow)
+        ghostty_zigfmt::parse_int::<u32>(buf, 10).map_err(map)
     }
 }
 
@@ -1157,6 +1132,21 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn zig_parse_int_values() {
+        // `_` separators, explicit `+`, negative zero for unsigned.
+        let c = parse("a=p,i=1_0,I=+7,r=-0,z=-1_0").unwrap();
+        let Control::Display(d) = c.control else {
+            panic!("expected display")
+        };
+        assert_eq!((d.image_id, d.image_number, d.rows, d.z), (10, 7, 0, -10));
+        // Signed keys accept negatives, unsigned do not.
+        assert!(matches!(parse("a=p,i=-1"), Err(Error::Overflow)));
+        assert!(matches!(parse("a=p,i=0x10"), Err(Error::InvalidCharacter)));
+        assert!(matches!(parse("a=p,i=1_"), Err(Error::InvalidCharacter)));
+        assert!(matches!(parse("a=p,i=4294967296"), Err(Error::Overflow)));
+    }
 
     fn parse(input: &str) -> Result<Command, Error> {
         let mut p = Parser::new();

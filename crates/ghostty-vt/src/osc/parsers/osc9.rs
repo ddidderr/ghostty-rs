@@ -12,8 +12,8 @@ use crate::osc::{
 };
 
 /// Parse a base-10 unsigned integer from raw bytes (Zig `parseUnsigned`).
-fn parse_unsigned<T: std::str::FromStr>(bytes: &[u8]) -> Option<T> {
-    std::str::from_utf8(bytes).ok()?.parse().ok()
+fn parse_unsigned<T: ghostty_zigfmt::ZigInt>(bytes: &[u8]) -> Option<T> {
+    ghostty_zigfmt::parse_unsigned::<T>(bytes, 10).ok()
 }
 
 /// Parse OSC 9, which could be an iTerm2 notification or a ConEmu extension.
@@ -220,6 +220,18 @@ fn conemu_inner(data: &[u8]) -> Option<Command<'_>> {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zig_parse_unsigned_differences() {
+        assert_eq!(run("9;1;4_2"), Command::ConemuSleep { duration_ms: 42 });
+        assert_eq!(run("9;1;+42"), Command::ConemuSleep { duration_ms: 100 });
+        assert_eq!(run("9;1;-0"), Command::ConemuSleep { duration_ms: 100 });
+        assert_eq!(run("9;1;0x10"), Command::ConemuSleep { duration_ms: 100 });
+        assert_eq!(run("9;1;70000"), Command::ConemuSleep { duration_ms: 100 });
+        assert_eq!(parse_unsigned::<usize>(b"5_0"), Some(50));
+        assert_eq!(parse_unsigned::<usize>(b"+5"), None);
+        assert_eq!(parse_unsigned::<usize>(b"5_"), None);
+    }
 
     fn run(input: &str) -> Command<'static> {
         let mut p = Parser::init(false);
