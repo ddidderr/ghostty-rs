@@ -69,7 +69,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z5 | close RV4 tail items (encoded paths at OS boundaries, osbytes non-unix, shader arrays, C alloc, crash aarch64/Darwin, tripwire test, vt soname) | sonnet | ✅ | 3342 tests |
 | Z6 | Breakpad-equivalent minidumps on macOS (Mach exception port) + Windows; screen-file open path | sonnet | ✅ | |
 | RV5 | final targeted Codex check | codex astra | ✅ | 7/13 resolved, 6 partial + 10 sweep groups, 2 regressions → Z7 |
-| Z7 | type-safe encoded OS strings + all RV5 findings (incl. Mach handler hang, open.rs regression, color OSC alloc) | sonnet | 🟨 | |
+| Z7 | type-safe encoded OS strings + all RV5 findings (incl. Mach handler hang, open.rs regression, color OSC alloc) | sonnet | ✅ | 3376 tests, all cross-checks green |
+| RV6 | final Codex verification + sweep + verdict | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -97,3 +98,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Z1–Z4 committed (3327 tests); cross-check scripts added and passing; RV4 running.
 - 2026-10-12: Z5 committed (3342 tests, all cross-checks green). Z6 (macOS/Windows minidumps) launched.
 - 2026-10-12: Z6 committed (3348 tests). RV5 found remaining byte-path leaks + 2 regressions → Z7 (structural fix).
+- 2026-10-12: Z7 committed (EncodedOs newtype; 3376 tests). RV6 final verification running.
