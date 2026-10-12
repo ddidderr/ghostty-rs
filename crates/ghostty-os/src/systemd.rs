@@ -242,4 +242,37 @@ mod tests {
         temp_env::with_var("NOTIFY_SOCKET", Some(""), notify::ready);
         temp_env::with_var("NOTIFY_SOCKET", Some("relative"), notify::ready);
     }
+
+    /// Upstream bug (`os/systemd.zig:116`): a 108-byte `NOTIFY_SOCKET` path
+    /// passes Zig's length check (`108 < len`) and then writes the
+    /// terminating NUL at `path[108]`, one past the 108-byte array. Rust's
+    /// socket-address constructor builds the address from the 108 bytes
+    /// without a terminator (valid for Linux `AF_UNIX`; the length is part of
+    /// the address), so there is no out-of-bounds write; longer paths are
+    /// rejected.
+    #[test]
+    fn notify_maximum_length_socket_path_is_rejected_safely() {
+        let mut max = vec![b'/'; 108];
+        max[1..].fill(b'a');
+        // 108 bytes fit exactly (no terminator needed); 109 do not.
+        assert!(rustix::net::SocketAddrUnix::new(&max[..107]).is_ok());
+        assert!(rustix::net::SocketAddrUnix::new(&max[..108]).is_ok());
+        let mut over = max.clone();
+        over.push(b'a');
+        assert!(rustix::net::SocketAddrUnix::new(&over[..]).is_err());
+
+        for len in [107usize, 108, 109, 4096] {
+            let mut p = vec![b'a'; len];
+            p[0] = b'/';
+            let p = String::from_utf8(p).unwrap();
+            // No panic and no out-of-bounds write (nothing listens on these
+            // paths, so the send just fails or is skipped).
+            temp_env::with_var("NOTIFY_SOCKET", Some(p.as_str()), notify::ready);
+        }
+        // '@' + 107 name bytes = 108 bytes.
+        let mut abs = vec![b'a'; 108];
+        abs[0] = b'@';
+        let abs = String::from_utf8(abs).unwrap();
+        temp_env::with_var("NOTIFY_SOCKET", Some(abs.as_str()), notify::ready);
+    }
 }
