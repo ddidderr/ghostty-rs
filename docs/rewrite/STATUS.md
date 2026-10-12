@@ -72,7 +72,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z7 | type-safe encoded OS strings + all RV5 findings (incl. Mach handler hang, open.rs regression, color OSC alloc) | sonnet | ✅ | 3376 tests, all cross-checks green |
 | RV6 | final Codex verification + sweep + verdict | codex astra | ✅ | 22/23 resolved; 7 small gap groups → Z8 |
 | Z8 | RV6 gaps: crash abort handoff, SHELL/PATH bytes, Windows env, show-config round-trip, lib locale | sonnet | ✅ | 3390 tests |
-| RV7 | final Codex verification of RV6 rows + sweep + verdict | codex astra | 🟨 | |
+| RV7 | final Codex verification of RV6 rows + sweep + verdict | codex astra | ✅ | all prior rows resolved; 9 narrow byte/Windows gaps → Z9 |
+| Z9 | RV7 gaps + systematic config-string consumer audit | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
