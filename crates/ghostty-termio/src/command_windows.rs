@@ -135,7 +135,11 @@ impl Command {
         // OS strings); validate UTF-8 and convert to UTF-16 for the Windows API.
         // Like Zig's fallible `utf8ToUtf16Le*`, malformed input fails the
         // launch instead of selecting a U+FFFD-substituted path or argument.
-        let application_w = EncodedOs::from_encoded(&self.path).try_to_utf16_nul()?;
+        // DEVIANT (see DEVIANT_FIXES.md): `lpApplicationName` is never
+        // searched on PATH, so a bare `cmd.exe` (a `command = direct:` /
+        // `-e` argv[0]) would not start in Zig. Resolve it ourselves.
+        let resolved = resolve_application(&self.path);
+        let application_w = EncodedOs::from_encoded(&resolved).try_to_utf16_nul()?;
         let cwd_w = self
             .cwd
             .as_ref()
@@ -344,9 +348,58 @@ impl Command {
     }
 }
 
+/// `CreateProcessW` takes `lpApplicationName` literally (a partial name is
+/// completed with the current directory only, the search path is *not* used).
+/// For a bare program name (no drive or separator) look it up on `PATH`,
+/// appending `.exe` when it has no extension as `CreateProcess` would.
+/// Anything else, or a failed lookup, is returned unchanged.
+fn resolve_application(path: &str) -> String {
+    if path.is_empty() || path.contains(['\\', '/', ':']) {
+        return path.to_owned();
+    }
+    let name = if std::path::Path::new(path).extension().is_some() {
+        path.to_owned()
+    } else {
+        format!("{path}.exe")
+    };
+    match ghostty_os::path::expand_os(std::ffi::OsStr::new(&name)) {
+        Ok(Some(found)) => found
+            .to_str()
+            .map_or_else(|| path.to_owned(), str::to_owned),
+        _ => path.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_application_searches_path_for_bare_names() {
+        let found = resolve_application("cmd.exe");
+        assert!(found.to_ascii_lowercase().ends_with("\\cmd.exe"), "{found}");
+        assert_ne!(found, "cmd.exe");
+        // Extension is implied like CreateProcess.
+        assert!(
+            resolve_application("cmd")
+                .to_ascii_lowercase()
+                .ends_with("\\cmd.exe")
+        );
+        // Paths and unknown names are left alone.
+        assert_eq!(resolve_application(r"C:\x\y.exe"), r"C:\x\y.exe");
+        assert_eq!(resolve_application(r".\y.exe"), r".\y.exe");
+        assert_eq!(
+            resolve_application("no-such-program-zzz"),
+            "no-such-program-zzz"
+        );
+    }
+
+    #[test]
+    fn bare_program_name_starts_via_path_search() {
+        let mut cmd = Command::new("cmd.exe", &["cmd.exe", "/c", "exit 3"]);
+        cmd.start().unwrap();
+        assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(3));
+    }
 
     #[test]
     fn run_cmd_and_wait() {
