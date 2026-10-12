@@ -4594,7 +4594,9 @@ impl Config {
         // If we are missing either a command or home directory, we need
         // to look up defaults which is kind of expensive. We only do this
         // on desktop (and not in tests, like the Zig `builtin.is_test`).
-        if !cfg!(test) && (self.command.is_none() || wd == WorkingDirectory::Home) {
+        if !cfg!(any(test, target_arch = "wasm32"))
+            && (self.command.is_none() || wd == WorkingDirectory::Home)
+        {
             self.lookup_shell_defaults(probable_cli, &mut wd)?;
         }
         wd.finalize();

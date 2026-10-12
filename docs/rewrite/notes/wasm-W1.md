@@ -84,6 +84,9 @@ Differences/extras: `region_free`/`glyph_free` (Zig: "global free"),
 `config_diagnostics_count`, `ghostty_wasm_init`, `wasm_alloc/free`.
 `shaper_test` takes a `Face` (Zig takes a stale `GroupCache`) and prints into a
 `ghostty-terminal` Terminal.
+Config finalization skips desktop shell and home-directory lookup on wasm,
+matching Zig, but still applies normalization such as minimum window dimensions.
+The wasm logger forwards errors only, so `shaper_test` info records are suppressed.
 
 ## Deviations from the (stale) Zig web_canvas code
 - Zig refers to `Atlas.Format.rgba` and a 7-field `Metrics` that no longer
@@ -104,6 +107,8 @@ Differences/extras: `region_free`/`glyph_free` (Zig: "global free"),
   `target/wasm-test`) and runs `tests/node_test.js` under node with a fake
   canvas: config parse/finalize/format, atlas, face metrics/glyph_index/
   render, emoji presentation, shaper clustering, deferred face, debug canvas.
+  It checks that config finalization completes without errors and clamps window
+  dimensions, and that `shaper_test` prepares a run without emitting info logs.
   Skipped if node or the wasm32 target is missing.
 - Not ported: Zig tests in Atlas.Wasm (`toHostOwned`, stale).
 

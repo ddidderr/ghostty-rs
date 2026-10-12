@@ -127,11 +127,12 @@ const liveValues = (zigjs) => zigjs.values.slice(7).filter((v) => v !== null).le
   {
     const cfg = x.config_new();
     assert.ok(cfg);
-    const s = host.writeString('font-size = 18\nwindow-padding-x = 7\nnot-a-key = 1\n');
+    const s = host.writeString('font-size = 18\nwindow-padding-x = 7\nwindow-width = 1\nnot-a-key = 1\n');
     x.config_load_string(cfg, s.ptr, s.len);
     s.free();
     assert.strictEqual(x.config_diagnostics_count(cfg), 1);
     x.config_finalize(cfg);
+    assert.deepStrictEqual(logs, [], 'config finalization must succeed without desktop shell lookup');
     const cap = 1 << 16;
     const out = x.wasm_alloc(cap);
     const n = x.config_format(cfg, out, cap);
@@ -140,6 +141,8 @@ const liveValues = (zigjs) => zigjs.values.slice(7).filter((v) => v !== null).le
     x.wasm_free(out, cap);
     assert.match(text, /font-size = 18/);
     assert.match(text, /window-padding-x = 7/);
+    // Width clamping happens after shell defaults: finalization must reach it.
+    assert.match(text, /window-width = 10\n/);
     x.config_free(cfg);
   }
 
@@ -202,10 +205,13 @@ const liveValues = (zigjs) => zigjs.values.slice(7).filter((v) => v !== null).le
   x.glyph_free(gg);
   assert.strictEqual(canvases[0].lastText.t, 'é');
 
-  // shaper_test prints through a terminal and logs the shaped runs
+  // shaper_test prints through a terminal and shapes its rows. The default
+  // errors-only logger suppresses the info records for those shaped runs.
   const st = host.writeString('hello é');
   x.shaper_test(sh, face, st.ptr, st.len);
-  assert.ok(logs.some((l) => l.startsWith('info(')), logs.join('\n'));
+  assert.deepStrictEqual(logs, [], 'shaper info logs must be suppressed');
+  assert.ok(x.shaper_shape(sh, face, outp, 16) > 0, 'shaper_test prepared a run');
+  assert.strictEqual(new Uint32Array(instance.exports.memory.buffer, outp, 2)[1], 0x68);
 
   // ---- deferred face ----
   const d = x.deferred_face_new(f.ptr, f.len, 0);
