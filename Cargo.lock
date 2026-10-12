@@ -1436,6 +1436,7 @@ dependencies = [
  "ghostty-helpgen",
  "ghostty-input",
  "ghostty-os",
+ "ghostty-unicode",
  "ghostty-vt",
  "log",
  "ratatui",

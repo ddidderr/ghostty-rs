@@ -1570,7 +1570,7 @@ impl Win<'_, '_> {
         let x = self.area.x + col;
         let y = self.area.y + row;
         let max = usize::from(self.area.width - col);
-        let (nx, _) = self.buf.borrow_mut().set_stringn(x, y, text, max, style);
+        let nx = self.set_graphemes(x, y, text, max, style);
         if (link.is_some() || ul.is_some()) && nx > x {
             self.decos.borrow_mut().push(Deco {
                 x,
@@ -1581,6 +1581,33 @@ impl Win<'_, '_> {
             });
         }
         nx - self.area.x
+    }
+
+    /// Write `text` grapheme by grapheme, each sized with `vaxis.gwidth`
+    /// (not ratatui's width), stopping when a grapheme no longer fits.
+    fn set_graphemes(&self, x: u16, y: u16, text: &str, max: usize, style: Style) -> u16 {
+        let mut buf = self.buf.borrow_mut();
+        let mut remaining = max.min(usize::from(buf.area.right().saturating_sub(x)));
+        let mut cx = x;
+        for g in text.graphemes(true) {
+            if g.contains(char::is_control) {
+                continue;
+            }
+            let w = gw(g);
+            if w == 0 {
+                continue;
+            }
+            let Some(rest) = remaining.checked_sub(usize::from(w)) else {
+                break;
+            };
+            remaining = rest;
+            buf[(cx, y)].set_symbol(g).set_style(style);
+            for i in 1..w {
+                buf[(cx + i, y)].reset();
+            }
+            cx += w;
+        }
+        cx
     }
 
     /// `Window.print`: several segments one after another.
@@ -1711,7 +1738,7 @@ fn run_loop(app: &mut Preview) -> Result<(), Error> {
     // Alternate screen, title, mouse reporting.
     write!(
         tty,
-        "\x1b[?1049h\x1b]2;\u{1f47b} Ghostty Theme Preview \u{1f47b}\x1b\\\
+        "\x1b[?1049h\x1b[?2027h\x1b]2;\u{1f47b} Ghostty Theme Preview \u{1f47b}\x1b\\\
          \x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h"
     )?;
 
@@ -1767,7 +1794,7 @@ fn run_loop(app: &mut Preview) -> Result<(), Error> {
     let _ = terminal.show_cursor();
     let _ = write!(
         tty,
-        "{}\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1049l",
+        "{}\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?2027l\x1b[?1049l",
         Csi::Mode(Mode::ResetDecPrivateMode(theme_mode)),
     );
     let _ = tty.flush();

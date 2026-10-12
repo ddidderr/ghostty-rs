@@ -380,3 +380,10 @@ fn load_file_error_exits_the_preview() {
     }
     assert!(code.is_some(), "the preview must have exited");
 }
+
+#[test]
+fn zwj_emoji_cluster_is_drawn_whole_in_search_box() {
+    let cluster = "\u{1F469}\u{200D}\u{1F680}";
+    let typed = format!("a{cluster}b");
+    check_trace(&[typed.as_bytes()], &[&typed]);
+}

@@ -64,10 +64,49 @@ pub struct Row {
     rows: Vec<Vec<Cell>>,
 }
 
-/// Display width of a string (`Window.gwidth` with unicode mode on).
+/// Display width of one grapheme (`vaxis.gwidth` `.unicode` method).
+fn grapheme_width(g: &str) -> u16 {
+    let mut width = 0u16;
+    let (mut vs16, mut vs15, mut emoji, mut ri) = (false, false, false, 0u8);
+    for c in g.chars() {
+        match c {
+            '\u{fe0f}' => {
+                vs16 = true;
+                continue;
+            }
+            '\u{fe0e}' => {
+                vs15 = true;
+                continue;
+            }
+            _ => {}
+        }
+        if ghostty_unicode::emoji_table::table().get(u32::from(c)) {
+            emoji = true;
+        }
+        if ('\u{1F1E6}'..='\u{1F1FF}').contains(&c) {
+            ri += 1;
+        }
+        // 0x1f3fb..=0x1f3ff are wide in vaxis' EAW table too.
+        let w = c.width().unwrap_or(0);
+        width = width.max(u16::try_from(w).unwrap_or(2));
+    }
+    if vs15 {
+        width = width.max(1);
+    } else if vs16 || emoji || ri == 2 {
+        width = width.max(2);
+    }
+    width
+}
+
+/// Display width of a string (`Window.gwidth` with unicode mode on): the sum
+/// of the widths of its grapheme clusters, as `vaxis.gwidth` computes it.
 #[must_use]
 pub fn gwidth(s: &str) -> u16 {
-    let w: usize = s.chars().map(|c| c.width().unwrap_or(0)).sum();
+    use unicode_segmentation::UnicodeSegmentation;
+    let w: usize = s
+        .graphemes(true)
+        .map(|g| usize::from(grapheme_width(g)))
+        .sum();
     u16::try_from(w).unwrap_or(u16::MAX)
 }
 
@@ -432,6 +471,10 @@ mod tests {
         let r = row.print_segment("a\u{4e2d}b", Style::default(), 0);
         assert_eq!(4, r.col);
         assert_eq!(2, gwidth("\u{4e2d}"));
+        assert_eq!(2, gwidth("\u{1F469}\u{200D}\u{1F680}"));
+        assert_eq!(2, gwidth("\u{2764}\u{FE0F}"));
+        assert_eq!(2, gwidth("\u{1F1FA}\u{1F1F8}"));
+        assert_eq!(0, gwidth("\u{200B}"));
         let r = row.print_segment("zz", Style::default(), 3);
         assert!(!r.overflow);
     }
