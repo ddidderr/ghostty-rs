@@ -974,6 +974,19 @@ impl ConfigField for Theme {
         // we're parsing a light/dark mode theme pair. Note that "=" isn't
         // actually valid for setting a light/dark mode pair but I anticipate
         // it'll be a common typo.
+        //
+        // DEVIANT (Windows, see DEVIANT_FIXES.md): an absolute Windows path
+        // (`C:\themes\x`, `\\?\C:\...`, `\\server\share\x`) contains a
+        // colon, so Ghostty would always parse it as a malformed pair and
+        // reject every absolute theme path on Windows.
+        if cfg!(windows) && is_windows_absolute_path(input) {
+            let trimmed = crate::cli_args::trim_bytes(input);
+            *self = Theme {
+                light: EncodedOs::from_bytes(trimmed),
+                dark: EncodedOs::from_bytes(trimmed),
+            };
+            return Ok(());
+        }
         if input.iter().any(|b| matches!(b, b',' | b'=' | b':')) {
             let mut light: Option<EncodedOs> = None;
             let mut dark: Option<EncodedOs> = None;
@@ -1014,6 +1027,17 @@ impl ConfigField for Theme {
                 self.dark.as_encoded()
             ),
         )
+    }
+}
+
+/// Whether `input` (after leading whitespace) is a drive-letter (`C:\` or
+/// `C:/`) or UNC / device (`\\...`) absolute path.
+fn is_windows_absolute_path(input: &[u8]) -> bool {
+    let input = crate::cli_args::trim_bytes(input);
+    match input {
+        [b'\\', b'\\', ..] => true,
+        [d, b':', b'\\' | b'/', ..] => d.is_ascii_alphabetic(),
+        _ => false,
     }
 }
 
@@ -1289,6 +1313,51 @@ config_packed! {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::approx_constant)]
 mod tests {
+    #[test]
+    fn windows_absolute_path_detection() {
+        for p in [
+            r"C:\themes\x",
+            "d:/themes/x",
+            r"\\?\C:\t\x",
+            r"\\srv\share\x",
+            r"  C:\x",
+        ] {
+            assert!(is_windows_absolute_path(p.as_bytes()), "{p}");
+        }
+        for p in [
+            "foo",
+            "light:foo,dark:bar",
+            "light:C:\\x",
+            "/abs/x",
+            "C:",
+            "1:\\x",
+            "C:x",
+        ] {
+            assert!(!is_windows_absolute_path(p.as_bytes()), "{p}");
+        }
+    }
+
+    #[test]
+    fn theme_windows_absolute_path_and_pair_with_paths() {
+        let mut t = Theme::default();
+        let r = t.parse_bytes(Some(br"C:\themes\my theme"));
+        if cfg!(windows) {
+            r.unwrap();
+            assert_eq!(t.light.as_encoded(), r"C:\themes\my theme");
+            assert_eq!(t.dark, t.light);
+            // The pair syntax still works with drive paths as values.
+            let mut t = Theme::default();
+            // (Backslashes are escapes in the pair syntax: quote them.)
+            t.parse_bytes(Some(br#"light:"C:\\a",dark:"C:\\b""#))
+                .unwrap();
+            assert_eq!(t.light.as_encoded(), r"C:\a");
+            assert_eq!(t.dark.as_encoded(), r"C:\b");
+        } else {
+            // Zig behaviour everywhere else: a colon means "pair".
+            assert!(r.is_err());
+        }
+    }
+
     #[test]
     fn quick_terminal_size_value_formats_nan_like_zig() {
         let mut out = String::new();
