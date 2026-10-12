@@ -37,7 +37,9 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | V1b | finish V1: clippy, audit fixes, GTK replay check | sonnet | ✅ | GTK typing/tabs/splits/copy-paste/font-size verified |
 | P2 | perf: screen-clone, osc-parser | sonnet | ✅ | clone at parity; render 2.4x |
 | I1 | inspector (ImGui) crate + GTK widgets + core hooks | sonnet | 🟨 | |
-| RV2 | Codex completeness audit (every Zig file → Rust) | codex astra | 🟨 | |
+| RV2 | Codex completeness audit (every Zig file → Rust) | codex astra | ✅ | 319 full / 28 partial / 7 missing → X1, X2 |
+| X1 | distribution: completions, vim/bat, man pages, translations, install modes, build metadata | sonnet | 🟨 | |
+| X2 | correctness gaps from RV2 (flatpak, env bytes, case folding, ...) | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
