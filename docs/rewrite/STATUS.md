@@ -36,10 +36,12 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | ✅ | stream at Zig parity; screen-clone 2.6x |
 | V1b | finish V1: clippy, audit fixes, GTK replay check | sonnet | ✅ | GTK typing/tabs/splits/copy-paste/font-size verified |
 | P2 | perf: screen-clone, osc-parser | sonnet | ✅ | clone at parity; render 2.4x |
-| I1 | inspector (ImGui) crate + GTK widgets + core hooks | sonnet | 🟨 | |
+| I1 | inspector (ImGui) crate + GTK widgets + core hooks | sonnet | ✅ | verified in real app |
 | RV2 | Codex completeness audit (every Zig file → Rust) | codex astra | ✅ | 319 full / 28 partial / 7 missing → X1, X2 |
-| X1 | distribution: completions, vim/bat, man pages, translations, install modes, build metadata | sonnet | 🟨 | |
-| X2 | correctness gaps from RV2 (flatpak, env bytes, case folding, ...) | sonnet | 🟨 | |
+| X1 | distribution: completions, vim/bat, man pages, translations, install modes, build metadata | sonnet | ✅ | byte-identical to installed Ghostty |
+| X2 | correctness gaps from RV2 (flatpak, env bytes, case folding, ...) | sonnet | ✅ | all 10 items |
+| V3 | real-app verification: nvim/htop/less/tmux, mouse, unicode, kitty images, paste dialog | sonnet | 🟨 | |
+| DOC | README, CHANGELOG, ARCHITECTURE decomposition | opus | ✅ | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -58,3 +60,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: P1 (perf parity on terminal-stream) and V2 cleanup committed.
 - 2026-10-12: V1 stalled (large transcript); restarted fresh as V1b. P2 launched.
 - 2026-10-12: V1b + P2 committed (2983 tests). I1 inspector + RV2 completeness audit launched.
+- 2026-10-12: I1, X1, X2 committed (3037 tests). Docs written. V3 real-app verification running.
