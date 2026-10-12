@@ -290,3 +290,7 @@ check-wasm:
 check-all: clippy test check-wasm check-windows
     scripts/macos-crosscheck.sh clippy aarch64-apple-darwin
     scripts/macos-crosscheck.sh clippy x86_64-apple-darwin
+
+# Capture original Ghostty vs the Rust build in a headless weston and diff them.
+visual-parity *scenarios:
+    RUST_BIN="${RUST_BIN:-target/vp/production/ghostty}" scripts/visual-parity.sh {{scenarios}}

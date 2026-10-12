@@ -316,12 +316,17 @@ mod tests {
                 return;
             }
             let d = diff_sheet(atlas, &reference);
+            eprintln!(
+                "sprite-sheet {name}: ink={} differing={} big={} max={}",
+                d.ink, d.differing, d.big, d.max
+            );
 
-            // Tolerances: antialiasing differences between z2d and tiny-skia
-            // are fine, but the geometry must match: very few pixels may be
-            // off by a lot, relative to the amount of ink on the sheet.
+            // Tolerances: the multisample rasterizer matches z2d's coverage;
+            // remaining differences come from stroke geometry (tiny-skia's
+            // stroker) and are small. Practically no pixel may be off by a
+            // lot, relative to the amount of ink on the sheet.
             let big_ratio = d.big as f64 / d.ink.max(1) as f64;
-            let ok = big_ratio <= 0.04;
+            let ok = big_ratio <= 0.001;
             if !ok || d.differing > 0 {
                 // Write a visual diff (red = reference, green = ours).
                 let mut rgb = Vec::with_capacity(atlas.len() * 3);

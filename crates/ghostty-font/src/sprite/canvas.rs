@@ -1,12 +1,14 @@
 //! This exposes primitives to draw 2D graphics and export the graphic to
 //! a font atlas. Port of `font/sprite/canvas.zig`.
 //!
-//! Ghostty uses the `z2d` library for antialiased path drawing; this port
-//! uses `tiny-skia` to rasterize path coverage (see [`Canvas::fill_path`]).
+//! Ghostty uses the `z2d` library for antialiased path drawing. This port
+//! reproduces z2d's default `multisample_4x` rasterizer (4x4 samples per
+//! pixel, scanline spans, alpha `coverage * 16 - 1`) in [`Canvas::rasterize`];
+//! stroke outlines come from `tiny-skia`'s stroker.
 
 use std::ops::Sub;
 
-use tiny_skia::{FillRule, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Stroke, Transform};
+use tiny_skia::{LineCap, LineJoin, PathBuilder, PathSegment, Stroke};
 
 use crate::atlas::{self, Atlas, Format, Region};
 
@@ -248,8 +250,8 @@ pub struct Canvas {
     pub clip_right: u32,
     pub clip_bottom: u32,
 
-    /// Scratch pixmap used to rasterize path coverage.
-    scratch: Pixmap,
+    /// Coverage mask (alpha8, same layout as `sfc`) of the last rasterized path.
+    cov: Vec<u8>,
 }
 
 impl Canvas {
@@ -267,9 +269,7 @@ impl Canvas {
             clip_left: 0,
             clip_right: 0,
             clip_bottom: 0,
-            // tiny-skia can't make zero sized pixmaps; sprites are never empty
-            // but be defensive.
-            scratch: Pixmap::new(w.max(1), h.max(1)).expect("non-zero pixmap size"),
+            cov: vec![0; w as usize * h as usize],
         }
     }
 
@@ -465,22 +465,15 @@ impl Canvas {
         )
     }
 
-    /// Rasterize `path` (filled or stroked) into the scratch pixmap and
-    /// return nothing; the coverage is then in `self.scratch`'s alpha.
+    /// Rasterize `path` (filled or stroked) into the coverage mask `self.cov`
+    /// with z2d's default multisample anti-aliasing.
     fn rasterize(&mut self, path: &Path, stroke: Option<StrokeOptions>) -> bool {
-        self.scratch.fill(tiny_skia::Color::TRANSPARENT);
-        let Some(p) = path.to_skia(0.0, 0.0) else {
+        self.cov.fill(0);
+        let Some(p) = path.to_skia(f64::from(self.padding_x), f64::from(self.padding_y)) else {
             return false;
         };
-        let mut paint = Paint::default();
-        paint.set_color_rgba8(0, 0, 0, 255);
-        paint.anti_alias = true;
-        let ts = Transform::from_translate(self.padding_x as f32, self.padding_y as f32);
-        match stroke {
-            None => {
-                self.scratch
-                    .fill_path(&p, &paint, FillRule::Winding, ts, None);
-            }
+        let p = match stroke {
+            None => p,
             Some(opts) => {
                 let s = Stroke {
                     width: opts.line_width as f32,
@@ -493,22 +486,28 @@ impl Canvas {
                     line_join: LineJoin::Miter,
                     dash: None,
                 };
-                self.scratch.stroke_path(&p, &paint, &s, ts, None);
+                match p.stroke(&s, 1.0) {
+                    Some(o) => o,
+                    None => return false,
+                }
             }
-        }
+        };
+        let edges = flatten_to_edges(&p);
+        multisample_fill(
+            &edges,
+            self.sfc_width as usize,
+            self.sfc_height as usize,
+            &mut self.cov,
+        );
         true
     }
 
-    /// Composite the scratch coverage onto the canvas using `src_over`
+    /// Composite the coverage mask onto the canvas using `src_over`
     /// with an opaque pattern of alpha `color`.
     fn composite_scratch(&mut self, color: Color) {
         let a = u32::from(color.0);
-        for (dst, px) in self
-            .sfc
-            .iter_mut()
-            .zip(self.scratch.data().as_chunks::<4>().0.iter())
-        {
-            let cov = u32::from(px[3]);
+        for (dst, px) in self.sfc.iter_mut().zip(self.cov.iter()) {
+            let cov = u32::from(*px);
             if cov == 0 {
                 continue;
             }
@@ -547,11 +546,8 @@ impl Canvas {
 
         let mut fill = vec![0u8; self.sfc.len()];
         if self.rasterize(&closed, None) {
-            for (d, px) in fill
-                .iter_mut()
-                .zip(self.scratch.data().as_chunks::<4>().0.iter())
-            {
-                *d = px[3];
+            for (d, px) in fill.iter_mut().zip(self.cov.iter()) {
+                *d = *px;
             }
         }
 
@@ -561,11 +557,8 @@ impl Canvas {
         mut_opts.line_width *= 2.0;
         if self.rasterize(path, Some(mut_opts)) {
             let a = u32::from(color.0);
-            for (d, px) in stroke
-                .iter_mut()
-                .zip(self.scratch.data().as_chunks::<4>().0.iter())
-            {
-                *d = ((u32::from(px[3]) * a + 127) / 255) as u8;
+            for (d, px) in stroke.iter_mut().zip(self.cov.iter()) {
+                *d = ((u32::from(*px) * a + 127) / 255) as u8;
             }
         }
 
@@ -611,6 +604,258 @@ impl Canvas {
             top[y * width..(y + 1) * width].swap_with_slice(&mut bottom[..width]);
         }
         std::mem::swap(&mut self.clip_top, &mut self.clip_bottom);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// z2d multisample rasterizer port (`z2d/src/internal/raster/multisample.zig`,
+// `tess/Polygon.zig`, `tess/Spline.zig`).
+
+const MS_SCALE: i32 = 4;
+
+#[derive(Clone, Copy)]
+struct Edge {
+    y0: f64,
+    y1: f64,
+    x_start: f64,
+    x_inc: f64,
+}
+
+impl Edge {
+    fn top(&self) -> f64 {
+        if self.y0 < self.y1 { self.y0 } else { self.y1 }
+    }
+    fn bottom(&self) -> f64 {
+        if self.y0 < self.y1 { self.y1 } else { self.y0 }
+    }
+    fn dir(&self) -> i32 {
+        if self.y0 < self.y1 { -1 } else { 1 }
+    }
+}
+
+fn add_edge(edges: &mut Vec<Edge>, p0: (f64, f64), p1: (f64, f64)) {
+    let s = f64::from(MS_SCALE);
+    let (x0, y0, x1, y1) = (p0.0 * s, p0.1 * s, p1.0 * s, p1.1 * s);
+    if y0 < y1 {
+        edges.push(Edge {
+            y0,
+            y1,
+            x_start: x0,
+            x_inc: (x1 - x0) / (y1 - y0),
+        });
+    } else if y0 > y1 {
+        edges.push(Edge {
+            y0,
+            y1,
+            x_start: x1,
+            x_inc: (x0 - x1) / (y0 - y1),
+        });
+    }
+}
+
+fn lerp_half(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 + (b.0 - a.0) / 2.0, a.1 + (b.1 - a.1) / 2.0)
+}
+
+type Knots = [(f64, f64); 4];
+
+#[allow(clippy::float_cmp)] // exact comparison, like z2d
+fn knots_error_sq(k: &Knots) -> f64 {
+    let [a, b, c, d] = *k;
+    let (mut bx, mut by) = (b.0 - a.0, b.1 - a.1);
+    let (mut cx, mut cy) = (c.0 - a.0, c.1 - a.1);
+    if a.0 != d.0 || a.1 != d.1 {
+        let (dx, dy) = (d.0 - a.0, d.1 - a.1);
+        let dd = dx * dx + dy * dy;
+        let bd = bx * dx + by * dy;
+        if bd >= dd {
+            bx -= dx;
+            by -= dy;
+        } else {
+            bx -= bd / dd * dx;
+            by -= bd / dd * dy;
+        }
+        let cd = cx * dx + cy * dy;
+        if cd >= dd {
+            cx -= dx;
+            cy -= dy;
+        } else {
+            cx -= cd / dd * dx;
+            cy -= cd / dd * dy;
+        }
+    }
+    (bx * bx + by * by).max(cx * cx + cy * cy)
+}
+
+fn de_casteljau(k: &mut Knots) -> Knots {
+    let [a, b, c, d] = *k;
+    let ab = lerp_half(a, b);
+    let bc = lerp_half(b, c);
+    let cd = lerp_half(c, d);
+    let abbc = lerp_half(ab, bc);
+    let bccd = lerp_half(bc, cd);
+    let fin = lerp_half(abbc, bccd);
+    *k = [a, ab, abbc, fin];
+    [fin, bccd, cd, d]
+}
+
+fn decompose_into(k: &mut Knots, start: (f64, f64), tol_sq: f64, out: &mut Vec<(f64, f64)>) {
+    if knots_error_sq(k) < tol_sq {
+        if k[0] != start {
+            out.push(k[0]);
+        }
+        return;
+    }
+    let mut s2 = de_casteljau(k);
+    decompose_into(k, start, tol_sq, out);
+    decompose_into(&mut s2, start, tol_sq, out);
+}
+
+/// Flatten a cubic (z2d spline, tolerance 0.1), pushing every point after `a`.
+fn flatten_cubic(
+    a: (f64, f64),
+    b: (f64, f64),
+    c: (f64, f64),
+    d: (f64, f64),
+    out: &mut Vec<(f64, f64)>,
+) {
+    if a == b && c == d {
+        out.push(d);
+        return;
+    }
+    let mut k: Knots = [a, b, c, d];
+    decompose_into(&mut k, a, 0.1 * 0.1, out);
+    out.push(d);
+}
+
+/// Flatten a tiny-skia path into scaled polygon edges. Every subpath is
+/// implicitly closed (fill semantics).
+fn flatten_to_edges(p: &tiny_skia::Path) -> Vec<Edge> {
+    let mut edges = Vec::new();
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    let flush = |pts: &mut Vec<(f64, f64)>, edges: &mut Vec<Edge>| {
+        if pts.len() > 1 {
+            for w in pts.windows(2) {
+                add_edge(edges, w[0], w[1]);
+            }
+            add_edge(edges, pts[pts.len() - 1], pts[0]);
+        }
+        pts.clear();
+    };
+    let f = |p: tiny_skia::Point| (f64::from(p.x), f64::from(p.y));
+    let mut cur = (0.0, 0.0);
+    for seg in p.segments() {
+        match seg {
+            PathSegment::MoveTo(q) => {
+                flush(&mut pts, &mut edges);
+                cur = f(q);
+                pts.push(cur);
+            }
+            PathSegment::LineTo(q) => {
+                cur = f(q);
+                pts.push(cur);
+            }
+            PathSegment::QuadTo(c, q) => {
+                let (c, q) = (f(c), f(q));
+                // Elevate to a cubic.
+                let c1 = (
+                    cur.0 + 2.0 / 3.0 * (c.0 - cur.0),
+                    cur.1 + 2.0 / 3.0 * (c.1 - cur.1),
+                );
+                let c2 = (q.0 + 2.0 / 3.0 * (c.0 - q.0), q.1 + 2.0 / 3.0 * (c.1 - q.1));
+                flatten_cubic(cur, c1, c2, q, &mut pts);
+                cur = q;
+            }
+            PathSegment::CubicTo(c1, c2, q) => {
+                let q = f(q);
+                flatten_cubic(cur, f(c1), f(c2), q, &mut pts);
+                cur = q;
+            }
+            PathSegment::Close => {
+                flush(&mut pts, &mut edges);
+            }
+        }
+    }
+    flush(&mut pts, &mut edges);
+    edges
+}
+
+/// Port of `multisample.run` with a non-zero fill rule and an opaque source:
+/// writes the per-pixel alpha mask (`coverage * 16 - 1`, full = 255).
+fn multisample_fill(edges: &[Edge], width: usize, height: usize, cov: &mut [u8]) {
+    if edges.is_empty() || width == 0 || height == 0 {
+        return;
+    }
+    let scale = MS_SCALE as usize;
+    let full = (scale * scale) as u32;
+    let mut counts = vec![0u32; width];
+    let mut xs: Vec<(i32, i32)> = Vec::new();
+    let max_x = (width * scale) as i32;
+    for y in 0..height {
+        counts.fill(0);
+        let mut any = false;
+        for sub in 0..scale {
+            let ys = (y * scale + sub) as i32;
+            let mid = f64::from(ys) + 0.5;
+            xs.clear();
+            for e in edges {
+                if e.top() < mid && e.bottom() >= mid {
+                    let x = (e.x_start + e.x_inc * (mid - e.top())).round() as i32;
+                    xs.push((x, e.dir()));
+                }
+            }
+            if xs.is_empty() {
+                continue;
+            }
+            // Stable sort by x like pdqsort on x (ties are order-insensitive
+            // for the winding filter outcome in practice).
+            xs.sort_by_key(|v| v.0);
+            // Non-zero filter.
+            let mut winding = 0;
+            let mut filtered: Vec<i32> = Vec::with_capacity(xs.len());
+            for &(x, d) in &xs {
+                if winding == 0 {
+                    winding += d;
+                    filtered.push(x);
+                } else {
+                    winding += d;
+                    if winding == 0 {
+                        filtered.push(x);
+                    }
+                }
+            }
+            let mut x_min = 0;
+            for pair in filtered.as_chunks::<2>().0 {
+                let start = pair[0].max(x_min);
+                if start >= max_x {
+                    break;
+                }
+                let end = pair[1].clamp(start, max_x);
+                if end > start {
+                    any = true;
+                    // Count samples per pixel.
+                    let (mut sx, ex) = (start, end);
+                    while sx < ex {
+                        let px = (sx / MS_SCALE) as usize;
+                        let next = ((px as i32 + 1) * MS_SCALE).min(ex);
+                        counts[px] += (next - sx) as u32;
+                        sx = next;
+                    }
+                }
+                x_min = end;
+            }
+        }
+        if any {
+            let row = &mut cov[y * width..(y + 1) * width];
+            for (o, &c) in row.iter_mut().zip(&counts) {
+                let c = c.min(full);
+                *o = match c {
+                    0 => 0,
+                    c if c == full => 255,
+                    c => (c * (256 / full) - 1).min(255) as u8,
+                };
+            }
+        }
     }
 }
 

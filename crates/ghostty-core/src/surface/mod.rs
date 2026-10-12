@@ -2125,7 +2125,10 @@ impl CoreSurface for Surface {
     fn draw_frame(&self, _default_framebuffer: u32) -> Result<(), CoreError> {
         // GTK's GLArea binds its own FBO before `render`; the renderer
         // queries GL_FRAMEBUFFER_BINDING itself.
-        self.renderer.draw_frame(false)?;
+        // Zig: apprt gtk `glRender` calls `renderer.drawFrame(true)`. Sync
+        // must be true: after a GLArea (re)realize (e.g. a split rebuild) the
+        // swap chain is new and nothing else would redraw an unchanged pane.
+        self.renderer.draw_frame(true)?;
         self.debug_screenshot();
         Ok(())
     }
