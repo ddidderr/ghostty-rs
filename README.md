@@ -79,4 +79,4 @@ build (see `docs/rewrite/notes/perf-P1.md`).
 ## License
 
 MIT, like Ghostty. Bundled fonts and themes carry their own licenses (see
-`crates/ghostty-font/res/` and `resources/themes/`).
+`crates/ghostty-font/res/` and `resources/LICENSE-iTerm2-Color-Schemes`).
