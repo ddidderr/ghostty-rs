@@ -87,7 +87,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV12 | final Codex verification (clean HEAD) | codex astra | ✅ | RV11 3/3 resolved; 3 P3 left → Z15 |
 | Z15 | P3: per-platform errno names, dot theme diag, z2d stroker port (pixel identity) | sonnet | ✅ | 0 differing pixels vs Ghostty; 3498 tests |
 | RV13 | final Codex verification (clean HEAD) | codex astra | ✅ | RV12 3/3 resolved; 4 P3 → Z16 |
-| Z16 | update-channel default, async-backend epoll/io_uring, Windows error map + basename | sonnet | 🟨 | |
+| Z16 | update-channel default, async-backend epoll/io_uring, Windows error map + basename | sonnet | ✅ | 3555 tests |
+| RV14 | final Codex verification (clean HEAD) | codex astra | 🟨 | |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
@@ -131,3 +132,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: VP + Z14 committed (3492 tests, all cross-checks green). RV12 running.
 - 2026-10-12: RV12: only 3 P3 items remain → Z15.
 - 2026-10-12: Z15 committed — rendering now pixel-identical to Ghostty 1.3.1 (production build, all scenarios). RV13 running.
+- 2026-10-12: Z16 committed (3555 tests). RV14 running.
