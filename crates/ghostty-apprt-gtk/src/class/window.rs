@@ -1126,8 +1126,8 @@ impl Window {
                 glib::closure_local!(
                     #[weak(rename_to = win)]
                     self,
-                    move |_surface: &Surface, clipboard: glib::Value, text: &str| {
-                        win.surface_clipboard_write(&clipboard, text);
+                    move |_surface: &Surface, clipboard: u32, text: &str| {
+                        win.surface_clipboard_write(clipboard, text);
                     }
                 ),
             ));
@@ -1518,11 +1518,10 @@ impl Window {
         tab_view.close_page(&page);
     }
 
-    fn surface_clipboard_write(&self, clipboard: &glib::Value, text: &str) {
-        // We only toast for the standard clipboard.
-        let is_standard = glib::EnumValue::from_value(clipboard)
-            .is_some_and(|(_, v)| v.value() == 0 || v.nick() == "standard");
-        if !is_standard {
+    fn surface_clipboard_write(&self, clipboard: u32, text: &str) {
+        // We only toast for the standard clipboard (encoded as 0 by the
+        // surface's `clipboard-write` signal).
+        if clipboard != 0 {
             return;
         }
 
