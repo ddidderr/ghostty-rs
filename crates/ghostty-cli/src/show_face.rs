@@ -100,7 +100,9 @@ fn run_args(
             continue;
         }
         if FIELDS.contains(&d.key.as_str()) {
-            writeln!(stderr, "config error: {d}")?;
+            stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&format!(
+                "config error: {d}\n"
+            )))?;
             exit = true;
         }
     }
@@ -133,7 +135,9 @@ fn run_args(
         {
             continue;
         }
-        writeln!(stderr, "config error: {d}")?;
+        stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&format!(
+            "config error: {d}\n"
+        )))?;
     }
 
     let font_grid_set = match SharedGridSet::new() {

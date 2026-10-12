@@ -108,7 +108,10 @@ fn start(command: ConfigCommand, tweak: impl FnOnce(&mut Config)) -> Fixture {
     let mut config = base_config();
     tweak(&mut config);
 
-    let mut ecfg = exec::Config::new(ghostty_os::env::get_env_map(), "xterm-256color");
+    let mut ecfg = exec::Config::new(
+        ghostty_os::env::get_env_map(),
+        ghostty_os::osbytes::EncodedOs::from_plain_text("xterm-256color"),
+    );
     ecfg.command = Some(command);
     ecfg.shell_integration = ShellIntegration::None;
     // The default config has `linux-cgroup = single-instance` +

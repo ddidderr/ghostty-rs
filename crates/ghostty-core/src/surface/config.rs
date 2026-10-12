@@ -55,7 +55,7 @@ impl DerivedConfig {
         let mut links = Vec::with_capacity(config.link.links.len());
         for link in &config.link.links {
             links.push(Link {
-                regex: Regex::new(&link.regex)?,
+                regex: Regex::new(&ghostty_os::osbytes::config_str_to_text(&link.regex))?,
                 action: link.action,
                 highlight: link.highlight,
             });

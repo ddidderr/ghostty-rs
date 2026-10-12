@@ -25,7 +25,7 @@ ghostty-onig.workspace = true
 [target.'cfg(not(any(target_arch = "wasm32", windows)))'.dependencies]
 rustix = { version = "1.1.5", features = ["shm", "fs"] }
 
-[target.'cfg(target_vendor = "apple")'.dependencies]
+[target.'cfg(any(target_vendor = "apple", windows))'.dependencies]
 ghostty-os.workspace = true
 
 [dev-dependencies]

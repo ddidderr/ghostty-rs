@@ -180,6 +180,16 @@ impl Default for Surface {
 // ---------------------------------------------------------------------
 // Construction / lookup
 
+/// Restore the `LANG` the application was launched with (as bytes; it need
+/// not be UTF-8), or remove it if it was unset.
+fn restore_language(env: &mut ghostty_os::EnvMap, saved: Option<&std::ffi::OsStr>) {
+    if let Some(language) = saved {
+        env.insert("LANG", language);
+    } else {
+        env.remove("LANG");
+    }
+}
+
 impl Surface {
     /// Create a new surface widget (Zig: `Surface.new`).
     pub fn new(overrides: SurfaceOverrides) -> Self {
@@ -1441,11 +1451,7 @@ impl Surface {
         // Byte-preserving environment (Zig `internal_os.getEnvMap`).
         let mut env = ghostty_os::env::get_env_map();
 
-        if let Some(language) = application.saved_language() {
-            env.insert("LANG", language);
-        } else {
-            env.remove("LANG");
-        }
+        restore_language(&mut env, application.saved_language().as_deref());
 
         // Don't leak these GTK environment variables to child processes.
         env.remove("GDK_DEBUG");
@@ -2610,7 +2616,7 @@ mod clipboard {
             };
 
             let Some(core) = this.core() else { return };
-            match core.complete_clipboard_request(state, &text, false) {
+            match core.complete_clipboard_request(state, text.as_bytes(), false) {
                 Ok(()) => {}
                 Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
                     show_clipboard_confirmation(&this, state, &text, false);
@@ -2636,7 +2642,7 @@ mod clipboard {
         }
 
         let Some(core) = surface.core() else { return };
-        match core.complete_clipboard_request(ClipboardRequest::Paste, text, false) {
+        match core.complete_clipboard_request(ClipboardRequest::Paste, text.as_bytes(), false) {
             Ok(()) => {}
             Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
                 show_clipboard_confirmation(surface, ClipboardRequest::Paste, text, false);
@@ -2725,7 +2731,7 @@ mod clipboard {
                 // Undo the byte escape only for non-UTF-8 pastes.
                 core.complete_paste_bytes(&confirmed_paste_bytes(&text, encoded), true)
             } else {
-                core.complete_clipboard_request(req, &text, true)
+                core.complete_clipboard_request(req, text.as_bytes(), true)
             };
             if let Err(err) = result {
                 log::warn!("failed to complete clipboard request: {err}");
@@ -3379,7 +3385,11 @@ mod imp {
         fn search_changed(_overlay: &SearchOverlay, needle: Option<String>, this: &super::Surface) {
             let Some(surface) = this.core() else { return };
             if let Err(err) = surface.perform_binding_action(
-                &ghostty_input::binding::Action::Search(needle.unwrap_or_default()),
+                // Binding payloads are config strings: the needle is plain
+                // UI text, so escape it instead of decoding it.
+                &ghostty_input::binding::Action::Search(
+                    ghostty_os::osbytes::valid_str_to_config_string(&needle.unwrap_or_default()),
+                ),
             ) {
                 log::warn!("unable to perform search action err={err}");
             }
@@ -3907,6 +3917,20 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn inherited_lang_keeps_non_utf8_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let mut env = ghostty_os::EnvMap::new();
+        env.insert("LANG", "zz");
+        let saved = std::ffi::OsString::from_vec(b"C\xff".to_vec());
+        restore_language(&mut env, Some(&saved));
+        assert_eq!(env.get("LANG").unwrap().as_bytes(), b"C\xff");
+        restore_language(&mut env, None);
+        assert!(env.get("LANG").is_none());
+    }
 
     #[test]
     fn confirmed_paste_decodes_only_encoded_text() {

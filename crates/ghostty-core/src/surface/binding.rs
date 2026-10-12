@@ -713,30 +713,35 @@ impl Surface {
                 // We need to send the CSI/ESC sequence as a single write
                 // request. If you split it across two then the shell can
                 // interpret it as two literals.
-                let full = if matches!(action, Action::Csi(_)) {
-                    format!("\x1b[{data}")
+                let mut full: Vec<u8> = if matches!(action, Action::Csi(_)) {
+                    b"\x1b[".to_vec()
                 } else {
-                    format!("\x1b{data}")
+                    b"\x1b".to_vec()
                 };
+                // The payload is a config string in the reversible OS-byte
+                // encoding: the pty gets the original bytes.
+                full.extend(ghostty_os::osbytes::config_str_to_bytes(data));
                 // Zig formats into a fixed 128 byte buffer (`NoSpaceLeft`).
                 if full.len() > 128 {
                     return Err("csi/esc binding sequence too long (max 128 bytes)".into());
                 }
-                self.queue_io(IoMessage::write_req(full.as_bytes()));
+                self.queue_io(IoMessage::write_req(full.as_slice()));
 
                 // CSI/ESC triggers a scroll.
                 self.scroll_to_bottom(&mut self.lock_terminal());
             }
 
             Action::Text(data) => {
-                let text = match ghostty_config::string::parse(data) {
+                // Decoded bytes: escapes produce UTF-8, everything else is
+                // copied byte for byte (Zig `config/string.zig`).
+                let text = match ghostty_config::string::parse_bytes(data) {
                     Ok(t) => t,
                     Err(err) => {
                         log::warn!("error parsing text binding text={data} err={err:?}");
                         return Ok(true);
                     }
                 };
-                self.queue_io(IoMessage::write_req(text.as_bytes()));
+                self.queue_io(IoMessage::write_req(text.as_slice()));
 
                 // Text triggers a scroll.
                 self.scroll_to_bottom(&mut self.lock_terminal());
@@ -817,7 +822,11 @@ impl Surface {
                     }
                 } else if let Some(s) = self.search.borrow().as_ref() {
                     s.handle
-                        .send(SearchMessage::ChangeNeedle(text.as_bytes().to_vec()));
+                        // The payload is a config string in the reversible
+                        // encoding: search for the original bytes.
+                        .send(SearchMessage::ChangeNeedle(
+                            ghostty_os::osbytes::config_str_to_bytes(text),
+                        ));
                     s.handle.wakeup();
                 }
             }
@@ -925,11 +934,15 @@ impl Surface {
             }
 
             Action::SetSurfaceTitle(v) => {
-                return Ok(self.perform(RtAction::SetTitle(SetTitle { title: v.clone() })));
+                return Ok(self.perform(RtAction::SetTitle(SetTitle {
+                    title: ghostty_os::osbytes::config_str_to_text(v),
+                })));
             }
 
             Action::SetTabTitle(v) => {
-                return Ok(self.perform(RtAction::SetTabTitle(SetTitle { title: v.clone() })));
+                return Ok(self.perform(RtAction::SetTabTitle(SetTitle {
+                    title: ghostty_os::osbytes::config_str_to_text(v),
+                })));
             }
 
             Action::ClearScreen => {

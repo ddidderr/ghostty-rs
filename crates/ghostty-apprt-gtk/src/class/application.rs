@@ -87,11 +87,11 @@ pub struct WindowOverrides {
 
 /// Set an environment variable.
 #[allow(unsafe_code)]
-fn set_env(key: &str, value: &str) {
+fn set_env(key: &str, value: impl AsRef<std::ffi::OsStr>) {
     // SAFETY: only called during application construction on the main
     // thread, before GTK is initialized and before we spawn any child
     // processes; no other thread in this crate reads the environment.
-    unsafe { std::env::set_var(key, value) }
+    unsafe { std::env::set_var(key, value.as_ref()) }
 }
 
 /// Funnel GLib/GObject/GTK log messages into the `log` crate rather than
@@ -284,7 +284,7 @@ mod imp {
         pub css: RefCell<Option<CssProviders>>,
 
         /// Copy of the LANG variable provided by the system, if any.
-        pub saved_language: RefCell<Option<String>>,
+        pub saved_language: RefCell<Option<std::ffi::OsString>>,
     }
 
     #[glib::object_subclass]
@@ -398,9 +398,13 @@ impl Application {
             }
         };
 
-        let saved_language = std::env::var("LANG").ok();
+        // Keep the inherited bytes: LANG need not be UTF-8.
+        let saved_language = std::env::var_os("LANG");
         if let Some(language) = &config.language {
-            set_env("LANG", language);
+            set_env(
+                "LANG",
+                ghostty_os::osbytes::EncodedOs::from_encoded(language.clone()).to_os(),
+            );
         }
 
         // Set gettext global domain to be our app so that our unqualified
@@ -560,7 +564,7 @@ impl Application {
     }
 
     /// The original `LANG` Ghostty was launched with (None if unset).
-    pub fn saved_language(&self) -> Option<String> {
+    pub fn saved_language(&self) -> Option<std::ffi::OsString> {
         self.imp().saved_language.borrow().clone()
     }
 

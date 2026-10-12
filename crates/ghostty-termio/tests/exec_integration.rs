@@ -103,7 +103,10 @@ fn start(command: ConfigCommand, tweak: impl FnOnce(&mut Config)) -> Fixture {
     let mut config = base_config();
     tweak(&mut config);
 
-    let mut ecfg = exec::Config::new(ghostty_os::env::get_env_map(), "xterm-256color");
+    let mut ecfg = exec::Config::new(
+        ghostty_os::env::get_env_map(),
+        ghostty_os::osbytes::EncodedOs::from_plain_text("xterm-256color"),
+    );
     ecfg.command = Some(command);
     ecfg.shell_integration = ShellIntegration::None;
     // The default config has `linux-cgroup = single-instance` +
@@ -360,9 +363,9 @@ fn initial_input_is_written_after_start() {
 #[test]
 fn missing_input_file_shows_error_and_thread_keeps_draining() {
     let mut f = start(sh("true"), |c| {
-        c.input
-            .list
-            .push(ReadableIO::Path("/nonexistent/ghostty-input".into()));
+        c.input.list.push(ReadableIO::Path(
+            ghostty_os::osbytes::EncodedOs::from_plain_text("/nonexistent/ghostty-input"),
+        ));
     });
     f.wait_text("A configured `input` path was not found");
     assert!(
@@ -575,7 +578,10 @@ fn change_config_message_updates_palette_and_colors() {
 fn process_output_manual_api() {
     // Termio can also be fed manually (no child involved).
     let config = base_config();
-    let mut ecfg = exec::Config::new(ghostty_os::EnvMap::new(), "xterm-256color");
+    let mut ecfg = exec::Config::new(
+        ghostty_os::EnvMap::new(),
+        ghostty_os::osbytes::EncodedOs::from_plain_text("xterm-256color"),
+    );
     ecfg.command = Some(sh("true"));
     let (tx, _rx) = unbounded();
     let termio = Termio::init(Options {

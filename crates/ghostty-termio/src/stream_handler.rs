@@ -348,7 +348,7 @@ impl TerminalStream {
         let st = &mut self.state;
         st.osc_color_report_format = config.osc_color_report_format;
         st.clipboard_write = config.clipboard_write;
-        st.enquiry_response = config.enquiry_response.clone().into_bytes();
+        st.enquiry_response.clone_from(&config.enquiry_response);
         st.default_cursor_style = config.cursor_style;
         st.default_cursor_blink = config.cursor_blink;
 

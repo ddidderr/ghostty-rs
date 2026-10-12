@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use ghostty_os::osbytes::EncodedOs;
+
 use crate::{
     cli_args::{ArgError, ConfigField, split_tagged_union},
     formatter::EntryFormatter,
@@ -16,8 +18,11 @@ use crate::{
 /// might be produced in an intermediate state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadableIO {
+    /// Raw bytes in the reversible OS-byte encoding (decode with
+    /// `osbytes::config_str_to_bytes` after [`ReadableIO::clone_parsed`]).
     Raw(String),
-    Path(String),
+    /// A file path (decode with `EncodedOs::to_path` before opening).
+    Path(EncodedOs),
 }
 
 impl Default for ReadableIO {
@@ -34,7 +39,9 @@ impl ReadableIO {
         // Parsing can't fail because we validate it in parse_cli
         match self {
             ReadableIO::Raw(v) => ReadableIO::Raw(string::parse(v).unwrap_or_default()),
-            ReadableIO::Path(v) => ReadableIO::Path(string::parse(v).unwrap_or_default()),
+            ReadableIO::Path(v) => ReadableIO::Path(EncodedOs::from_encoded(
+                string::parse(v.as_encoded()).unwrap_or_default(),
+            )),
         }
     }
 }
@@ -55,7 +62,7 @@ impl ConfigField for ReadableIO {
         let (tag, rest) = split_tagged_union(input);
         *self = match tag {
             "raw" => ReadableIO::Raw(rest.to_string()),
-            "path" => ReadableIO::Path(rest.to_string()),
+            "path" => ReadableIO::Path(EncodedOs::from_encoded(rest)),
             _ => ReadableIO::Raw(input.to_string()),
         };
         Ok(())
@@ -63,8 +70,8 @@ impl ConfigField for ReadableIO {
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         let (tag, v) = match self {
-            ReadableIO::Raw(v) => ("raw", v),
-            ReadableIO::Path(v) => ("path", v),
+            ReadableIO::Raw(v) => ("raw", v.as_str()),
+            ReadableIO::Path(v) => ("path", v.as_encoded()),
         };
         writeln!(f.writer, "{} = {tag}:{v}", f.name)
     }
@@ -126,7 +133,18 @@ mod tests {
         io.parse_cli(Some("raw:foo")).unwrap();
         assert_eq!(io, ReadableIO::Raw("foo".into()));
         io.parse_cli(Some("path:foo")).unwrap();
-        assert_eq!(io, ReadableIO::Path("foo".into()));
+        assert_eq!(io, ReadableIO::Path(EncodedOs::from_plain_text("foo")));
+    }
+
+    #[test]
+    fn readable_io_path_decodes_to_the_original_bytes() {
+        let mut io = ReadableIO::default();
+        let enc = EncodedOs::from_bytes(b"/tmp/\xffin").into_encoded();
+        io.parse_cli(Some(&format!("path:{enc}"))).unwrap();
+        let ReadableIO::Path(p) = io.clone_parsed() else {
+            panic!("path expected")
+        };
+        assert_eq!(p.to_bytes(), b"/tmp/\xffin");
     }
 
     #[test]

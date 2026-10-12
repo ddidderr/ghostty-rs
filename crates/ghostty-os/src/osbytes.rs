@@ -174,6 +174,28 @@ pub fn wtf8_to_wide(b: &[u8]) -> Vec<u16> {
     out
 }
 
+/// The bytes are not well-formed WTF-8 (Zig: `error.InvalidWtf8` /
+/// `error.InvalidUtf8` from `std.unicode.utf8ToUtf16Le*`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid wtf-8")]
+pub struct InvalidWtf8;
+
+/// Strict [`wtf8_to_wide`]: malformed input is an error instead of U+FFFD.
+/// Lone surrogates encoded as 3-byte sequences are accepted (WTF-8). This is
+/// the conversion used where Zig's is fallible (process launch).
+pub fn try_wtf8_to_wide(b: &[u8]) -> Result<Vec<u16>, InvalidWtf8> {
+    let wide = wtf8_to_wide(b);
+    // The lossy decoder yields U+FFFD only for malformed bytes; a genuine
+    // U+FFFD in the input is the 3-byte sequence EF BF BD. Re-encoding is
+    // the cheapest exact check: it reproduces the input iff it was
+    // well-formed.
+    if wide_to_wtf8(&wide) == b {
+        Ok(wide)
+    } else {
+        Err(InvalidWtf8)
+    }
+}
+
 /// OS string to reversible `String` (see the module docs). Lossless on every
 /// platform (Windows goes through WTF-8).
 pub fn os_to_config_string(s: &OsStr) -> String {
@@ -185,6 +207,14 @@ pub fn os_to_config_string(s: &OsStr) -> String {
 /// stays a bijection on every platform.
 pub fn valid_str_to_config_string(s: &str) -> String {
     bytes_to_config_string(s.as_bytes())
+}
+
+/// Decode a config string for a UI-text boundary that requires UTF-8 (window
+/// titles, CSS font names, toolkit namespaces): the original bytes, with
+/// anything that is not valid UTF-8 replaced by U+FFFD. A literal `U+FDD0`
+/// in the text is restored (not shown as the doubled escape).
+pub fn config_str_to_text(s: &str) -> String {
+    String::from_utf8_lossy(&config_str_to_bytes(s)).into_owned()
 }
 
 /// Inverse of [`os_to_config_string`].
@@ -284,6 +314,33 @@ impl EncodedOs {
     #[must_use]
     pub fn to_wide(&self) -> Vec<u16> {
         wtf8_to_wide(&self.to_bytes())
+    }
+
+    /// Strict [`EncodedOs::to_wide`] for process launch: malformed WTF-8 is
+    /// an error (Zig's `utf8ToUtf16Le*` fail) instead of becoming U+FFFD.
+    pub fn try_to_wide(&self) -> Result<Vec<u16>, InvalidWtf8> {
+        try_wtf8_to_wide(&self.to_bytes())
+    }
+
+    /// [`EncodedOs::try_to_wide`] plus a trailing NUL.
+    pub fn try_to_wide_nul(&self) -> Result<Vec<u16>, InvalidWtf8> {
+        let mut w = self.try_to_wide()?;
+        w.push(0);
+        Ok(w)
+    }
+
+    /// Strict [`EncodedOs::to_os`]: on Windows malformed WTF-8 is an error;
+    /// elsewhere every byte string is a valid OS string.
+    pub fn try_to_os(&self) -> Result<OsString, InvalidWtf8> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            Ok(OsString::from_wide(&self.try_to_wide()?))
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(self.to_os())
+        }
     }
 
     /// [`EncodedOs::to_wide`] plus a trailing NUL.
@@ -506,6 +563,39 @@ mod tests {
         // Through the reversible string encoding too.
         let s = bytes_to_config_string(&b);
         assert_eq!(wtf8_to_wide(&config_str_to_bytes(&s)), wide);
+    }
+
+    #[test]
+    fn config_str_to_text_restores_literal_escape_char() {
+        assert_eq!(
+            config_str_to_text(&valid_str_to_config_string("a\u{fdd0}b")),
+            "a\u{fdd0}b"
+        );
+        assert_eq!(
+            config_str_to_text(&bytes_to_config_string(b"a\xffb")),
+            "a\u{fffd}b"
+        );
+    }
+
+    #[test]
+    fn strict_wtf8_rejects_malformed_input() {
+        assert_eq!(try_wtf8_to_wide(b"a\xffb"), Err(InvalidWtf8));
+        assert_eq!(try_wtf8_to_wide(b"\xe0\x80\x80"), Err(InvalidWtf8));
+        assert_eq!(try_wtf8_to_wide(b"\xc3"), Err(InvalidWtf8));
+        // A real U+FFFD and lone surrogates are well-formed.
+        assert_eq!(try_wtf8_to_wide("\u{FFFD}".as_bytes()), Ok(vec![0xFFFD]));
+        assert_eq!(try_wtf8_to_wide(b"\xed\xa0\x80"), Ok(vec![0xD800]));
+        assert_eq!(
+            try_wtf8_to_wide("\u{e9}\u{1F600}".as_bytes()),
+            Ok(vec![0xE9, 0xD83D, 0xDE00])
+        );
+        let bad = EncodedOs::from_bytes(b"C:\\\xff");
+        assert_eq!(bad.try_to_wide(), Err(InvalidWtf8));
+        assert_eq!(bad.try_to_wide_nul(), Err(InvalidWtf8));
+        // The lossy form still substitutes (non-launch uses).
+        assert_eq!(bad.to_wide().last(), Some(&0xFFFD));
+        let ok = EncodedOs::from_plain_text("C:\\x");
+        assert_eq!(ok.try_to_wide_nul().unwrap().last(), Some(&0));
     }
 
     #[test]

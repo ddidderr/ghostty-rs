@@ -516,6 +516,32 @@ fn selection_and_clipboard_round_trip() {
     unsafe { ghostty_surface_free(s) };
 }
 
+/// A child that prints the hex of the first two bytes it receives raw.
+const HEX_TWO: &str = "stty raw -echo; dd bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \\n'; printf '\\nHEX-DONE\\n'; sleep 5";
+
+#[test]
+fn clipboard_completion_and_binding_action_keep_raw_bytes() {
+    // Clipboard contents are bytes: 0xFF must reach the child as 0xFF.
+    let h = host!("");
+    let s = h.surface(HEX_TWO);
+    let act = b"paste_from_clipboard";
+    assert!(unsafe { ghostty_surface_binding_action(s, act.as_ptr().cast(), act.len()) });
+    let (_, state) = rec(|r| r.reads.last().copied()).expect("clipboard read");
+    let pasted = CString::new(&b"a\xff"[..]).unwrap();
+    unsafe {
+        ghostty_surface_complete_clipboard_request(s, pasted.as_ptr(), state as *mut c_void, false);
+    };
+    h.wait_screen(s, "61ff");
+    unsafe { ghostty_surface_free(s) };
+
+    // Binding action text is bytes too: `text:` followed by 0xFF.
+    let s = h.surface(HEX_TWO);
+    let act = b"text:b\xff";
+    assert!(unsafe { ghostty_surface_binding_action(s, act.as_ptr().cast(), act.len()) });
+    h.wait_screen(s, "62ff");
+    unsafe { ghostty_surface_free(s) };
+}
+
 #[test]
 fn osc_52_and_title_and_pwd_actions() {
     let h = host!("clipboard-write = allow\n");

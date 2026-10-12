@@ -53,7 +53,11 @@ fn run_inner(opts: &Options, stdout: &mut dyn Write) -> Result<u8, Error> {
 
     if !cfg.diagnostics.items().is_empty() {
         for diag in cfg.diagnostics.items() {
-            writeln!(stdout, "{diag}")?;
+            // Diagnostics embed config values in the reversible byte
+            // encoding; print the original bytes.
+            stdout.write_all(&ghostty_os::osbytes::config_str_to_bytes(&format!(
+                "{diag}\n"
+            )))?;
         }
         return Ok(1);
     }
@@ -103,6 +107,27 @@ mod tests {
             s.contains(&format!("{p}:2:font-size: invalid value \"abc\"\n")),
             "{s}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn diagnostics_print_original_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("config");
+        std::fs::write(&path, b"bad\xffkey = 1\n").unwrap();
+        let opts = Options {
+            config_file: Some(path.to_string_lossy().into_owned()),
+        };
+        let mut out = Vec::new();
+        assert_eq!(1, run_inner(&opts, &mut out).unwrap());
+        assert!(
+            out.windows(7).any(|w| w == b"bad\xffkey"),
+            "{:?}",
+            String::from_utf8_lossy(&out)
+        );
+        assert!(!out.contains(&0xef), "no escape encoding in the output");
+        let _ = path.as_os_str().as_bytes();
     }
 
     #[test]

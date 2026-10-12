@@ -111,7 +111,7 @@ fn unbracketed_paste_converts_newlines_and_requires_confirmation_when_unsafe() {
     // Confirm it.
     let c = h.rt.confirmations.borrow()[0].clone();
     h.surface
-        .complete_clipboard_request(c.request, &c.text, true)
+        .complete_clipboard_request(c.request, c.text.as_bytes(), true)
         .unwrap();
     h.expect_input(b"rm -rf x\rls");
 }
@@ -365,6 +365,31 @@ fn text_csi_esc_and_ignore_bindings() {
     h.key(Key::Digit3, ctrl(), "3");
     h.key(Key::Digit4, ctrl(), "4");
     h.expect_input(b"hi!\x1b[1;5H\x1bx");
+}
+
+#[test]
+fn config_loaded_text_csi_esc_write_decoded_bytes() {
+    use ghostty_os::osbytes::EncodedOs;
+
+    let h = harness!(Harness::recorder("", &[]));
+    let enc = |raw: &[u8]| EncodedOs::from_bytes(raw).into_encoded();
+    // Byte FF and a literal U+FDD0 must reach the pty unchanged, not as
+    // the reversible escape encoding.
+    for (kind, raw, want) in [
+        ("text", &b"a\xffb"[..], b"a\xffb".to_vec()),
+        (
+            "text",
+            "\u{fdd0}".as_bytes(),
+            "\u{fdd0}".as_bytes().to_vec(),
+        ),
+        ("csi", &b"\xff"[..], b"\x1b[\xff".to_vec()),
+        ("esc", "\u{fdd0}".as_bytes(), b"\x1b\xef\xb7\x90".to_vec()),
+    ] {
+        h.mark();
+        let a = ghostty_input::binding::Action::parse(&format!("{kind}:{}", enc(raw))).unwrap();
+        assert!(h.surface.perform_binding_action(&a).unwrap());
+        h.expect_input(&want);
+    }
 }
 
 #[test]

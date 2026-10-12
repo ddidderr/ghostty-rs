@@ -326,7 +326,10 @@ impl Harness {
                 .get(&cb_key(clipboard))
                 .cloned()
                 .unwrap_or_default();
-            match self.surface.complete_clipboard_request(req, &text, false) {
+            match self
+                .surface
+                .complete_clipboard_request(req, text.as_bytes(), false)
+            {
                 Ok(()) => {}
                 Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
                     self.rt

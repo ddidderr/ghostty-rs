@@ -263,7 +263,9 @@ fn setup_bash(
 
     env.insert("GHOSTTY_BASH_INJECT", inject);
     if let Some(v) = rcfile {
-        env.insert("GHOSTTY_BASH_RCFILE", v);
+        // The intercepted argument is an encoded OS string; the env var gets
+        // its original bytes (Zig inserts the argument slice unchanged).
+        env.insert("GHOSTTY_BASH_RCFILE", EncodedOs::from_encoded(v).to_os());
     }
 
     // In POSIX mode, HISTFILE defaults to ~/.sh_history, so unless we're
@@ -669,6 +671,24 @@ mod tests {
             "profile.sh",
             env.get("GHOSTTY_BASH_RCFILE").unwrap().to_str().unwrap()
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_rcfile_keeps_original_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let res = TmpResourcesDir::new(Shell::Bash);
+        for raw in [&b"/home/x/\xffrc"[..], "/home/x/\u{fdd0}rc".as_bytes()] {
+            let mut env = EnvMap::new();
+            let command = Command::Direct(vec![
+                "bash".to_owned(),
+                "--rcfile".to_owned(),
+                EncodedOs::from_bytes(raw).into_encoded(),
+            ]);
+            setup_bash(&command, &res.enc(), &mut env).unwrap();
+            assert_eq!(env.get("GHOSTTY_BASH_RCFILE").unwrap().as_bytes(), raw);
+        }
     }
 
     #[test]

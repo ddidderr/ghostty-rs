@@ -459,7 +459,10 @@ impl Surface {
             // don't leak GHOSTTY_LOG to any subprocesses
             env.remove("GHOSTTY_LOG");
 
-            let mut ecfg = exec::Config::new(env, config.term.clone());
+            let mut ecfg = exec::Config::new(
+                env,
+                ghostty_os::osbytes::EncodedOs::from_encoded(config.term.clone()),
+            );
             ecfg.command = command.clone();
             ecfg.env_override = config.env.clone();
             ecfg.shell_integration = config.shell_integration;
@@ -604,7 +607,7 @@ impl Surface {
             rt_app.perform_action(
                 Target::Surface(id),
                 RtAction::SetTitle(SetTitle {
-                    title: title.clone(),
+                    title: ghostty_os::osbytes::config_str_to_text(title),
                 }),
             );
         } else if config.xdg_terminal_exec
@@ -617,7 +620,7 @@ impl Surface {
             rt_app.perform_action(
                 Target::Surface(id),
                 RtAction::SetTitle(SetTitle {
-                    title: cmd.string(),
+                    title: ghostty_os::osbytes::config_str_to_text(&cmd.string()),
                 }),
             );
         } else if let Some(cmd) = &command {
@@ -633,7 +636,7 @@ impl Surface {
                 rt_app.perform_action(
                     Target::Surface(id),
                     RtAction::SetTitle(SetTitle {
-                        title: first.clone(),
+                        title: ghostty_os::osbytes::config_str_to_text(first),
                     }),
                 );
             }
@@ -1303,7 +1306,7 @@ impl Surface {
         // configured title.
         if let Some(title) = &config.title {
             self.perform(RtAction::SetTitle(SetTitle {
-                title: title.clone(),
+                title: ghostty_os::osbytes::config_str_to_text(title),
             }));
         }
 
@@ -2062,7 +2065,7 @@ impl CoreSurface for Surface {
     fn complete_clipboard_request(
         &self,
         req: ClipboardRequest,
-        data: &str,
+        data: &[u8],
         confirmed: bool,
     ) -> Result<(), ClipboardError> {
         Surface::complete_clipboard_request(self, req, data, confirmed)

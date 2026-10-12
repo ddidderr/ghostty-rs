@@ -88,8 +88,9 @@ impl Surface {
 
         // The options we'll use for all formatting. We'll just override the
         // emit format.
-        let codepoint_map: Vec<formatter::CodepointMap> =
-            cfg.clipboard_codepoint_map.map.list.clone();
+        // Replacement strings are config strings (reversible byte encoding);
+        // the formatter produces text, so decode them to UTF-8 text first.
+        let codepoint_map = decode_codepoint_map(&cfg.clipboard_codepoint_map.map.list);
         let opts = formatter::Options {
             emit: Format::Plain, // We'll override this below
             unwrap: true,
@@ -195,20 +196,20 @@ impl Surface {
     pub fn complete_clipboard_request(
         &self,
         req: ClipboardRequest,
-        data: &str,
+        data: &[u8],
         confirmed: bool,
     ) -> Result<(), ClipboardError> {
         match req {
-            ClipboardRequest::Paste => self.complete_clipboard_paste(data.as_bytes(), confirmed),
+            ClipboardRequest::Paste => self.complete_clipboard_paste(data, confirmed),
 
             ClipboardRequest::Osc52Read(clipboard) => {
-                self.complete_clipboard_read_osc52(data.as_bytes(), clipboard, confirmed)
+                self.complete_clipboard_read_osc52(data, clipboard, confirmed)
             }
 
             ClipboardRequest::Osc52Write(clipboard) => {
                 self.rt_surface.set_clipboard(
                     clipboard,
-                    &[("text/plain".to_owned(), data.as_bytes().to_vec())],
+                    &[("text/plain".to_owned(), data.to_vec())],
                     !confirmed,
                 );
                 Ok(())
@@ -405,5 +406,42 @@ impl Surface {
     pub fn text_callback_bytes(&self, text: &[u8]) -> Result<(), ClipboardError> {
         let _crash = self.crash_guard();
         self.complete_clipboard_paste(text, true)
+    }
+}
+
+/// The clipboard codepoint map with string replacements decoded from the
+/// config encoding (a literal `U+FDD0` is restored; bytes that are not
+/// UTF-8 can't be represented in the formatter's text output).
+fn decode_codepoint_map(list: &[formatter::CodepointMap]) -> Vec<formatter::CodepointMap> {
+    list.iter()
+        .map(|e| formatter::CodepointMap {
+            range: e.range,
+            replacement: match &e.replacement {
+                formatter::Replacement::String(s) => {
+                    formatter::Replacement::String(ghostty_os::osbytes::config_str_to_text(s))
+                }
+                r @ formatter::Replacement::Codepoint(_) => r.clone(),
+            },
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod decode_map_tests {
+    use super::*;
+
+    #[test]
+    fn string_replacements_are_decoded() {
+        let enc = ghostty_os::osbytes::valid_str_to_config_string("a\u{fdd0}");
+        assert_ne!(enc, "a\u{fdd0}");
+        let list = [formatter::CodepointMap {
+            range: [1, 2],
+            replacement: formatter::Replacement::String(enc),
+        }];
+        let out = decode_codepoint_map(&list);
+        assert_eq!(
+            out[0].replacement,
+            formatter::Replacement::String("a\u{fdd0}".to_owned())
+        );
     }
 }

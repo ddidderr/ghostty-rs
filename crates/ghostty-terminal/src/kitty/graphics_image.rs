@@ -11,22 +11,38 @@ use std::{
     time::Instant,
 };
 
-/// wasm32 has no `std::os::unix`; paths are treated as UTF-8 there.
+/// wasm32 has no `std::os::unix`; on Windows `as_encoded_bytes` is WTF-8.
 #[cfg(not(unix))]
 trait OsStrExt {
-    fn from_bytes(bytes: &[u8]) -> &std::ffi::OsStr;
     fn as_bytes(&self) -> &[u8];
 }
 
 #[cfg(not(unix))]
 impl OsStrExt for std::ffi::OsStr {
-    fn from_bytes(bytes: &[u8]) -> &std::ffi::OsStr {
-        std::ffi::OsStr::new(std::str::from_utf8(bytes).unwrap_or(""))
-    }
-
     fn as_bytes(&self) -> &[u8] {
         self.as_encoded_bytes()
     }
+}
+
+/// The OS path named by protocol payload bytes. Unix paths are the bytes;
+/// on Windows they are WTF-8 (lone surrogates are valid, malformed input is
+/// not a path); elsewhere (wasm) they must be UTF-8.
+#[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)] // same signature as the fallible targets
+fn os_path_from_bytes(bytes: &[u8]) -> Option<std::ffi::OsString> {
+    Some(std::ffi::OsStr::from_bytes(bytes).to_owned())
+}
+
+#[cfg(windows)]
+fn os_path_from_bytes(bytes: &[u8]) -> Option<std::ffi::OsString> {
+    ghostty_os::osbytes::EncodedOs::from_bytes(bytes)
+        .try_to_os()
+        .ok()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn os_path_from_bytes(bytes: &[u8]) -> Option<std::ffi::OsString> {
+    std::str::from_utf8(bytes).ok().map(Into::into)
 }
 
 use ghostty_vt::kitty::graphics_command::{
@@ -137,9 +153,11 @@ impl LoadingImage {
         match t.medium {
             TransmissionMedium::Direct => unreachable!("handled above"),
             TransmissionMedium::File | TransmissionMedium::TemporaryFile => {
-                let path = match std::fs::canonicalize(Path::new(std::ffi::OsStr::from_bytes(
-                    &cmd.data,
-                ))) {
+                let Some(os_path) = os_path_from_bytes(&cmd.data) else {
+                    log::warn!("failed to get absolute path: BadPathName");
+                    return Err(Error::InvalidData);
+                };
+                let path = match std::fs::canonicalize(Path::new(&os_path)) {
                     Ok(p) => p,
                     Err(err) => {
                         log::warn!("failed to get absolute path: {err}");
@@ -298,7 +316,10 @@ impl LoadingImage {
             }
         }
 
-        let os_path = Path::new(std::ffi::OsStr::from_bytes(path));
+        let Some(os_path) = os_path_from_bytes(path) else {
+            return Err(Error::InvalidData);
+        };
+        let os_path = Path::new(&os_path);
         let result = self.read_file_inner(os_path, offset, size);
         if temporary && let Err(err) = std::fs::remove_file(os_path) {
             log::warn!("failed to delete temporary file: {err}");
@@ -662,6 +683,24 @@ pub struct Rect {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn payload_path_bytes_are_kept() {
+        // Unix keeps arbitrary bytes; Windows accepts WTF-8 (lone
+        // surrogates) and rejects malformed input instead of using an
+        // empty path.
+        #[cfg(unix)]
+        {
+            let p = super::os_path_from_bytes(b"/tmp/\xff-tty-graphics-protocol").unwrap();
+            assert_eq!(p.as_encoded_bytes(), b"/tmp/\xff-tty-graphics-protocol");
+        }
+        #[cfg(windows)]
+        {
+            assert!(super::os_path_from_bytes(b"C:\\\xed\xa0\x80").is_some());
+            assert!(super::os_path_from_bytes(b"C:\\\xff").is_none());
+        }
+        assert!(super::os_path_from_bytes(b"plain").is_some());
+    }
+
     #[cfg(unix)]
     #[test]
     fn temp_dir_check_keeps_non_utf8_tmpdir_bytes() {

@@ -524,7 +524,9 @@ impl Window {
             QuickTerminalLayer::Bottom => layer_shell::Layer::Bottom,
             QuickTerminalLayer::Background => layer_shell::Layer::Background,
         });
-        window.set_namespace(Some(config.gtk_quick_terminal_namespace.as_str()));
+        window.set_namespace(Some(
+            ghostty_os::osbytes::config_str_to_text(&config.gtk_quick_terminal_namespace).as_str(),
+        ));
 
         window.set_keyboard_mode(match config.quick_terminal_keyboard_interactivity {
                 QuickTerminalKeyboardInteractivity::None => layer_shell::KeyboardMode::None,

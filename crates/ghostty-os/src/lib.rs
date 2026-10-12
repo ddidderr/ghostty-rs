@@ -111,6 +111,7 @@ pub mod uri;
 pub mod wasm;
 #[cfg(windows)]
 pub mod windows;
+pub mod windows_nls;
 
 #[cfg(target_arch = "wasm32")]
 mod unsupported;

@@ -12,20 +12,6 @@ const DELIMITER: char = ';';
 #[cfg(not(windows))]
 const DELIMITER: char = ':';
 
-/// Uppercase one UTF-16 code unit like Windows' `RtlUpcaseUnicodeChar`
-/// (Unicode simple case mapping, per unit): surrogate halves and characters
-/// whose uppercase is not a single BMP code unit are unchanged.
-fn upcase_unit(u: u16) -> u16 {
-    let Some(c) = char::from_u32(u32::from(u)) else {
-        return u; // lone surrogate half
-    };
-    let mut up = c.to_uppercase();
-    match (up.next(), up.next()) {
-        (Some(m), None) => u16::try_from(u32::from(m)).unwrap_or(u),
-        _ => u,
-    }
-}
-
 /// The comparison form of an environment key on Windows: its WTF-16 code
 /// units, uppercased per unit. Never lossy: distinct lone surrogates stay
 /// distinct.
@@ -33,7 +19,7 @@ fn upcase_unit(u: u16) -> u16 {
 fn windows_key(key: &OsStr) -> Vec<u16> {
     crate::osbytes::wtf8_to_wide(&crate::osbytes::os_bytes(key))
         .into_iter()
-        .map(upcase_unit)
+        .map(crate::windows_nls::upcase_w)
         .collect()
 }
 
@@ -400,20 +386,26 @@ mod tests {
 
 #[cfg(test)]
 mod windows_key_tests {
+    #[cfg(unix)]
     use super::*;
 
     fn key(units: &[u16]) -> Vec<u16> {
-        units.iter().copied().map(upcase_unit).collect()
+        units
+            .iter()
+            .copied()
+            .map(crate::windows_nls::upcase_w)
+            .collect()
     }
 
     #[test]
-    fn upcase_is_unicode_simple_per_unit() {
-        assert_eq!(upcase_unit(u16::from(b'a')), u16::from(b'A'));
-        assert_eq!(upcase_unit(0x00E9), 0x00C9); // e acute
-        assert_eq!(upcase_unit(0x03C9), 0x03A9); // omega
-        assert_eq!(upcase_unit(0x00DF), 0x00DF); // sharp s has no simple upper
-        assert_eq!(upcase_unit(0xD800), 0xD800);
-        assert_eq!(upcase_unit(0xDFFF), 0xDFFF);
+    fn keys_use_the_windows_table_not_unicode_mappings() {
+        // U+1F80 and U+1F88 are the same key under Windows/Zig's table even
+        // though Unicode's uppercase of U+1F80 is a two-unit sequence.
+        assert_eq!(key(&[0x1F80]), key(&[0x1F88]));
+        // The Georgian letters gained uppercase after the table froze.
+        assert_ne!(key(&[0x10D0]), key(&[0x1C90]));
+        // U+00DF stays distinct from "SS" (and from U+1E9E).
+        assert_ne!(key(&[0xDF]), key(&[0x53, 0x53]));
     }
 
     #[test]

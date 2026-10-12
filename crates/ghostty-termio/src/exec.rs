@@ -109,7 +109,7 @@ pub struct Config {
     pub cursor_blink: Option<bool>,
     pub working_directory: Option<EncodedOs>,
     pub resources_dir: Option<EncodedOs>,
-    pub term: String,
+    pub term: EncodedOs,
 
     pub rt_pre_exec_info: RtPreExecInfo,
     pub rt_post_fork_info: RtPostForkInfo,
@@ -124,7 +124,7 @@ pub struct Config {
 
 impl Config {
     /// A config with Zig-struct-style defaults for everything optional.
-    pub fn new(env: EnvMap, term: impl Into<String>) -> Config {
+    pub fn new(env: EnvMap, term: EncodedOs) -> Config {
         Config {
             command: None,
             env,
@@ -134,7 +134,7 @@ impl Config {
             cursor_blink: None,
             working_directory: None,
             resources_dir: None,
-            term: term.into(),
+            term,
             rt_pre_exec_info: RtPreExecInfo::default(),
             rt_post_fork_info: RtPostForkInfo::default(),
             create_scope: None,
@@ -801,7 +801,8 @@ impl Subprocess {
         // For now, we just look up a bundled dir but in the future we should
         // also load the terminfo database and look for it.
         if let Some(base) = &cfg.resources_dir {
-            env.insert("TERM", cfg.term.clone());
+            // The configured TERM is an encoded OS string: export its bytes.
+            env.insert("TERM", cfg.term.to_os());
             env.insert("COLORTERM", "truecolor");
 
             // Assume that the resources directory is adjacent to the terminfo
@@ -1584,6 +1585,18 @@ mod tests {
             env.get("PATH").unwrap().as_bytes(),
             b"/usr/bin:/opt/gh\xffostty/bin"
         );
+    }
+
+    #[test]
+    fn configured_term_is_exported_decoded() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = ghostty_os::TempDir::init().unwrap();
+        for raw in [&b"x\xfft"[..], "t\u{fdd0}".as_bytes()] {
+            let mut cfg = Config::new(EnvMap::new(), EncodedOs::from_bytes(raw));
+            cfg.resources_dir = Some(EncodedOs::from_path(&dir.path()));
+            let exec = Exec::new(cfg).unwrap();
+            assert_eq!(exec.env().unwrap().get("TERM").unwrap().as_bytes(), raw);
+        }
     }
 
     #[test]

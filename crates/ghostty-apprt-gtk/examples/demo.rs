@@ -203,7 +203,7 @@ impl CoreSurface for DemoSurface {
     fn complete_clipboard_request(
         &self,
         _req: ClipboardRequest,
-        data: &str,
+        data: &[u8],
         _confirmed: bool,
     ) -> Result<(), ClipboardError> {
         log::info!("demo: paste of {} bytes", data.len());

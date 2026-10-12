@@ -79,6 +79,10 @@ pub enum Error {
     Start(#[from] command::StartError),
     #[error(transparent)]
     ShellIntegration(#[from] shell_integration::Error),
+    /// A configured path, argument or environment value is not well-formed
+    /// WTF-8 (Zig's process launch conversions fail on such input).
+    #[error(transparent)]
+    InvalidWtf8(#[from] ghostty_os::osbytes::InvalidWtf8),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("failed to get WINDIR, cannot run shell command")]
@@ -102,12 +106,12 @@ pub struct Config {
     pub cursor_blink: Option<bool>,
     pub working_directory: Option<EncodedOs>,
     pub resources_dir: Option<EncodedOs>,
-    pub term: String,
+    pub term: EncodedOs,
 }
 
 impl Config {
     /// A config with Zig-struct-style defaults for everything optional.
-    pub fn new(env: EnvMap, term: impl Into<String>) -> Config {
+    pub fn new(env: EnvMap, term: EncodedOs) -> Config {
         Config {
             command: None,
             env,
@@ -117,7 +121,7 @@ impl Config {
             cursor_blink: None,
             working_directory: None,
             resources_dir: None,
-            term: term.into(),
+            term,
         }
     }
 }
@@ -585,13 +589,20 @@ fn write_thread_main(handle: &OwnedHandle, rx: &Receiver<Vec<u8>>) {
 
 /// Insert the config `env` overrides, decoding the encoded key/value text
 /// to OS strings (WTF-16 on Windows) like the Unix implementation.
-fn apply_env_overrides(env: &mut EnvMap, overrides: &RepeatableStringMap) {
+///
+/// Malformed WTF-8 fails (Zig's conversions for the environment block are
+/// fallible) instead of being substituted with U+FFFD.
+fn apply_env_overrides(
+    env: &mut EnvMap,
+    overrides: &RepeatableStringMap,
+) -> Result<(), ghostty_os::osbytes::InvalidWtf8> {
     for (k, v) in overrides.iter() {
         env.insert(
-            ghostty_os::osbytes::config_str_to_os(k),
-            ghostty_os::osbytes::config_str_to_os(v),
+            EncodedOs::from_encoded(k).try_to_os()?,
+            EncodedOs::from_encoded(v).try_to_os()?,
         );
     }
+    Ok(())
 }
 
 struct Subprocess {
@@ -617,18 +628,20 @@ impl Subprocess {
             log::info!("found Ghostty resources dir: {}", dir.as_encoded());
             // The resources dir is an encoded OS string: decode it for the
             // child's environment.
-            env.insert("GHOSTTY_RESOURCES_DIR", dir.to_os());
+            env.insert("GHOSTTY_RESOURCES_DIR", dir.try_to_os()?);
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
         // the ghostty TERM value but we want to only do that if we have
         // ghostty in the TERMINFO database.
         if let Some(base) = &cfg.resources_dir {
-            env.insert("TERM", cfg.term.clone());
+            // The configured TERM is an encoded OS string: export its bytes.
+            env.insert("TERM", cfg.term.try_to_os()?);
             env.insert("COLORTERM", "truecolor");
 
             // Assume that the resources directory is adjacent to the terminfo
             // database
+            base.try_to_os()?; // malformed WTF-8 fails like Zig
             env.insert("TERMINFO", terminfo_dir(base));
         } else {
             env.insert("TERM", "xterm-256color");
@@ -698,7 +711,7 @@ impl Subprocess {
         };
 
         // Add the environment variables that override any others.
-        apply_env_overrides(&mut env, &cfg.env_override);
+        apply_env_overrides(&mut env, &cfg.env_override)?;
 
         // Build our args list. If we fail to find the shell, we'd still like
         // to try to run something so Ghostty can launch.
@@ -720,7 +733,7 @@ impl Subprocess {
 
         // Propagate the current working directory (CWD) to the shell.
         if let Some(pwd) = &cwd {
-            env.insert("PWD", pwd.to_os());
+            env.insert("PWD", pwd.try_to_os()?);
         }
 
         Ok(Subprocess {
@@ -948,12 +961,23 @@ mod tests {
         m.parse_cli(Some(&format!("A={lone}"))).unwrap();
         m.parse_cli(Some(&format!("{lit}=v"))).unwrap();
         let mut env = EnvMap::new();
-        super::apply_env_overrides(&mut env, &m);
+        super::apply_env_overrides(&mut env, &m).unwrap();
         assert_eq!(
             env.get("A").unwrap(),
             std::ffi::OsString::from_wide(&[0x61, 0xD800])
         );
         assert_eq!(env.get("K\u{fdd0}").unwrap(), "v");
+    }
+
+    #[test]
+    fn malformed_wtf8_env_overrides_fail() {
+        use ghostty_config::cli_args::ConfigField;
+
+        let bad = EncodedOs::from_bytes(b"a\xff").into_encoded();
+        let mut m = RepeatableStringMap::default();
+        m.parse_cli(Some(&format!("A={bad}"))).unwrap();
+        let mut env = EnvMap::new();
+        assert!(super::apply_env_overrides(&mut env, &m).is_err());
     }
 
     #[test]

@@ -215,6 +215,7 @@ pub fn runtime_css(config: &Config, gtk_416: bool) -> String {
     }
 
     if let Some(family) = &config.window_title_font_family {
+        let family = ghostty_os::osbytes::config_str_to_text(family);
         let _ = write!(
             out,
             ".window headerbar {{\n  font-family: \"{family}\";\n}}\n"

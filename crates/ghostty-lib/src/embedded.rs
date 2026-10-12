@@ -856,23 +856,31 @@ unsafe fn platform_view_from_c(
 
 /// Zig's `std.zig.stringEscape` with non-ASCII code points written as
 /// `\u{...}` (the config value is parsed as a Zig string; the bytes of
-/// valid UTF-8 round trip either way).
-fn string_escape(input: &str) -> String {
+/// valid UTF-8 round trip either way). Bytes that are not valid UTF-8 are
+/// emitted in the reversible OS-byte encoding, which the string parser
+/// copies through unchanged, so `string::parse_bytes(string_escape(b)) == b`.
+fn string_escape(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len());
-    for c in input.chars() {
-        match c {
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            ' ' | '!' | '#'..='&' | '\'' | '('..='[' | ']'..='~' => out.push(c),
-            c if c.is_ascii() => {
-                let _ = write!(out, "\\x{:02x}", c as u32);
+    for chunk in input.utf8_chunks() {
+        for c in chunk.valid().chars() {
+            match c {
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\\' => out.push_str("\\\\"),
+                '"' => out.push_str("\\\""),
+                ' ' | '!' | '#'..='&' | '\'' | '('..='[' | ']'..='~' => out.push(c),
+                c if c.is_ascii() => {
+                    let _ = write!(out, "\\x{:02x}", c as u32);
+                }
+                c => {
+                    let _ = write!(out, "\\u{{{:x}}}", c as u32);
+                }
             }
-            c => {
-                let _ = write!(out, "\\u{{{:x}}}", c as u32);
-            }
+        }
+        for &b in chunk.invalid() {
+            out.push('\u{FDD0}');
+            out.push(char::from(b));
         }
     }
     out
@@ -939,9 +947,10 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
         // We need to escape the string because the "raw" field expects a
         // Zig string.
         config.input.list.clear();
-        config.input.list.push(ReadableIO::Raw(string_escape(
-            &osbytes::bytes_to_config_string(input.to_bytes()),
-        )));
+        config
+            .input
+            .list
+            .push(ReadableIO::Raw(string_escape(input.to_bytes())));
     }
 
     // Wait after command
@@ -1935,7 +1944,9 @@ pub unsafe extern "C" fn ghostty_surface_binding_action(
     }
     // SAFETY: `action` points to `len` readable bytes.
     let bytes = unsafe { std::slice::from_raw_parts(action.cast::<u8>(), len) };
-    let action_str = String::from_utf8_lossy(bytes);
+    // The action text is bytes (Zig `[]const u8`); the parser works on the
+    // reversible OS-byte encoding so a `text:` payload keeps invalid UTF-8.
+    let action_str = ghostty_os::osbytes::bytes_to_config_string(bytes);
     let action = match BindingAction::parse(&action_str) {
         Ok(a) => a,
         Err(err) => {
@@ -1976,13 +1987,14 @@ pub unsafe extern "C" fn ghostty_surface_complete_clipboard_request(
     let Some(core) = s.core() else {
         return;
     };
-    let str = str.to_string_lossy();
+    // The clipboard contents are bytes (Zig `[:0]const u8`), not text.
+    let str = str.to_bytes();
     // SAFETY: the pointer is a `Box<ClipboardRequest>` leaked by
     // `clipboard_request`; it stays alive when confirmation is requested.
     let req = unsafe { *state.cast::<ClipboardRequest>() };
 
     // Attempt to complete the request, but we may request confirmation.
-    match core.complete_clipboard_request(req, &str, confirmed) {
+    match core.complete_clipboard_request(req, str, confirmed) {
         Err(
             ghostty_apprt::runtime_api::ClipboardError::UnsafePaste
             | ghostty_apprt::runtime_api::ClipboardError::UnauthorizedPaste,
@@ -1993,10 +2005,10 @@ pub unsafe extern "C" fn ghostty_surface_complete_clipboard_request(
                     ghostty_apprt::structs::ClipboardRequestType::Osc52Read => 1,
                     ghostty_apprt::structs::ClipboardRequestType::Osc52Write => 2,
                 };
-                let c = CString::new(str.replace('\0', "")).unwrap_or_default();
-                // SAFETY: embedder callback; `state` is preserved for the
+                // SAFETY: embedder callback; `text` is the caller's NUL
+                // terminated string and `state` is preserved for the
                 // confirmation route.
-                unsafe { cb(s.rt.userdata, c.as_ptr(), state, ty) };
+                unsafe { cb(s.rt.userdata, text, state, ty) };
             }
             return;
         }
@@ -2171,6 +2183,23 @@ mod tests {
 
     use super::*;
     use crate::types::ghostty_env_var_s;
+
+    #[test]
+    fn initial_input_escape_round_trips_bytes() {
+        for raw in [
+            &b"a\xffb\n"[..],
+            "t\u{fdd0}\u{e9}\"\\".as_bytes(),
+            b"\xfd\xfd\x1b[0m",
+            "\u{fdd0}\u{ff}".as_bytes(),
+        ] {
+            let esc = string_escape(raw);
+            assert_eq!(
+                ghostty_config::string::parse_bytes(&esc).unwrap(),
+                raw,
+                "{esc:?}"
+            );
+        }
+    }
 
     /// Surface options are raw C bytes in Zig; non-UTF-8 values must reach
     /// the config unchanged (reversible byte escape).

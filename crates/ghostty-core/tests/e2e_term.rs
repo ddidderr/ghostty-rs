@@ -162,7 +162,7 @@ fn osc52_write_ask_requires_confirmation_and_deny_ignores() {
     // The user confirms: the apprt calls complete_clipboard_request.
     let c = h.rt.confirmations.borrow()[0].clone();
     h.surface
-        .complete_clipboard_request(c.request, &c.text, true)
+        .complete_clipboard_request(c.request, c.text.as_bytes(), true)
         .unwrap();
     assert_eq!(h.rt.writes.borrow().len(), 2);
 
@@ -208,7 +208,7 @@ fn osc52_read_requires_confirmation_by_default() {
     assert_eq!(h.recorded(), Vec::<u8>::new());
     let c = h.rt.confirmations.borrow()[0].clone();
     h.surface
-        .complete_clipboard_request(c.request, &c.text, true)
+        .complete_clipboard_request(c.request, c.text.as_bytes(), true)
         .unwrap();
     // base64("secret") = c2VjcmV0
     h.expect_input(b"\x1b]52;c;c2VjcmV0\x1b\\");

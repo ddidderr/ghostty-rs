@@ -501,7 +501,7 @@ impl Key {
         let mut descriptors: Vec<Descriptor> = Vec::new();
         for family in &config.font_family.list {
             descriptors.push(Descriptor {
-                family: Some(family.clone()),
+                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
                 style: config.font_style.name_value().map(str::to_string),
                 size: font_size.points,
                 variations: config.font_variation.list.clone(),
@@ -520,7 +520,7 @@ impl Key {
         for family in &config.font_family_bold.list {
             let style = config.font_style_bold.name_value().map(str::to_string);
             descriptors.push(Descriptor {
-                family: Some(family.clone()),
+                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
                 bold: style.is_none(),
                 style,
                 size: font_size.points,
@@ -531,7 +531,7 @@ impl Key {
         for family in &config.font_family_italic.list {
             let style = config.font_style_italic.name_value().map(str::to_string);
             descriptors.push(Descriptor {
-                family: Some(family.clone()),
+                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
                 italic: style.is_none(),
                 style,
                 size: font_size.points,
@@ -545,7 +545,7 @@ impl Key {
                 .name_value()
                 .map(str::to_string);
             descriptors.push(Descriptor {
-                family: Some(family.clone()),
+                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
                 bold: style.is_none(),
                 italic: style.is_none(),
                 style,

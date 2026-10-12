@@ -108,7 +108,8 @@ pub struct DerivedConfig {
     pub background: Color,
     pub osc_color_report_format: OSCColorReportFormat,
     pub clipboard_write: ClipboardAccess,
-    pub enquiry_response: String,
+    /// The decoded bytes of `enquiry-response` (written to the pty as is).
+    pub enquiry_response: Vec<u8>,
     pub conditional_state: conditional::State,
 }
 
@@ -142,7 +143,7 @@ impl DerivedConfig {
             background: config.background,
             osc_color_report_format: config.osc_color_report_format,
             clipboard_write: config.clipboard_write,
-            enquiry_response: config.enquiry_response.clone(),
+            enquiry_response: ghostty_os::osbytes::config_str_to_bytes(&config.enquiry_response),
             conditional_state: config.conditional_state,
         }
     }
@@ -175,8 +176,9 @@ impl ThreadEnterState {
             match item {
                 ReadableIO::Raw(v) => out.push(ghostty_os::osbytes::config_str_to_bytes(v)),
                 ReadableIO::Path(path) => {
-                    let f = std::fs::File::open(path).map_err(|err| {
-                        log::warn!("failed to open input file={path} err={err}");
+                    // The path is an encoded OS string: decode it to open.
+                    let f = std::fs::File::open(path.to_path()).map_err(|err| {
+                        log::warn!("failed to open input file={} err={err}", path.as_encoded());
                         Error::InputNotFound
                     })?;
                     let mut buf = Vec::new();
@@ -419,7 +421,7 @@ impl Termio {
             renderer_wakeup: renderer_wakeup.clone(),
             default_cursor_style: config.cursor_style,
             default_cursor_blink: config.cursor_blink,
-            enquiry_response: config.enquiry_response.clone().into_bytes(),
+            enquiry_response: config.enquiry_response.clone(),
             osc_color_report_format: config.osc_color_report_format,
             clipboard_write: config.clipboard_write,
         });
@@ -789,5 +791,28 @@ fn set_image_limits(term: &mut Terminal, limit: usize) {
         {
             log::warn!("failed to set kitty image storage limit: {err}");
         }
+    }
+}
+
+#[cfg(test)]
+mod derived_config_tests {
+    use super::*;
+
+    #[test]
+    fn enquiry_response_is_decoded_to_bytes() {
+        let mut cfg = Config {
+            enquiry_response: ghostty_os::osbytes::EncodedOs::from_bytes(
+                "a\u{fdd0}\u{ff}\u{e9}".as_bytes(),
+            )
+            .into_encoded(),
+            ..Config::default()
+        };
+        assert_eq!(
+            DerivedConfig::new(&cfg).enquiry_response,
+            "a\u{fdd0}\u{ff}\u{e9}".as_bytes()
+        );
+        let raw = b"x\xffy";
+        cfg.enquiry_response = ghostty_os::osbytes::EncodedOs::from_bytes(raw).into_encoded();
+        assert_eq!(DerivedConfig::new(&cfg).enquiry_response, raw);
     }
 }

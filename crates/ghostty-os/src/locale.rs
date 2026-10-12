@@ -5,7 +5,10 @@
 //! comments): `setlocale(LC_ALL, "")`, then with `LANG` unset, then
 //! `en_US.UTF-8` (exported as `LANG`). On Darwin (`target_vendor = "apple"`)
 //! `LANG`/`LANGUAGE` are additionally pre-populated from Cocoa when unset.
-//! Other targets (Windows, wasm) have no `setlocale` handling.
+//! Windows runs the same chain against the C runtime: `setlocale` (with
+//! Zig's literal `LC_ALL = 6`, which the UCRT rejects, so the chain proceeds
+//! exactly as it does in Zig) and `_putenv_s` for the `LANG` updates.
+//! wasm has no `setlocale` handling.
 
 /// The locale Ghostty falls back to (and exports as `LANG`) when the
 /// environment's locale can't be set.
@@ -14,14 +17,14 @@ pub const FALLBACK_LOCALE: &str = "en_US.UTF-8";
 /// Ensure that the locale is set (`ensureLocale`).
 /// Returns `Some("en_US.UTF-8")` if we had to fall back to it (and exported
 /// it as `LANG`), otherwise `None`.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub fn ensure_locale() -> Option<String> {
     posix::ensure_locale()
 }
 
-/// Ensure that the locale is set: nothing to do on targets without libc
-/// locales (Windows, wasm).
-#[cfg(not(unix))]
+/// Ensure that the locale is set: nothing to do on targets without a C
+/// runtime locale (wasm).
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_locale() -> Option<String> {
     None
 }
@@ -53,15 +56,52 @@ pub fn preferred_language_value<S: AsRef<str>>(preferred: &[S]) -> Option<String
     (!out.is_empty()).then_some(out)
 }
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 #[allow(unsafe_code)]
 mod posix {
+    #[cfg(windows)]
+    use std::ffi::c_char;
     use std::ffi::{CStr, CString};
 
     use super::FALLBACK_LOCALE;
     #[cfg(target_vendor = "apple")]
     use super::{format_lang, preferred_language_value};
 
+    /// Zig's `LC_ALL` constant (`os/locale.zig`, "from locale.h"). It is
+    /// the value the Zig code passes on every platform, Windows included.
+    #[cfg(windows)]
+    const LC_ALL: i32 = 6;
+
+    #[cfg(windows)]
+    unsafe extern "C" {
+        fn setlocale(category: i32, locale: *const c_char) -> *mut c_char;
+        fn _putenv_s(name: *const c_char, value: *const c_char) -> i32;
+    }
+
+    #[cfg(windows)]
+    fn setlocale_all(locale: &str) -> Option<String> {
+        let c = CString::new(locale).ok()?;
+        // SAFETY: valid NUL-terminated string; the C runtime returns a
+        // pointer to a static string (or null) which we copy immediately.
+        unsafe {
+            let r = setlocale(LC_ALL, c.as_ptr());
+            (!r.is_null()).then(|| CStr::from_ptr(r).to_string_lossy().into_owned())
+        }
+    }
+
+    /// Zig's Windows `setenv`/`unsetenv`: `_putenv_s` (an empty value
+    /// removes the variable).
+    #[cfg(windows)]
+    fn putenv_s(key: &str, value: &str) {
+        let (Ok(k), Ok(v)) = (CString::new(key), CString::new(value)) else {
+            return;
+        };
+        // SAFETY: both pointers are valid NUL-terminated strings that the
+        // C runtime copies; called during early startup like the Zig code.
+        unsafe { _putenv_s(k.as_ptr(), v.as_ptr()) };
+    }
+
+    #[cfg(unix)]
     fn setlocale_all(locale: &str) -> Option<String> {
         let c = CString::new(locale).ok()?;
         // SAFETY: valid NUL-terminated string; setlocale returns a pointer to
@@ -72,12 +112,24 @@ mod posix {
         }
     }
 
+    #[cfg(windows)]
+    fn set_env(key: &str, value: &str) {
+        putenv_s(key, value);
+    }
+
+    #[cfg(windows)]
+    fn unset_env(key: &str) {
+        putenv_s(key, "");
+    }
+
+    #[cfg(unix)]
     fn set_env(key: &str, value: &str) {
         // SAFETY: called during early process startup (locale setup) before
         // other threads read the environment, mirroring the Zig code.
         unsafe { std::env::set_var(key, value) };
     }
 
+    #[cfg(unix)]
     fn unset_env(key: &str) {
         // SAFETY: see `set_env`.
         unsafe { std::env::remove_var(key) };
