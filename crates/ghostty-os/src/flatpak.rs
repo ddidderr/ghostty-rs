@@ -17,7 +17,23 @@ const INTERFACE: &str = "org.freedesktop.Flatpak.Development";
 
 /// Returns true if we're running in a Flatpak environment.
 pub fn is_flatpak() -> bool {
-    std::path::Path::new("/.flatpak-info").exists()
+    std::path::Path::new(
+        FLATPAK_INFO_OVERRIDE
+            .get()
+            .map_or(std::path::Path::new(FLATPAK_INFO), |p| p.as_path()),
+    )
+    .exists()
+}
+
+const FLATPAK_INFO: &str = "/.flatpak-info";
+
+static FLATPAK_INFO_OVERRIDE: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Injection seam for integration tests: make [`is_flatpak`] look at `path`
+/// instead of `/.flatpak-info`. Can be set once per process; returns false if
+/// it was already set. Not used by the application.
+pub fn set_flatpak_info_path(path: impl Into<std::path::PathBuf>) -> bool {
+    FLATPAK_INFO_OVERRIDE.set(path.into()).is_ok()
 }
 
 /// Errors that are possible from us.
@@ -76,8 +92,8 @@ impl Shared {
 /// pipes, /dev/null, etc.) but this was purpose built for a specific need so
 /// it doesn't have all of those.
 ///
-/// NOTE: this can't be exercised in the test environment (needs a Flatpak
-/// session bus with the Development interface); it is a best-effort port.
+/// The DBus path is exercised against a mock `org.freedesktop.Flatpak`
+/// service in `tests/flatpak_mock.rs` (run under `dbus-run-session`).
 pub struct FlatpakHostCommand {
     /// Argv are the arguments to call on the host with argv[0] being
     /// the command to execute.
