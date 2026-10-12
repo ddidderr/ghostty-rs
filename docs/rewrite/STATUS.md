@@ -31,9 +31,9 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | TI | terminal integration: kitty wiring + PageList requests, remove workarounds | codex astra | ✅ | 1252 tests |
 | CORE | core App/Surface, trait move, state unification, root main, run app | sonnet | ✅ | app runs; input untested at runtime |
 | V1 | headless e2e tests (input/mouse/clipboard/actions) + GTK input replay, fix bugs | sonnet | 🟨 | |
-| V2 | resources bundling (themes, terminfo), INTEGRATION_TODO cleanup | sonnet | 🟨 | |
+| V2 | resources bundling (themes, terminfo), INTEGRATION_TODO cleanup | sonnet | ✅ | termio/gtk parts commit with V1 |
 | RV1 | Codex read-only audit core Surface vs Zig | codex astra | ✅ | 9 findings (notes/review-core-codex.md) → handed to V1 |
-| P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | 🟨 | |
+| P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | ✅ | stream at Zig parity; screen-clone 2.6x |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -49,3 +49,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-11: GTK runtime committed; terminal integration pass done (1252 tests, 0 ignored).
 - 2026-10-11: IO2, R2 committed. CORE integration launched (Phase 6).
 - 2026-10-12: CORE committed — `cargo run` opens a working terminal (2890 tests). Phase 7 verification: V1, V2, RV1 launched.
+- 2026-10-12: P1 (perf parity on terminal-stream) and V2 cleanup committed.
