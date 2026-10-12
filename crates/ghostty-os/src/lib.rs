@@ -123,6 +123,7 @@ pub use unsupported::homedir::expand_home;
 pub use unsupported::{ResourcesDir, homedir, is_flatpak, passwd, resources_dir, xdg};
 #[cfg(not(target_arch = "wasm32"))]
 pub mod xdg;
+pub mod zig_error;
 
 #[cfg(test)]
 pub(crate) mod testutil;

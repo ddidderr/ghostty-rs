@@ -40,11 +40,14 @@ fn run() -> Result<(), String> {
         }
         "osc" => {
             let p_valid = args.take("p-valid", 0.5f64)?;
-            let style = match args.take_opt_string("style")?.as_deref() {
-                None | Some("streaming") => OscStyle::Streaming,
-                Some("parser") => OscStyle::Parser,
-                Some(s) => return Err(format!("invalid value for --style: {s}")),
-            };
+            let style = args.take_enum(
+                "style",
+                OscStyle::Streaming,
+                &[
+                    ("streaming", OscStyle::Streaming),
+                    ("parser", OscStyle::Parser),
+                ],
+            )?;
             args.finish()?;
             run_osc(&mut out, &mut rng, p_valid, style)
         }

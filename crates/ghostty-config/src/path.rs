@@ -164,7 +164,11 @@ impl Path {
             }
             Err(err) => {
                 diags.append(Diagnostic {
-                    message: format!("error resolving file path {}: {err}", path.as_encoded()),
+                    message: format!(
+                        "error resolving file path {}: {}",
+                        path.as_encoded(),
+                        ghostty_os::zig_error::io_error_name(&err)
+                    ),
                     ..Diagnostic::default()
                 });
 

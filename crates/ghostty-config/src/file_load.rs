@@ -170,15 +170,20 @@ pub fn open(path: &EncodedOs) -> Result<File, OpenFileError> {
             OpenFileError::FileNotFound
         } else {
             log::warn!(
-                "unexpected file open error path={} err={err}",
-                real.display()
+                "unexpected file open error path={} err={}",
+                real.display(),
+                ghostty_os::zig_error::io_error_name(&err)
             );
             OpenFileError::FileOpenFailed
         }
     })?;
 
     let meta = file.metadata().map_err(|err| {
-        log::warn!("error getting file stat path={} err={err}", real.display());
+        log::warn!(
+            "error getting file stat path={} err={}",
+            real.display(),
+            ghostty_os::zig_error::io_error_name(&err)
+        );
         OpenFileError::FileOpenFailed
     })?;
     if !meta.is_file() {

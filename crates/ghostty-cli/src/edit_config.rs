@@ -122,11 +122,7 @@ fn exec_editor(stderr: &mut dyn Write, path: &EncodedOs) -> Result<u8, Error> {
         .exec();
 
     // If we reached this point then exec failed.
-    let err = match err.kind() {
-        std::io::ErrorKind::NotFound => "error.FileNotFound".to_string(),
-        std::io::ErrorKind::PermissionDenied => "error.AccessDenied".to_string(),
-        _ => err.to_string(),
-    };
+    let err = ghostty_os::zig_error::io_error_name(&err);
     let msg = format!(
         "Failed to execute the editor. Error code={err}.\n\
          \n\

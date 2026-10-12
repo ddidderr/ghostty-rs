@@ -1396,11 +1396,9 @@ impl Preview {
 fn error_name(e: &ghostty_config::config::Error) -> String {
     use ghostty_config::config::Error;
     match e {
-        Error::Io(io) => match io.kind() {
-            std::io::ErrorKind::NotFound => "FileNotFound".to_string(),
-            std::io::ErrorKind::PermissionDenied => "AccessDenied".to_string(),
-            _ => io.to_string(),
-        },
+        Error::Io(io) => ghostty_os::zig_error::io_error_name(io)
+            .trim_start_matches("error.")
+            .to_owned(),
         e => e.to_string(),
     }
 }

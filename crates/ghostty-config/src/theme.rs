@@ -128,7 +128,13 @@ pub(crate) fn special_kind_name(_: std::fs::FileType) -> &'static str {
 fn check_regular(file: &File, theme: &str, diags: &mut DiagnosticList) -> bool {
     match file.metadata() {
         Err(err) => {
-            diag(diags, format!("not reading theme from \"{theme}\": {err}"));
+            diag(
+                diags,
+                format!(
+                    "not reading theme from \"{theme}\": {}",
+                    ghostty_os::zig_error::io_error_name(&err)
+                ),
+            );
             false
         }
         Ok(m) if !m.is_file() => {
@@ -197,7 +203,7 @@ pub fn open(
     let mut it = LocationIterator::new(resources_dir);
     while let Some((_, dir)) = it.next_location() {
         let path = EncodedOs::from_path(&dir.to_path().ok()?.join(&theme_path));
-        match path.to_path().and_then(File::open) {
+        match path.to_syscall_path().and_then(File::open) {
             Ok(file) => {
                 if !check_regular(&file, theme_text, diags) {
                     return None;
@@ -211,8 +217,9 @@ pub fn open(
                 diag(
                     diags,
                     format!(
-                        "failed to load theme \"{theme_text}\" from the file \"{}\": {err}",
-                        path.as_encoded()
+                        "failed to load theme \"{theme_text}\" from the file \"{}\": {}",
+                        path.as_encoded(),
+                        ghostty_os::zig_error::io_error_name(&err)
                     ),
                 );
                 return None;
@@ -241,7 +248,7 @@ pub fn open(
 /// then messages will be appended to the given error list and None is
 /// returned.
 pub fn open_absolute(theme: &EncodedOs, diags: &mut DiagnosticList) -> Option<File> {
-    let path = theme.to_path();
+    let path = theme.to_syscall_path();
     let theme = theme.as_encoded();
     match path.and_then(File::open) {
         Ok(f) => Some(f),
@@ -254,7 +261,10 @@ pub fn open_absolute(theme: &EncodedOs, diags: &mut DiagnosticList) -> Option<Fi
             } else {
                 diag(
                     diags,
-                    format!("failed to load theme from the path \"{theme}\": {err}"),
+                    format!(
+                        "failed to load theme from the path \"{theme}\": {}",
+                        ghostty_os::zig_error::io_error_name(&err)
+                    ),
                 );
             }
             None
@@ -280,6 +290,33 @@ mod tests {
                 .message
                 .contains("cannot include path separators")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn theme_path_errors_use_zig_names() {
+        let mut d = DiagnosticList::default();
+        assert!(open(&e("/etc/passwd/x"), None, &mut d).is_none());
+        assert_eq!(
+            d.items()[0].message,
+            "failed to load theme from the path \"/etc/passwd/x\": error.NotDir"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn theme_absolute_interior_nul_opens_prefix() {
+        let dir = std::env::temp_dir().join(format!("gtheme-nul-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("t");
+        std::fs::write(&f, "background = #112233\n").unwrap();
+        let mut bytes = f.as_os_str().as_encoded_bytes().to_vec();
+        bytes.extend_from_slice(b"\0tail");
+        let t = EncodedOs::from_bytes(&bytes);
+        let mut d = DiagnosticList::default();
+        assert!(open(&t, None, &mut d).is_some());
+        assert_eq!(d.items().len(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

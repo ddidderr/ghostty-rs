@@ -104,11 +104,7 @@ impl TerminalStream {
         let rows = args.take("terminal-rows", 80u16)?;
         let cols = args.take("terminal-cols", 120u16)?;
         let data = args.take_opt_path("data")?;
-        let full = match args.take_opt_string("handler")?.as_deref() {
-            None | Some("print") => false,
-            Some("full") => true,
-            Some(m) => return Err(format!("invalid value for --handler: {m}")),
-        };
+        let full = args.take_enum("handler", false, &[("print", false), ("full", true)])?;
         let t = Terminal::new(TermOptions::new(cols, rows)).map_err(|e| format!("{e:?}"))?;
         Ok(TerminalStream {
             data: Data::new(data),
@@ -259,13 +255,16 @@ pub struct CodepointWidth {
 
 impl CodepointWidth {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
-        let mode = match args.take_opt_string("mode")?.as_deref() {
-            None | Some("noop") => WidthMode::Noop,
-            Some("wcwidth") => WidthMode::Wcwidth,
-            Some("simd") => WidthMode::Simd,
-            Some("table") => WidthMode::Table,
-            Some(m) => return Err(format!("invalid value for --mode: {m}")),
-        };
+        let mode = args.take_enum(
+            "mode",
+            WidthMode::Noop,
+            &[
+                ("noop", WidthMode::Noop),
+                ("wcwidth", WidthMode::Wcwidth),
+                ("simd", WidthMode::Simd),
+                ("table", WidthMode::Table),
+            ],
+        )?;
         Ok(CodepointWidth {
             data: Data::new(args.take_opt_path("data")?),
             mode,
@@ -384,11 +383,7 @@ pub struct GraphemeBreak {
 
 impl GraphemeBreak {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
-        let noop = match args.take_opt_string("mode")?.as_deref() {
-            None | Some("table") => false,
-            Some("noop") => true,
-            Some(m) => return Err(format!("invalid value for --mode: {m}")),
-        };
+        let noop = args.take_enum("mode", false, &[("noop", true), ("table", false)])?;
         Ok(GraphemeBreak {
             data: Data::new(args.take_opt_path("data")?),
             noop,
@@ -473,11 +468,11 @@ pub fn is_symbol_computed(cp: u32) -> bool {
 
 impl IsSymbol {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
-        let mode = match args.take_opt_string("mode")?.as_deref() {
-            None | Some("uucode") => SymbolMode::Uucode,
-            Some("table") => SymbolMode::Table,
-            Some(m) => return Err(format!("invalid value for --mode: {m}")),
-        };
+        let mode = args.take_enum(
+            "mode",
+            SymbolMode::Uucode,
+            &[("uucode", SymbolMode::Uucode), ("table", SymbolMode::Table)],
+        )?;
         Ok(IsSymbol {
             data: Data::new(args.take_opt_path("data")?),
             mode,
@@ -536,12 +531,15 @@ pub struct ScreenClone {
 
 impl ScreenClone {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
-        let mode = match args.take_opt_string("mode")?.as_deref() {
-            None | Some("clone") => CloneMode::Clone,
-            Some("noop") => CloneMode::Noop,
-            Some("render") => CloneMode::Render,
-            Some(m) => return Err(format!("invalid value for --mode: {m}")),
-        };
+        let mode = args.take_enum(
+            "mode",
+            CloneMode::Clone,
+            &[
+                ("clone", CloneMode::Clone),
+                ("noop", CloneMode::Noop),
+                ("render", CloneMode::Render),
+            ],
+        )?;
         let rows = args.take("terminal-rows", 80u16)?;
         let cols = args.take("terminal-cols", 120u16)?;
         let data = args.take_opt_path("data")?;
@@ -716,6 +714,20 @@ mod tests {
         let mut args = Args::parse(["--mode=bogus".to_owned()]).unwrap();
         assert!(CodepointWidth::create(&mut args).is_err());
         let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn duplicate_bad_enum_modes_fail() {
+        let mk = |v: &[&str]| Args::parse(v.iter().map(|s| (*s).to_owned())).unwrap();
+        for v in [
+            &["--mode=bad", "--mode=noop"][..],
+            &["--mode=bad", "--mode="][..],
+        ] {
+            assert!(CodepointWidth::create(&mut mk(v)).is_err());
+            assert!(GraphemeBreak::create(&mut mk(v)).is_err());
+            assert!(IsSymbol::create(&mut mk(v)).is_err());
+            assert!(ScreenClone::create(&mut mk(v)).is_err());
+        }
     }
 
     #[test]

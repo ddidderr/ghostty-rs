@@ -122,6 +122,27 @@ impl Args {
         })
     }
 
+    /// Take an enum value (`parseIntoField` on an enum): every occurrence is
+    /// validated against `variants` in order (a bad value is an error even if
+    /// a later one is fine); an empty value resets to `default`.
+    pub fn take_enum<T: Copy>(
+        &mut self,
+        key: &str,
+        default: T,
+        variants: &[(&str, T)],
+    ) -> Result<T, String> {
+        self.apply(key, default, |v| {
+            let v = v.ok_or_else(|| format!("option --{key} requires a value"))?;
+            let bad = || format!("invalid value for --{key}: {}", v.to_string_lossy());
+            let v = v.to_str().ok_or_else(bad)?;
+            variants
+                .iter()
+                .find(|(n, _)| *n == v)
+                .map(|(_, t)| *t)
+                .ok_or_else(bad)
+        })
+    }
+
     /// Take a file path value (any bytes are allowed).
     pub fn take_opt_path(&mut self, key: &str) -> Result<Option<PathBuf>, String> {
         self.apply(key, None, |v| {
@@ -195,6 +216,21 @@ mod tests {
         assert_eq!(a.take("n", 0u16).unwrap(), 5);
         let mut a = Args::parse([OsString::from("--n=-1")]).unwrap();
         assert!(a.take("n", 0u16).is_err());
+    }
+
+    #[test]
+    fn take_enum_validates_every_occurrence() {
+        let t = |v: &[&str]| {
+            Args::parse(v.iter().map(OsString::from))
+                .unwrap()
+                .take_enum("mode", 0u8, &[("noop", 0), ("table", 1)])
+        };
+        assert!(t(&["--mode=bad", "--mode=noop"]).is_err());
+        assert!(t(&["--mode=noop", "--mode=bad"]).is_err());
+        assert!(t(&["--mode=bad", "--mode="]).is_err());
+        assert_eq!(t(&["--mode=table", "--mode="]).unwrap(), 0);
+        assert_eq!(t(&["--mode=noop", "--mode=table"]).unwrap(), 1);
+        assert_eq!(t(&[]).unwrap(), 0);
     }
 
     #[test]

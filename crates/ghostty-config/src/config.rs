@@ -3752,7 +3752,7 @@ crate::config_struct! {
 /// Errors from loading configuration.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("{0}")]
+    #[error("{}", ghostty_os::zig_error::io_error_name(.0))]
     Io(#[from] std::io::Error),
     #[error("{0}")]
     Arg(#[from] ArgError),
@@ -4273,7 +4273,7 @@ impl Config {
                             message: format!(
                                 "error opening config-file {}: {}",
                                 path.as_encoded(),
-                                zig_io_error_name(&err)
+                                ghostty_os::zig_error::io_error_name(&err)
                             ),
                             ..Diagnostic::default()
                         };
@@ -4803,40 +4803,6 @@ impl Iterator for ChangeIterator<'_> {
             }
         }
         None
-    }
-}
-
-/// Name of an IO error like Zig's `{}` formatting of an error value
-/// (`error.FileNotFound`), used in user-visible diagnostics.
-fn zig_io_error_name(err: &std::io::Error) -> String {
-    use std::io::ErrorKind;
-    #[cfg(unix)]
-    if let Some(errno) = err.raw_os_error() {
-        let name = match errno {
-            2 => Some("FileNotFound"),
-            13 => Some("AccessDenied"),
-            1 => Some("PermissionDenied"),
-            21 => Some("IsDir"),
-            20 => Some("NotDir"),
-            40 => Some("SymLinkLoop"),
-            36 => Some("NameTooLong"),
-            24 => Some("ProcessFdQuotaExceeded"),
-            23 => Some("SystemFdQuotaExceeded"),
-            12 => Some("SystemResources"),
-            19 => Some("NoDevice"),
-            16 => Some("DeviceBusy"),
-            26 => Some("FileBusy"),
-            30 => Some("ReadOnlyFileSystem"),
-            _ => None,
-        };
-        if let Some(name) = name {
-            return format!("error.{name}");
-        }
-    }
-    match err.kind() {
-        ErrorKind::NotFound => "error.FileNotFound".to_string(),
-        ErrorKind::PermissionDenied => "error.AccessDenied".to_string(),
-        _ => "error.Unexpected".to_string(),
     }
 }
 
