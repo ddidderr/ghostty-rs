@@ -8,6 +8,8 @@
 //!
 //! Skipped (passes) when there is no display or `GHOSTTY_SKIP_GTK_REPLAY` is
 //! set. The tests share the session clipboard, so they run one at a time.
+//! Child processes explicitly enable debug logs on stderr: replay assertions
+//! and layer-shell detection must not depend on the user's logging settings.
 
 use std::{
     path::{Path, PathBuf},
@@ -72,6 +74,9 @@ fn run(script: &str, extra: &[&str], child: &str) -> Run {
         .args(extra)
         .args(["-e", "sh", "-c", child])
         .env("GHOSTTY_DEBUG_INPUT_SCRIPT", &script_path)
+        // Replay output is warn-level; Wayland capability detection is debug-level.
+        .env("RUST_LOG", "debug")
+        .env("GHOSTTY_LOG", "stderr")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())

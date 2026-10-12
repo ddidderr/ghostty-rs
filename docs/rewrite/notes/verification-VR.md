@@ -65,7 +65,9 @@ grep NEEDED` has no `libwayland-client`. Regression: `quick_terminal_layer_surfa
 - `tests/gtk_replay.rs` (root package, runs the real binary on the current Wayland/X11 session; skips without a
   display or with `GHOSTTY_SKIP_GTK_REPLAY`): IME flow, paste deny/confirm, OSC 52 write/read ask (+remember),
   quick terminal layer surface/toggle/autohide/no-autohide, horizontal scroll tab switching. ~45 s total, serialized
-  (they share the session clipboard).
+  (they share the session clipboard). The harness sets `RUST_LOG=debug` and
+  `GHOSTTY_LOG=stderr` for the app so replay assertions and Wayland layer-shell
+  detection work independently of the default log level and inherited logging settings.
 - Parser unit tests for the new steps in `debug_input.rs`.
 
 ## Notes
