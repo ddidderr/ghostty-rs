@@ -7,6 +7,7 @@ use std::fmt;
 use ghostty_vt::color::{DEFAULT as DEFAULT_PALETTE, Palette as TermPalette, PaletteMask, Rgb};
 
 use crate::{
+    c_value::CValue,
     cli_args::{ArgError, ConfigField, parse_int_base0, trim_ws},
     clipboard_codepoint_map::{ClipboardCodepointMap, Entry as ClipboardEntry, Replacement},
     config_enum,
@@ -34,6 +35,15 @@ pub use ghostty_terminal::cursor::Style as CursorStyle;
 impl ConfigField for CursorStyle {
     const VALID_VALUES: Option<&'static [&'static str]> =
         Some(&["bar", "block", "underline", "block_hollow"]);
+
+    fn c_value(&self) -> CValue {
+        CValue::EnumName(match self {
+            CursorStyle::Bar => "bar",
+            CursorStyle::Block => "block",
+            CursorStyle::Underline => "underline",
+            CursorStyle::BlockHollow => "block_hollow",
+        })
+    }
 
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         let v = value.ok_or(ArgError::ValueRequired)?;
@@ -290,6 +300,14 @@ impl Color {
 }
 
 impl ConfigField for Color {
+    fn c_value(&self) -> CValue {
+        CValue::Color {
+            r: self.r,
+            g: self.g,
+            b: self.b,
+        }
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         *self = Color::from_cli(input)?;
         Ok(())
@@ -394,6 +412,10 @@ pub struct ColorList {
 }
 
 impl ConfigField for ColorList {
+    fn c_value(&self) -> CValue {
+        CValue::ColorList(self.colors.iter().map(|c| [c.r, c.g, c.b]).collect())
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         if input.is_empty() {
@@ -454,6 +476,14 @@ impl Default for Palette {
 }
 
 impl ConfigField for Palette {
+    fn c_value(&self) -> CValue {
+        let mut out = Box::new([[0u8; 3]; 256]);
+        for (dst, c) in out.iter_mut().zip(self.value.iter()) {
+            *dst = [c.r, c.g, c.b];
+        }
+        CValue::Palette(out)
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
         let eql_idx = value.find('=').ok_or(ArgError::InvalidValue)?;

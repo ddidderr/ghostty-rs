@@ -1,6 +1,9 @@
 //! Keyboard input end to end: key events -> core Surface -> encoder -> pty ->
 //! a real `cat` child that records the exact bytes it received.
 
+// These drive the real surface over a headless OpenGL context; the Apple targets render
+// with Metal.
+#![cfg(not(target_vendor = "apple"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

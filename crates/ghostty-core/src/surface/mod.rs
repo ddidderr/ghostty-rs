@@ -89,14 +89,13 @@ use ghostty_font::{
 };
 use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
 use ghostty_renderer::{
+    Api as GraphicsApi,
     Health,
-    // The generic renderer over the OpenGL API (the GTK runtime's graphics
-    // API). `ghostty_renderer::Renderer` is the platform default, which is
-    // Metal on Apple targets; the embedded (macOS) runtime provides its own
-    // Metal-based surface setup (TODO(integration): L1).
-    generic::{Host as RendererHost, Renderer},
+    // The renderer over the graphics API selected for the target (Zig:
+    // `renderer.zig`): Metal on Apple targets, OpenGL elsewhere.
+    Renderer,
+    generic::Host as RendererHost,
     message::{FontGridChange, Message as RendererMessage},
-    opengl::OpenGL,
     options::Options as RendererOptions,
     size::{CellSize, Coordinate, Padding, ScreenSize, Size},
     state::{Preedit, PreeditCodepoint, State as RenderStateData},
@@ -195,6 +194,31 @@ impl RendererHost for HostImpl {
             .push(AppMessage::RedrawSurface(self.id), Timeout::Instant)
             > 0
     }
+}
+
+/// Create the graphics API for a new surface (Zig: `Renderer.surfaceInit`).
+#[cfg(not(target_vendor = "apple"))]
+fn init_graphics_api(
+    config: &Config,
+    rt_surface: &dyn RtSurface,
+) -> Result<GraphicsApi, CoreError> {
+    let mut api = GraphicsApi::init(config.alpha_blending);
+    api.prepare_context(|name| rt_surface.gl_proc_address(name))
+        .map_err(|e| format!("failed to prepare the OpenGL context: {e}"))?;
+    Ok(api)
+}
+
+/// Create the graphics API for a new surface (Zig: `Renderer.surfaceInit`):
+/// the Metal layer is attached to the NSView/UIView the host provided.
+#[cfg(target_vendor = "apple")]
+fn init_graphics_api(
+    config: &Config,
+    rt_surface: &dyn RtSurface,
+) -> Result<GraphicsApi, CoreError> {
+    let view = rt_surface.platform_view();
+    let scale = f64::from(rt_surface.get_content_scale().x);
+    GraphicsApi::init_with_view(config.alpha_blending, view, scale)
+        .map_err(|e| format!("failed to initialize the Metal renderer: {e}").into())
 }
 
 /// Font state of the surface.
@@ -333,13 +357,8 @@ impl Surface {
 
         // Initialize our renderer with our initialized surface (Zig:
         // `Renderer.surfaceInit`): load the GL functions for the current
-        // context.
-        let mut api = OpenGL::init(config.alpha_blending);
-        {
-            let rt = Rc::clone(&rt_surface);
-            api.prepare_context(|name| rt.gl_proc_address(name))
-                .map_err(|e| format!("failed to prepare the OpenGL context: {e}"))?;
-        }
+        // context (OpenGL) or attach the Metal layer to the host's view.
+        let api = init_graphics_api(&config, rt_surface.as_ref())?;
 
         // Determine our DPI configurations so we can properly configure
         // font points to pixels and handle other high-DPI scaling factors.
@@ -706,6 +725,34 @@ impl Surface {
     /// Push a message to the renderer thread (blocking if full) and wake it.
     pub(crate) fn send_renderer(&self, msg: RendererMessage) {
         self.renderer_handle.send(msg);
+    }
+
+    /// Tell the renderer which display the surface is on (the embedded
+    /// `ghostty_surface_set_display_id`).
+    #[cfg(target_vendor = "apple")]
+    pub fn set_macos_display_id(&self, id: u32) {
+        self.send_renderer(RendererMessage::MacosDisplayId(id));
+    }
+
+    /// A retained `CTFontRef` for the primary font, for macOS quicklook
+    /// (the embedded `ghostty_surface_quicklook_font`). `scale` is the
+    /// content scale. The caller owns the reference.
+    #[cfg(target_vendor = "apple")]
+    #[must_use]
+    pub fn quicklook_font(&self, scale: f32) -> Option<*mut std::ffi::c_void> {
+        let grid = self.renderer.font_grid();
+        let mut state = grid.write();
+        let face = state
+            .resolver
+            .collection
+            .get_face(ghostty_font::collection::Index::default())
+            .ok()?;
+        let font = face.quicklook_font(f64::from(scale));
+        Some(
+            objc2_core_foundation::CFRetained::into_raw(font)
+                .as_ptr()
+                .cast(),
+        )
     }
 
     /// Current sizes.
@@ -1810,6 +1857,14 @@ impl Surface {
 
     /// Write the last presented frame as a PNG. Requires the GL context to be
     /// current.
+    #[cfg(target_vendor = "apple")]
+    pub fn write_screenshot_png(&self, _path: &std::path::Path) -> Result<(), CoreError> {
+        Err("screenshots are not supported by the Metal renderer".into())
+    }
+
+    /// Write the last presented frame as a PNG. Requires the GL context to be
+    /// current.
+    #[cfg(not(target_vendor = "apple"))]
     pub fn write_screenshot_png(&self, path: &std::path::Path) -> Result<(), CoreError> {
         let Some((w, h, px)) = self.renderer.last_frame_pixels() else {
             return Err("no frame has been presented yet".into());
@@ -1832,15 +1887,24 @@ impl Surface {
     /// The pixels of the last presented frame (`width`, `height`, RGBA8,
     /// bottom-up). Test/debug hook for headless integration tests; requires
     /// the GL context to be current on the calling thread.
+    #[cfg(not(target_vendor = "apple"))]
     pub fn frame_pixels(&self) -> Option<(usize, usize, Vec<u8>)> {
         self.renderer.last_frame_pixels()
     }
 
     /// The GLArea was (re)realized; the GL context is current.
+    #[cfg(not(target_vendor = "apple"))]
     pub fn renderer_realized(&self) -> Result<(), CoreError> {
         let rt = Rc::clone(&self.rt_surface);
         self.renderer
             .display_realized(|name| rt.gl_proc_address(name))?;
+        Ok(())
+    }
+
+    /// The display was (re)realized (Metal has nothing to reload).
+    #[cfg(target_vendor = "apple")]
+    pub fn renderer_realized(&self) -> Result<(), CoreError> {
+        self.renderer.display_realized_with(|_| {})?;
         Ok(())
     }
 

@@ -2,6 +2,9 @@
 //! recording (with the pty encoding and triggered bindings) and VT event
 //! recording while data is read from the pty.
 
+// These drive the real surface over a headless OpenGL context; the Apple targets render
+// with Metal.
+#![cfg(not(target_vendor = "apple"))]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::assert_is_empty)]
 
 mod common;

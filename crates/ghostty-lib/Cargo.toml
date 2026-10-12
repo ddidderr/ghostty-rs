@@ -1,0 +1,85 @@
+[package]
+name = "ghostty-lib"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "libghostty: the embedded C API (include/ghostty.h) used by the macOS/iOS app, ported from apprt/embedded.zig and main_c.zig"
+
+# Produces `libghostty.{so,a,dylib}`, the names the upstream build ships.
+[lib]
+name = "ghostty"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[features]
+# Test seam (off by default): accepts a fake platform for `ghostty_surface_new`
+# on non-Apple targets whose OpenGL functions are supplied by the test (via a
+# headless EGL context), so the embedded surface flow can be tested on Linux.
+# Zig rejects every platform off Darwin; production builds are unaffected.
+test-platform = []
+
+[dependencies]
+ghostty-apprt.workspace = true
+ghostty-bench.workspace = true
+ghostty-cli.workspace = true
+ghostty-config.workspace = true
+ghostty-core.workspace = true
+ghostty-input.workspace = true
+ghostty-inspector.workspace = true
+ghostty-os.workspace = true
+ghostty-renderer.workspace = true
+ghostty-terminal.workspace = true
+ghostty-vt.workspace = true
+log = "0.4.34"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2 = "0.6.5"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["block2"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# The workspace forbids `unsafe`; this crate is the C ABI boundary, so it
+# denies it instead and allows it (with SAFETY comments) in the FFI modules.
+# Everything else is copied from `[workspace.lints]`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"
+# The exported functions are `unsafe extern "C"` mirroring the header contracts.
+missing_safety_doc = "allow"
+# `&mut x` coerced to `*mut T` is the idiomatic way to pass out-params in FFI tests.
+borrow_as_ptr = "allow"
+# Allocations are made with the layout of the pointee, so the cast is aligned.
+cast_ptr_alignment = "allow"
+
+[[test]]
+name = "surface"
+required-features = ["test-platform"]

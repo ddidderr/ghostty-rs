@@ -697,6 +697,20 @@ impl Face {
         Ok(util::font_table_bytes(&self.font, tag))
     }
 
+    /// A copy of this face's font at `size / scale` points: the font to use
+    /// for macOS quicklook (`ghostty_surface_quicklook_font`). The content
+    /// scale is applied to our font stack because we render at 1x, but the
+    /// callers of the quicklook font apply the scale themselves.
+    pub fn quicklook_font(&self, scale: f64) -> CFRetained<CTFont> {
+        // SAFETY: plain CoreText getter; null matrix and no descriptor are
+        // allowed for the copy.
+        unsafe {
+            let size = self.font.size();
+            self.font
+                .copy_with_attributes(size / scale, ptr::null(), None)
+        }
+    }
+
     /// The underlying CTFont (for shapers).
     pub(crate) fn ct_font(&self) -> &CTFont {
         &self.font

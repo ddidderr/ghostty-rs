@@ -30,3 +30,4 @@ workspace = true
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 oslog = { version = "0.2.0", default-features = false }
+objc2-core-foundation = "0.3.2"

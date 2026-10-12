@@ -1,6 +1,9 @@
 //! Terminal <-> runtime events: resize, focus, title, pwd, bell, OSC 52,
 //! notifications, progress, child exit.
 
+// These drive the real surface over a headless OpenGL context; the Apple targets render
+// with Metal.
+#![cfg(not(target_vendor = "apple"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

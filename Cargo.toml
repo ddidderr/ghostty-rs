@@ -50,6 +50,7 @@ ghostty-vt = { path = "crates/ghostty-vt" }
 ghostty-unicode = { path = "crates/ghostty-unicode" }
 ghostty-terminal = { path = "crates/ghostty-terminal" }
 ghostty-input = { path = "crates/ghostty-input" }
+ghostty-helpgen = { path = "crates/ghostty-helpgen" }
 ghostty-config = { path = "crates/ghostty-config" }
 ghostty-font = { path = "crates/ghostty-font" }
 ghostty-renderer = { path = "crates/ghostty-renderer" }
@@ -66,6 +67,7 @@ ghostty-bench = { path = "crates/ghostty-bench" }
 ghostty-inspector = { path = "crates/ghostty-inspector" }
 ghostty-vt-capi = { path = "crates/ghostty-vt-capi" }
 ghostty-wasm = { path = "crates/ghostty-wasm" }
+ghostty-lib = { path = "crates/ghostty-lib" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

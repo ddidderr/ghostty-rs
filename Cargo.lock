@@ -1345,6 +1345,7 @@ dependencies = [
  "ghostty-config",
  "ghostty-crash",
  "ghostty-font",
+ "ghostty-helpgen",
  "ghostty-input",
  "ghostty-os",
  "ghostty-vt",
@@ -1390,6 +1391,7 @@ dependencies = [
  "ghostty-unicode",
  "ghostty-vt",
  "log",
+ "objc2-core-foundation",
  "onig",
  "oslog",
  "png",
@@ -1442,9 +1444,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostty-helpgen"
+version = "0.1.0"
+
+[[package]]
 name = "ghostty-input"
 version = "0.1.0"
 dependencies = [
+ "ghostty-helpgen",
  "ghostty-unicode",
  "ghostty-vt",
  "indexmap",
@@ -1464,6 +1471,31 @@ dependencies = [
  "ghostty-terminal",
  "ghostty-vt",
  "log",
+]
+
+[[package]]
+name = "ghostty-lib"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "dispatch2",
+ "ghostty-apprt",
+ "ghostty-bench",
+ "ghostty-cli",
+ "ghostty-config",
+ "ghostty-core",
+ "ghostty-input",
+ "ghostty-inspector",
+ "ghostty-os",
+ "ghostty-renderer",
+ "ghostty-terminal",
+ "ghostty-vt",
+ "log",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-metal",
+ "tempfile",
 ]
 
 [[package]]

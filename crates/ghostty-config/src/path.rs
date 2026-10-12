@@ -6,6 +6,7 @@ use std::{
 };
 
 use crate::{
+    c_value::CValue,
     cli_args::{ArgError, ConfigField},
     diagnostics::{Diagnostic, DiagnosticList},
     formatter::EntryFormatter,
@@ -171,6 +172,19 @@ impl Path {
 }
 
 impl ConfigField for Path {
+    fn c_value(&self) -> CValue {
+        match self {
+            Path::Optional(p) => CValue::Path {
+                path: p.clone(),
+                optional: true,
+            },
+            Path::Required(p) => CValue::Path {
+                path: p.clone(),
+                optional: false,
+            },
+        }
+    }
+
     /// Parse CLI option. The value will be overwritten.
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let Some(item) = Path::parse(input)? else {

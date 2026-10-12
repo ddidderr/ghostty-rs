@@ -95,9 +95,9 @@ Unix-specific existing tests are `cfg(unix)`-gated.
 * `Command::wait(block)` ignores `block` (blocks, like Zig). The thread
   handle from `CreateProcessW` is closed (Zig leaks it).
 * Fontconfig discovery is kept on Windows (needs a real fontconfig to link).
-* Not touched: `cli/ssh-cache/DiskCache` file locking, `cli/boo|list_colors|
-  list_keybinds|edit_config` Windows branches (ghostty-cli), `benchmark/
-  CodepointWidth`, `config/Config.zig` `probableCliEnvironment` env-based
+* (Update GC: `cli/ssh-cache/DiskCache` locking, the `cli/boo|list_colors|
+  list_keybinds|edit_config` Windows branches and `benchmark/CodepointWidth` are
+  now done, see compat-GC*.md.) Not touched: `config/Config.zig` `probableCliEnvironment` env-based
   extras. ghostty-core/apprt-gtk are not Windows-checkable (GTK).
 * Unrelated breakage seen while verifying (other agents): `ghostty-config`
   `config.rs` uses `ghostty_os::launched_from_desktop` under `cfg!(macos)`

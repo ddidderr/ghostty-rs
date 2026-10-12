@@ -3810,6 +3810,16 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The value of the config key in the form the C API exposes it (Zig:
+    /// `c_get.get`). `None` if there is no such key.
+    #[must_use]
+    pub fn c_value(&self, key: &str) -> Option<crate::c_value::CValue> {
+        <Config as crate::macros::ConfigStruct>::FIELDS
+            .iter()
+            .find(|f| f.name == key)
+            .map(|f| (f.c_value)(self))
+    }
+
     /// Build the default configuration (Zig: `Config.default`).
     #[must_use]
     pub fn new_default() -> Config {
@@ -5411,5 +5421,86 @@ mod tests {
         assert!(out.contains("# The font families to use."));
         assert!(out.contains("\nfont-size = 12\n"));
         assert!(out.contains("\nbackground = #282c34\n"));
+    }
+
+    /// The keys `ghostty_config_get` supports, derived from the Zig field
+    /// types and `c_get.getValue` (see `testdata/c_get_supported.txt`).
+    #[test]
+    fn c_value_supported_keys_match_zig() {
+        use crate::{c_value::CValue, macros::ConfigStruct};
+        let expected: std::collections::BTreeSet<&str> =
+            include_str!("testdata/c_get_supported.txt")
+                .lines()
+                .filter(|l| !l.is_empty())
+                .collect();
+        let cfg = Config::default();
+        let mut actual = std::collections::BTreeSet::new();
+        for f in <Config as ConfigStruct>::FIELDS {
+            if !matches!((f.c_value)(&cfg), CValue::Unsupported) {
+                actual.insert(f.name);
+            }
+        }
+        let missing: Vec<_> = expected.difference(&actual).collect();
+        let extra: Vec<_> = actual.difference(&expected).collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "missing={missing:?} extra={extra:?}"
+        );
+    }
+
+    #[test]
+    fn c_value_basic_types() {
+        use crate::c_value::CValue;
+        let mut cfg = Config::default();
+        cfg.maximize = true;
+        assert_eq!(cfg.c_value("maximize"), Some(CValue::Bool(true)));
+        cfg.window_theme = WindowTheme::Dark;
+        assert_eq!(cfg.c_value("window-theme"), Some(CValue::EnumName("dark")));
+        cfg.title = None;
+        assert_eq!(cfg.c_value("title"), Some(CValue::NullString));
+        cfg.unfocused_split_fill = None;
+        assert_eq!(cfg.c_value("unfocused-split-fill"), Some(CValue::Null));
+        cfg.background_opacity = 0.42;
+        assert_eq!(cfg.c_value("background-opacity"), Some(CValue::F64(0.42)));
+        cfg.background = crate::types_a::Color {
+            r: 12,
+            g: 34,
+            b: 56,
+        };
+        assert_eq!(
+            cfg.c_value("background"),
+            Some(CValue::Color {
+                r: 12,
+                g: 34,
+                b: 56
+            })
+        );
+        assert_eq!(cfg.c_value("not-a-real-key"), None);
+        assert_eq!(cfg.c_value("font-family"), Some(CValue::Unsupported));
+    }
+
+    #[test]
+    fn c_value_background_blur() {
+        use crate::{c_value::CValue, types_b::BackgroundBlur};
+        let mut cfg = Config::default();
+        for (v, expect) in [
+            (BackgroundBlur::False, 0),
+            (BackgroundBlur::True, 20),
+            (BackgroundBlur::Radius(42), 42),
+            (BackgroundBlur::MacosGlassRegular, -1),
+            (BackgroundBlur::MacosGlassClear, -2),
+        ] {
+            cfg.background_blur = v;
+            assert_eq!(cfg.c_value("background-blur"), Some(CValue::Short(expect)));
+        }
+    }
+
+    #[test]
+    fn c_value_split_preserve_zoom() {
+        use crate::c_value::CValue;
+        let mut cfg = Config::default();
+        assert_eq!(cfg.c_value("split-preserve-zoom"), Some(CValue::Packed(0)));
+        cfg.split_preserve_zoom.navigation = true;
+        assert_eq!(cfg.c_value("split-preserve-zoom"), Some(CValue::Packed(1)));
     }
 }

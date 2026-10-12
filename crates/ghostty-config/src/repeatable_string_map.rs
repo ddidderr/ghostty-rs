@@ -46,6 +46,14 @@ impl RepeatableStringMap {
             .map(|(_, v)| v.as_str())
     }
 
+    /// Insert or replace an entry (Zig: `map.put`).
+    pub fn put(&mut self, key: &str, value: &str) {
+        match self.map.iter_mut().find(|(k, _)| k == key) {
+            Some((_, v)) => value.clone_into(v),
+            None => self.map.push((key.to_owned(), value.to_owned())),
+        }
+    }
+
     /// Iterator over the entries in the map (insertion order).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
         self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))

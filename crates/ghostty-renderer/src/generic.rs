@@ -1520,6 +1520,12 @@ impl<G: GraphicsApi> Renderer<G> {
             .is_some_and(DisplayLink::is_running)
     }
 
+    /// The font grid currently used for rendering (for apprts that need
+    /// to read the primary face, e.g. macOS quicklook).
+    pub fn font_grid(&self) -> Arc<SharedGrid> {
+        Arc::clone(&lock(&self.draw).font_grid)
+    }
+
     /// Called by the renderer thread when it begins (`threadEnter`).
     pub fn thread_enter(&self) {
         lock(&self.draw).api.thread_enter();

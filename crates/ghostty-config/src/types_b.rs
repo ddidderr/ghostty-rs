@@ -8,6 +8,7 @@ use std::fmt;
 use ghostty_input::binding::Action;
 
 use crate::{
+    c_value::{CValue, QuickTerminalSizeC},
     cli_args::{ArgError, ConfigField, parse_auto_struct_with, parse_bool, trim_ws},
     config_enum,
     config_packed,
@@ -152,6 +153,15 @@ impl RepeatableCommand {
 }
 
 impl ConfigField for RepeatableCommand {
+    fn c_value(&self) -> CValue {
+        CValue::Commands(
+            self.value
+                .iter()
+                .map(ghostty_input::command::Command::cval)
+                .collect(),
+        )
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         // Unset or empty input clears the list
         let input = input.unwrap_or("");
@@ -604,6 +614,18 @@ impl QuickTerminalSize {
 }
 
 impl ConfigField for QuickTerminalSize {
+    fn c_value(&self) -> CValue {
+        let conv = |v: Option<QuickTerminalSizeValue>| match v {
+            None => QuickTerminalSizeC::None,
+            Some(QuickTerminalSizeValue::Percentage(p)) => QuickTerminalSizeC::Percentage(p),
+            Some(QuickTerminalSizeValue::Pixels(p)) => QuickTerminalSizeC::Pixels(p),
+        };
+        CValue::QuickTerminalSize {
+            primary: conv(self.primary),
+            secondary: conv(self.secondary),
+        }
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         let mut it = input.split(',');
@@ -786,6 +808,17 @@ impl BackgroundBlur {
 }
 
 impl ConfigField for BackgroundBlur {
+    fn c_value(&self) -> CValue {
+        // Sentinel values for the macOS glass styles, like Zig's `cval`.
+        CValue::Short(match self {
+            BackgroundBlur::False => 0,
+            BackgroundBlur::True => 20,
+            BackgroundBlur::Radius(v) => i16::from(*v),
+            BackgroundBlur::MacosGlassRegular => -1,
+            BackgroundBlur::MacosGlassClear => -2,
+        })
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         let Some(input) = input else {
             // Emulate behavior for bools
@@ -881,6 +914,10 @@ impl WindowDecoration {
 
 impl ConfigField for WindowDecoration {
     const VALID_VALUES: Option<&'static [&'static str]> = Some(Self::NAMES);
+
+    fn c_value(&self) -> CValue {
+        CValue::EnumName(self.as_str())
+    }
 
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         *self = Self::parse(input)?;
@@ -1127,6 +1164,10 @@ impl fmt::Display for Duration {
 }
 
 impl ConfigField for Duration {
+    fn c_value(&self) -> CValue {
+        CValue::Usize(self.as_milliseconds() as usize)
+    }
+
     fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
         *self = Duration::parse(input)?;
         Ok(())
@@ -1265,6 +1306,47 @@ mod tests {
 
         list.parse_cli(Some("")).unwrap();
         assert_eq!(list.value.len(), 0);
+    }
+
+    #[test]
+    fn repeatable_command_cval() {
+        let mut list = RepeatableCommand::default();
+        list.parse_cli(Some("title:Foo,action:ignore")).unwrap();
+        list.parse_cli(Some("title:Bar,description:bobr,action:text:ale bydle"))
+            .unwrap();
+        assert_eq!(list.value.len(), 2);
+
+        let CValue::Commands(cv) = list.c_value() else {
+            panic!("expected commands");
+        };
+        assert_eq!(cv.len(), 2);
+
+        // First entry
+        assert_eq!(cv[0].title, "Foo");
+        assert_eq!(cv[0].action_key, "ignore");
+        assert_eq!(cv[0].action, "ignore");
+
+        // Second entry
+        assert_eq!(cv[1].title, "Bar");
+        assert_eq!(cv[1].description, "bobr");
+        assert_eq!(cv[1].action_key, "text");
+        assert_eq!(cv[1].action, "text:ale bydle");
+    }
+
+    #[test]
+    fn repeatable_command_cval_cleared() {
+        let mut list = RepeatableCommand::default();
+        list.parse_cli(Some("title:Foo,action:ignore")).unwrap();
+        let CValue::Commands(cv) = list.c_value() else {
+            panic!("expected commands");
+        };
+        assert_eq!(cv.len(), 1);
+
+        list.parse_cli(Some("")).unwrap();
+        let CValue::Commands(cv) = list.c_value() else {
+            panic!("expected commands");
+        };
+        assert_eq!(cv.len(), 0);
     }
 
     #[test]

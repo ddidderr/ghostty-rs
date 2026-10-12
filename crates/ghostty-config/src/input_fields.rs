@@ -6,6 +6,7 @@ use std::fmt;
 use ghostty_input::{KeyRemapSet, OptionAsAlt};
 
 use crate::{
+    c_value::CValue,
     cli_args::{ArgError, ConfigField},
     formatter::EntryFormatter,
 };
@@ -29,6 +30,15 @@ impl ConfigField for KeyRemapSet {
 
 impl ConfigField for OptionAsAlt {
     const VALID_VALUES: Option<&'static [&'static str]> = None;
+
+    fn c_value(&self) -> CValue {
+        CValue::EnumName(match self {
+            OptionAsAlt::False => "false",
+            OptionAsAlt::True => "true",
+            OptionAsAlt::Left => "left",
+            OptionAsAlt::Right => "right",
+        })
+    }
 
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         let v = value.ok_or(ArgError::ValueRequired)?;

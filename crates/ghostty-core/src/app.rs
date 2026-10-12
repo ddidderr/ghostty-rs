@@ -488,6 +488,27 @@ impl App {
         }
     }
 
+    /// Create a surface and add it to the app (`CoreApp::new_surface` with
+    /// the concrete surface type, for runtimes that need more than the
+    /// [`CoreSurface`] trait, e.g. the embedded C API).
+    pub fn create_surface(
+        &self,
+        id: SurfaceId,
+        config: Config,
+        rt_app: Rc<dyn RtApp>,
+        rt_surface: Rc<dyn RtSurface>,
+    ) -> Result<Rc<Surface>, CoreError> {
+        let surface = Surface::new(
+            id,
+            Rc::clone(&self.state),
+            Arc::new(config),
+            Rc::clone(&rt_app),
+            rt_surface,
+        )?;
+        self.add_surface(id, &surface, &rt_app);
+        Ok(surface)
+    }
+
     /// Add an initialized surface. Since we have non-zero surfaces, the quit
     /// timer is cancelled.
     pub(crate) fn add_surface(&self, id: SurfaceId, surface: &Rc<Surface>, rt: &Rc<dyn RtApp>) {
@@ -589,15 +610,7 @@ impl CoreApp for App {
         rt_app: Rc<dyn RtApp>,
         rt_surface: Rc<dyn RtSurface>,
     ) -> Result<Rc<dyn CoreSurface>, CoreError> {
-        let surface = Surface::new(
-            id,
-            Rc::clone(&self.state),
-            Arc::new(config),
-            Rc::clone(&rt_app),
-            rt_surface,
-        )?;
-        self.add_surface(id, &surface, &rt_app);
-        Ok(surface)
+        Ok(self.create_surface(id, config, rt_app, rt_surface)?)
     }
 
     fn delete_surface(&self, id: SurfaceId) {

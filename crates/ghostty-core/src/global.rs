@@ -38,6 +38,13 @@ impl Logging {
     /// invalid value (including an empty part) yields the default.
     #[must_use]
     pub fn parse(v: &str) -> Logging {
+        Logging::parse_with(v, Logging::default())
+    }
+
+    /// [`Logging::parse`] with an explicit default (lib mode defaults to no
+    /// stderr logging).
+    #[must_use]
+    pub fn parse_with(v: &str, default: Logging) -> Logging {
         match v {
             "1" | "t" | "T" | "true" => {
                 return Logging {
@@ -53,7 +60,7 @@ impl Logging {
             }
             _ => {}
         }
-        let mut out = Logging::default();
+        let mut out = default;
         for part in v.split(',') {
             let part = part.trim_matches([' ', '\t']);
             let (name, value) = match part.strip_prefix("no-") {
@@ -63,7 +70,7 @@ impl Logging {
             match name {
                 "stderr" => out.stderr = value,
                 "macos" => out.macos = value,
-                _ => return Logging::default(),
+                _ => return default,
             }
         }
         out
@@ -134,8 +141,25 @@ pub fn state() -> &'static GlobalState {
 /// Initialize the global state: logging, rlimits, resources dir and i18n.
 /// Call once, early (Zig: `GlobalState.init`).
 pub fn init(opts: InitOptions) -> &'static GlobalState {
+    init_with(opts, Logging::default())
+}
+
+/// [`init`] for the embedded library (`ghostty_init`): Zig's
+/// `GlobalState.Logging.stderr` defaults to `build_config.app_runtime !=
+/// .none`, i.e. off for the lib artifact.
+pub fn init_lib(opts: InitOptions) -> &'static GlobalState {
+    init_with(
+        opts,
+        Logging {
+            stderr: false,
+            ..Logging::default()
+        },
+    )
+}
+
+fn init_with(opts: InitOptions, default_logging: Logging) -> &'static GlobalState {
     STATE.get_or_init(|| {
-        let mut logging = Logging::default();
+        let mut logging = default_logging;
 
         // If we have an action executing, we disable logging by default
         // since we write to stderr we don't want logs messing up our
@@ -146,7 +170,7 @@ pub fn init(opts: InitOptions) -> &'static GlobalState {
 
         // Env vars are useful for logging too because they are easy to set.
         if let Ok(v) = std::env::var("GHOSTTY_LOG") {
-            logging = Logging::parse(&v);
+            logging = Logging::parse_with(&v, default_logging);
         }
 
         init_logger(logging);

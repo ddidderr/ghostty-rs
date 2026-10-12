@@ -310,6 +310,12 @@ pub trait RtSurface {
         let _ = name;
         std::ptr::null()
     }
+    /// The native view the renderer attaches to (embedded runtime: the
+    /// `NSView` / `UIView` the host provided; Metal renderer only). Null if
+    /// the runtime has no such view.
+    fn platform_view(&self) -> *mut std::ffi::c_void {
+        std::ptr::null_mut()
+    }
     /// Callback to create a transient systemd scope for the child process
     /// (Zig: `apprt/gtk/cgroup.zig` + `post_fork`). Called on the main
     /// thread when the surface is created; the returned closure is called

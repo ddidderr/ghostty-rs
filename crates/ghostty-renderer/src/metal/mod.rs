@@ -239,6 +239,23 @@ impl Metal {
         })
     }
 
+    /// [`Metal::init`] for a raw `NSView` / `UIView` pointer as handed over
+    /// through the C API (`ghostty_platform_macos_s.nsview`). The view must
+    /// stay alive for the lifetime of the renderer (the host owns it).
+    pub fn init_with_view(
+        blending: AlphaBlending,
+        view: *mut c_void,
+        scale_factor: f64,
+    ) -> Result<Metal, Error> {
+        if view.is_null() {
+            return Err(Error::ObjCFailed);
+        }
+        // SAFETY: the caller (the embedded runtime) guarantees `view` is a
+        // valid, live NSView / UIView, which is an Objective-C object.
+        let view: &AnyObject = unsafe { &*view.cast::<AnyObject>() };
+        Metal::init(blending, &ViewInfo { view, scale_factor })
+    }
+
     /// The layer the renderer presents on.
     pub fn layer(&self) -> &IOSurfaceLayer {
         &self.layer

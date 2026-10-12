@@ -37,6 +37,8 @@ pub struct FieldInfo<T> {
     pub eq: fn(&T, &T) -> bool,
     /// Format this field as in `+show-config`.
     pub format: fn(&T, &str, &mut dyn fmt::Write) -> fmt::Result,
+    /// The value in the form the C API exposes it.
+    pub c_value: fn(&T) -> crate::c_value::CValue,
 }
 
 impl<T> FieldInfo<T> {
@@ -147,6 +149,7 @@ macro_rules! config_struct {
                             let mut f = $crate::formatter::EntryFormatter::new(name, w);
                             $crate::cli_args::ConfigField::format_entry(&a.$field, &mut f)
                         },
+                        c_value: |a: &$name| $crate::cli_args::ConfigField::c_value(&a.$field),
                     },
                 )*
             ];
@@ -221,6 +224,10 @@ macro_rules! config_enum {
                 ::core::result::Result::Ok(())
             }
 
+            fn c_value(&self) -> $crate::c_value::CValue {
+                $crate::c_value::CValue::EnumName(self.as_str())
+            }
+
             fn format_entry(
                 &self,
                 f: &mut $crate::formatter::EntryFormatter<'_>,
@@ -273,6 +280,20 @@ macro_rules! config_packed {
         impl $crate::cli_args::ConfigField for $name {
             const KIND: $crate::cli_args::FieldKind =
                 $crate::cli_args::FieldKind::Packed(Self::NAMES);
+
+            fn c_value(&self) -> $crate::c_value::CValue {
+                // Packed bools: the first field is bit 0.
+                let mut bits = 0u32;
+                let mut _i = 0u32;
+                $(
+                    if self.$field && _i < 32 { bits |= 1 << _i; }
+                    _i += 1;
+                )*
+                if _i > 32 {
+                    return $crate::c_value::CValue::Unsupported;
+                }
+                $crate::c_value::CValue::Packed(bits)
+            }
 
             fn parse_cli(
                 &mut self,

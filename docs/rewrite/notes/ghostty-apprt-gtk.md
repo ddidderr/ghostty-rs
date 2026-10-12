@@ -30,7 +30,7 @@ dependency (cycle): the core boundary is the trait set in `src/core.rs`.
 # Per-component notes (by sub-agent)
 ## F3: dialogs + config object (class/{dialog,config,config_errors_dialog,close_confirmation_dialog,clipboard_confirmation_dialog,title_dialog,debug_warning}.rs)
 
-Libadwaita >= 1.5 is assumed, so `Dialog` is always an `adw::AlertDialog` subclass (no `MessageDialog` fallback) and DebugWarning uses the `adw::Banner` (1.3) template; the clipboard dialog always uses the 1.4 template (remember switch). GType names, property names, signals and template children match the Zig classes.
+Update (GC): the Zig compat fallbacks are now ported, see compat-GC.md. By default (adw_1_5) `Dialog` is an `adw::AlertDialog` subclass, DebugWarning uses the Banner (1.3) template and the clipboard dialog the 1.4 template. GType names, property names, signals and template children match the Zig classes.
 
 Public API (all `&self` methods on `glib::wrapper!` types; signals via `connect_*`):
 - `config::Config` (GhosttyConfig; props `diagnostics-buffer`, `has-diagnostics` -> generated getters `diagnostics_buffer() -> Option<gtk::TextBuffer>`, `has_diagnostics() -> bool`): `new(&CoreConfig)` (clones), `from_arc(Arc<CoreConfig>)`, `new_default()`, `get() -> Arc<CoreConfig>`, `get_mut(|&mut CoreConfig| ..)` (Arc::make_mut), `clone_config() -> CoreConfig`. Test `ghostty_config` ported.

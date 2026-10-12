@@ -15,6 +15,7 @@
 use std::{fmt, io::BufRead};
 
 use crate::{
+    c_value::CValue,
     comma_splitter::CommaSplitter,
     diagnostics::{Diagnostic, DiagnosticList, Location},
     formatter::EntryFormatter,
@@ -113,6 +114,28 @@ pub trait ConfigField: Clone + PartialEq + Default + fmt::Debug {
 
     /// Write this value in the `+show-config` format.
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result;
+
+    /// The value in the form the C API exposes (Zig: `c_get.getValue`).
+    /// Types the C API doesn't support yet return [`CValue::Unsupported`].
+    fn c_value(&self) -> CValue {
+        CValue::Unsupported
+    }
+
+    /// [`ConfigField::c_value`] when the value is wrapped in an `Option`
+    /// (only `String` differs: `?[:0]const u8` is supported, `[]const u8`
+    /// is not).
+    fn c_value_optional(&self) -> CValue {
+        self.c_value()
+    }
+
+    /// The C value of an `Option<Self>` that is `None`.
+    fn c_value_none() -> CValue {
+        if matches!(Self::default().c_value(), CValue::Unsupported) {
+            CValue::Unsupported
+        } else {
+            CValue::Null
+        }
+    }
 }
 
 /// The destination of CLI parsing.
@@ -456,6 +479,10 @@ pub fn parse_int_base0(s: &str) -> Option<i128> {
 impl ConfigField for bool {
     const KIND: FieldKind = FieldKind::Bool;
 
+    fn c_value(&self) -> CValue {
+        CValue::Bool(*self)
+    }
+
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         *self = parse_bool(value.unwrap_or("t"))?;
         Ok(())
@@ -467,8 +494,13 @@ impl ConfigField for bool {
 }
 
 macro_rules! impl_int_field {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $cv:expr),*) => {$(
         impl ConfigField for $t {
+            fn c_value(&self) -> CValue {
+                let f: fn($t) -> CValue = $cv;
+                f(*self)
+            }
+
             fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
                 let v = value.ok_or(ArgError::ValueRequired)?;
                 let n = parse_int_base0(v).ok_or(ArgError::InvalidValue)?;
@@ -482,11 +514,27 @@ macro_rules! impl_int_field {
         }
     )*};
 }
-impl_int_field!(u8, u16, u32, u64, usize, i8, i16, i32, i64, isize);
+impl_int_field!(
+    u8 => |v| CValue::Uint(u32::from(v)),
+    u16 => |_| CValue::Unsupported,
+    u32 => CValue::Uint,
+    u64 => |_| CValue::Unsupported,
+    usize => |_| CValue::Unsupported,
+    i8 => |_| CValue::Unsupported,
+    i16 => CValue::Short,
+    i32 => |_| CValue::Unsupported,
+    i64 => |_| CValue::Unsupported,
+    isize => |_| CValue::Unsupported
+);
 
 macro_rules! impl_float_field {
-    ($($t:ty),*) => {$(
+    ($($t:ty => $cv:expr),*) => {$(
         impl ConfigField for $t {
+            fn c_value(&self) -> CValue {
+                let f: fn($t) -> CValue = $cv;
+                f(*self)
+            }
+
             fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
                 let v = value.ok_or(ArgError::ValueRequired)?;
                 *self = v.parse::<$t>().map_err(|_| ArgError::InvalidValue)?;
@@ -499,9 +547,17 @@ macro_rules! impl_float_field {
         }
     )*};
 }
-impl_float_field!(f32, f64);
+impl_float_field!(f32 => CValue::F32, f64 => CValue::F64);
 
 impl ConfigField for String {
+    fn c_value_optional(&self) -> CValue {
+        CValue::String(self.clone())
+    }
+
+    fn c_value_none() -> CValue {
+        CValue::NullString
+    }
+
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         *self = value.ok_or(ArgError::ValueRequired)?.to_string();
         Ok(())
@@ -518,6 +574,13 @@ impl<T: ConfigField> ConfigField for Option<T> {
         FieldKind::Enum(v) => FieldKind::OptionalEnum(v),
         _ => FieldKind::OptionalOther,
     };
+
+    fn c_value(&self) -> CValue {
+        match self {
+            Some(v) => v.c_value_optional(),
+            None => T::c_value_none(),
+        }
+    }
 
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
         // For optional fields, we just treat it as the child type.

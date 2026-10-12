@@ -1,6 +1,9 @@
 //! Mouse end to end: selection, copy-on-select, multi-click, mouse reporting
 //! formats, alternate scroll, shift bypass and links.
 
+// These drive the real surface over a headless OpenGL context; the Apple targets render
+// with Metal.
+#![cfg(not(target_vendor = "apple"))]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;

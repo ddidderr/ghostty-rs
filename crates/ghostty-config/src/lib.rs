@@ -13,6 +13,7 @@
 )]
 
 // Generic CLI parsing infrastructure.
+pub mod c_value;
 pub mod cli_args;
 pub mod comma_splitter;
 pub mod diagnostics;
