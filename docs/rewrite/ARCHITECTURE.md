@@ -6,26 +6,60 @@ to below as `ZIG/` (= `../../../ghostty`).
 Target platform: **Linux (GTK4 + libadwaita, OpenGL)**. macOS/Metal/CoreText,
 WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 
+## Top-down decomposition
+
+```
+ghostty (bin, src/main.rs)            CLI `+action` dispatch or GTK app startup
+├── ghostty-cli                       `ghostty +action` commands
+├── ghostty-apprt-gtk                 GTK4/libadwaita runtime: windows, tabs, splits,
+│   │                                 dialogs, GLArea surfaces, IPC, inspector windows
+│   └── ghostty-apprt                 core<->runtime contract (actions, messages, traits)
+└── ghostty-core                      App + Surface: input routing, bindings, mouse,
+    │                                 clipboard, config reload, per-surface threads
+    ├── ghostty-termio                IO thread, pty, child process, stream handler
+    │   └── ghostty-terminal          terminal state machine
+    │       ├── Terminal / Screen     cursor, modes, scrolling, alt screen, selection
+    │       ├── PageList / Page       scrollback memory model (slab nodes, tracked pins)
+    │       ├── render / formatter    per-frame RenderState, text/VT/HTML export
+    │       ├── kitty / search / tmux kitty graphics, search thread, tmux control mode
+    │       └── ghostty-vt            byte stream -> Parser -> Stream -> Handler actions
+    ├── ghostty-renderer              OpenGL renderer (glow), renderer thread, shaders
+    │   └── ghostty-font              fontconfig/freetype/harfbuzz, sprite font, atlas
+    ├── ghostty-inspector             Dear ImGui terminal inspector
+    └── ghostty-config                config file/CLI parsing, themes, keybinds
+        ├── ghostty-input             keys, key encoding, binding sets, mouse
+        └── ghostty-os                XDG, env, shell, locale, resources dir, flatpak
+Support: ghostty-unicode (width/grapheme/case-fold tables), ghostty-datastruct
+(split tree, LRU, queues), ghostty-onig (Oniguruma retry-limit FFI),
+ghostty-bench (benchmarks), ghostty-build-data (completions, man pages, syntax).
+```
+
 ## Crate map (workspace `crates/`)
 
-| Crate | Ports (ZIG/src/...) | Depends on |
+| Crate | Ports (ZIG/src/...) | Internal deps |
 |---|---|---|
-| `ghostty-vt` | terminal/Parser, parse_table, UTF8Decoder, osc.zig + osc/*, csi, dcs, apc, sgr, color, x11_color, charsets, modes, ansi, device_status, mouse_shape, kitty/key, kitty/color, kitty/graphics_command, stream.zig | – |
-| `ghostty-unicode` | unicode/* (width, grapheme break, props) | – |
+| `ghostty-vt` | terminal/Parser, parse_table, UTF8Decoder, osc.zig + osc/*, csi, dcs, apc, sgr, color, x11_color, charsets, modes, ansi, device_status, mouse_shape, kitty/{key,color,graphics_command}, tmux/control, stream.zig, simd (scalar) | – |
+| `ghostty-unicode` | unicode/* (width, grapheme break, props, symbols) + case folding, generated from vendored UCD 17.0.0 | – |
 | `ghostty-datastruct` | datastruct/* (split_tree, lru, circ_buf, blocking_queue, cache_table, ...) | – |
-| `ghostty-os` | os/* (xdg, homedir, shell, locale, passwd, env, open, desktop, resourcesdir, hostname, TempDir, uri, ...) | – |
-| `ghostty-input` | input/* (key, key_mods, keycodes, function_keys, key_encode, Binding, command, mouse, paste, kitty, Link) | vt |
-| `ghostty-config` | config/*, cli/args.zig, cli/CommaSplitter.zig, cli/diagnostics.zig | input, os, vt |
-| `ghostty-terminal` | terminal/ page, PageList, Screen, ScreenSet, Terminal, style, hyperlink, Tabstops, size, point, Selection, formatter, render, highlight, search/*, kitty/graphics_{image,storage,exec,unicode,render}, tmux/*, stream_readonly, StringMap, ref_counted_set, bitmap_allocator semantics | vt, unicode, datastruct |
-| `ghostty-font` | font/* (Metrics, sprite/*, Atlas, discovery via fontconfig, face via freetype, shaper via harfbuzz, Collection, CodepointResolver, SharedGrid(Set), opentype/*, nerd_font_attributes) | config, unicode, terminal |
-| `ghostty-renderer` | renderer/ generic, OpenGL (+ opengl/*), cell, cursor, image, link, size, State, Thread, Overlay, shadertoy, row, shaders/glsl | config, font, terminal |
-| `ghostty-termio` | termio/*, pty.zig, Command.zig, shell-integration resources | config, terminal, os |
-| `ghostty-cli` | cli/* actions (+list-themes, +show-config, +list-keybinds, ...) | config, input, os, font |
-| `ghostty-inspector` | inspector/* (Dear ImGui terminal inspector: widgets, key + VT event recording) | input, renderer, terminal, vt, font, `dear-imgui-rs` |
-| `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, apprt/action.zig, apprt/structs.zig, apprt/surface.zig, global.zig | everything below |
-| `ghostty-apprt` | apprt/action.zig, structs.zig, surface.zig, ipc.zig (core↔runtime contract types) | vt, input, config, datastruct |
-| `ghostty-apprt-gtk` | apprt/gtk/* | core, config, input |
-| root `ghostty-rs` (bin `ghostty`) | main_ghostty.zig, build_config.zig | core, config, apprt-gtk |
+| `ghostty-onig` | (Oniguruma whole-search retry limit used by StringMap.zig) | – |
+| `ghostty-os` | os/* (xdg, homedir, shell, locale, passwd, env, open, desktop, resourcesdir, hostname, TempDir, uri, flatpak, systemd, cgroup, ...) | vt |
+| `ghostty-input` | input/* (key, key_mods, keycodes, function_keys, key_encode, Binding, command, mouse, paste, kitty, Link) | vt, unicode |
+| `ghostty-terminal` | terminal/ page, PageList, Screen, ScreenSet, Terminal, style, hyperlink, Tabstops, size, point, Selection, formatter, render, highlight, search/*, kitty/graphics_*, tmux/{layout,output,viewer}, stream_readonly, StringMap, ref_counted_set | vt, unicode, datastruct, onig |
+| `ghostty-config` | config/*, cli/args.zig, cli/CommaSplitter.zig, cli/diagnostics.zig | input, os, terminal, vt |
+| `ghostty-font` | font/* (Metrics, sprite/*, Atlas, discovery (fontconfig), face (freetype), shaper (harfbuzz) + run, Collection, CodepointResolver, SharedGrid(Set), opentype/*, nerd_font_attributes) | config, terminal, unicode, datastruct |
+| `ghostty-renderer` | renderer/ generic, OpenGL + opengl/*, cell, cursor, image, link, size, State, Thread, Overlay, shadertoy, row, shaders/glsl | config, font, terminal, input, unicode, vt, datastruct |
+| `ghostty-inspector` | inspector/* (Dear ImGui terminal inspector) | font, input, renderer, terminal, vt |
+| `ghostty-apprt` | apprt/action.zig, structs.zig, surface.zig, ipc.zig, runtime traits | config, input, inspector, renderer, terminal, vt, datastruct |
+| `ghostty-termio` | termio/*, pty.zig, Command.zig, terminfo/*, shell integration | apprt, config, os, renderer, terminal, vt, datastruct |
+| `ghostty-core` | App.zig, Surface.zig, surface_mouse.zig, global.zig | apprt, config, font, input, inspector, os, renderer, terminal, termio, ... |
+| `ghostty-cli` | cli/* actions, build_config.zig (build info) | apprt, config, font, input, os, vt |
+| `ghostty-apprt-gtk` | apprt/gtk/* (+ ui/*.blp, css) | apprt, config, input, inspector, os, vt, datastruct |
+| `ghostty-bench` | benchmark/*, synthetic/* | terminal, unicode, vt |
+| `ghostty-build-data` | main_build_data.zig, extra/*, build/mdgen | cli, config, input, os, termio |
+| root `ghostty-rs` (bin `ghostty`) | main_ghostty.zig | apprt, apprt-gtk, cli, config, core, os |
+
+Non-code: `resources/` (shell-integration, themes, terminfo), `dist/` (desktop
+integration), `po/` (translations), crate-local `res/`/`shaders/`/`resources/`.
 
 ## Key design decisions
 
