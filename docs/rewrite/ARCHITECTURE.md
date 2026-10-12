@@ -10,8 +10,9 @@ so Ghostty's unchanged Swift macOS app can link the Rust library), the
 `libghostty-vt` C API (`include/ghostty/vt*.h`), WASM (wasm32), macOS
 (Metal renderer, CoreText fonts, Darwin keymap/os) and Windows (ConPTY).
 Non-Linux targets are compile-checked (`cargo check --target ...`) on this
-machine; they cannot be run here. The Swift macOS app itself is not Zig and
-stays as-is (it is a client of the C ABI).
+machine; they cannot be run here. Phase 9 additionally ports the Swift macOS app (`macos/`) to Rust
+(`crates/ghostty-macos`, AppKit via objc2), compile-checked like the rest of
+the Apple code; the C ABI stays available for the original Swift app.
 
 ## Top-down decomposition
 

@@ -106,6 +106,15 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
+## Phase 9 — macOS Swift app → Rust (AppKit via objc2; compile-checked)
+| WP | Scope | Owner | State | Notes |
+|---|---|---|---|---|
+| MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | 🟨 | |
+| MA2 | Ghostty/ incl. Surface View (Metal layer, input, IME, DnD, a11y) | – | ⬜ | after MA1 |
+| MA3 | Features/Terminal (windows, tabs, styles) + Splits | – | ⬜ | after MA1 |
+| MA4 | QuickTerminal, Command Palette, Settings, About, Clipboard, Global Keybinds, Secure Input, Services, App Icon | – | ⬜ | after MA1 |
+| MA5 | AppleScript, Update (Sparkle), App Intents (assess) | – | ⬜ | after MA1 |
+
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
 - 2026-10-11: vt (W1+W2) and font sprite (W7) committed; S1 + T1 launched.
@@ -161,3 +170,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: All remaining legit items fixed (P3 rows, Wine runtime testing, ZWJ). Final gate: 3602 native tests, 2758 under Wine, all cross-checks green. Done.
 - 2026-10-12: Stop-hook: live D-Bus/portal behaviour still unexercised → LIVE launched (private buses; user session untouched).
 - 2026-10-12: LIVE committed (3605 tests). Remaining unverifiable here: native macOS, native Windows (Wine-tested), IME (no input-method daemon installed).
+- 2026-10-12: Stop-hook: Swift macOS app is part of Ghostty 1.3.1 → Phase 9 (port to Rust/AppKit) started with MA1.
