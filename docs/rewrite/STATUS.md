@@ -58,7 +58,11 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | WIN | Windows: ConPTY pty, os/windows, Command | sonnet | ✅ | compile-checked windows-gnu |
 | W1b | wasm: align JS imports with zig-js ABI | sonnet | ✅ | |
 | GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators, cli windows, ssh-cache lock | sonnet | ✅ | |
-| RV3 | final Codex completeness re-audit (full scope) | codex astra | 🟨 | |
+| RV3 | final Codex completeness re-audit (full scope) | codex astra | ✅ | 397 full / 30 partial / 1 missing + 8 artifact gaps |
+| Z1 | final gaps: os/config/cli byte fidelity, rlimit fallbacks, i18n map, build-info source | sonnet | 🟨 | |
+| Z2 | final gaps: core Windows, embedded init, lib/core/gtk bytes, version wiring | sonnet | 🟨 | |
+| Z3 | final gaps: C allocator, shadertoy overloads + MSL stride, tripwire, crash minidump | sonnet | 🟨 | |
+| Z4 | final gaps: webdata mdx, xcframework, lib install + pc, app id, i18n extract, dist, win resources | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -82,3 +86,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Stop-hook review: 'full end-to-end' not met → Phase 8 (full scope) started.
 - 2026-10-12: Phase 8 batch A + M1/WIN/W1b committed (3224 tests). L1, GC launched.
 - 2026-10-12: L1 (libghostty) + GC committed (3278 tests). Final completeness re-audit RV3 running.
+- 2026-10-12: RV3 re-audit: 397/428 full. Z1–Z4 launched for all remaining rows.
