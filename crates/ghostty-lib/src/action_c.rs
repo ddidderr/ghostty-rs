@@ -183,8 +183,11 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         }
         Action::OpenUrl(u) => {
             v.open_url.kind = u.kind as c_int;
-            v.open_url.url = keep.cstr(&u.url);
-            v.open_url.len = u.url.len();
+            // The URL may be the escaped form of a non-UTF-8 path; hand the
+            // embedder the real bytes.
+            let url = ghostty_os::osbytes::config_str_to_bytes(&u.url);
+            v.open_url.url = keep.cstr_bytes(&url);
+            v.open_url.len = url.len();
         }
         Action::ShowChildExited(c) => {
             v.child_exited.exit_code = c.exit_code;

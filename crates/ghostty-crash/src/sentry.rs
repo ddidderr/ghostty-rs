@@ -27,7 +27,7 @@ use std::{
 use crate::{
     context,
     dir::{self, REPORT_EXTENSION},
-    envelope::{Attachment, Envelope, Item, ObjectMap},
+    envelope::{Attachment, Item},
     signal,
 };
 
@@ -97,8 +97,7 @@ pub(crate) fn state() -> Option<&'static State> {
 ///
 /// Call from one thread; [`deinit`] should be called from the same thread.
 pub fn init(opts: &Options) -> Result<(), InitError> {
-    // Not supported on Windows currently, doesn't build (same as Zig).
-    if !ENABLED || cfg!(windows) {
+    if !ENABLED {
         return Ok(());
     }
     install(opts)
@@ -358,6 +357,20 @@ fn write_report(
     mechanism: &str,
     backtrace: Option<&str>,
 ) -> io::Result<PathBuf> {
+    write_report_ext(st, kind, value, mechanism, None, backtrace, None)
+}
+
+/// [`write_report`] plus the native crash context and a minidump attachment
+/// (`event.minidump`), used by the macOS and Windows exception handlers.
+pub(crate) fn write_report_ext(
+    st: &State,
+    kind: &str,
+    value: &str,
+    mechanism: &str,
+    native: Option<&crate::native::Native>,
+    backtrace: Option<&str>,
+    minidump: Option<&[u8]>,
+) -> io::Result<PathBuf> {
     let mut raw = [0u8; 16];
     signal::random_bytes(&mut raw);
     let mut u = [0u8; 36];
@@ -371,7 +384,7 @@ fn write_report(
         kind,
         value,
         mechanism,
-        native: None,
+        native,
     };
 
     let mut event = String::new();
@@ -380,14 +393,20 @@ fn write_report(
     write_envelope_head(&mut head, &crash, event.len()).map_err(io::Error::other)?;
     let mut data = head.into_bytes();
     data.extend_from_slice(event.as_bytes());
+    let mut attachments: Vec<Attachment> = Vec::new();
     if let Some(bt) = backtrace {
         let mut a = Attachment::new("backtrace.txt", bt.as_bytes().to_vec());
         a.attachment_type = Some("event.attachment".into());
-        let mut env = Envelope {
-            headers: ObjectMap::new(),
-            items: vec![Item::Attachment(a)],
-        };
-        let enc = env.items[0].encode().clone();
+        attachments.push(a);
+    }
+    if let Some(md) = minidump {
+        let mut a = Attachment::new("minidump.dmp", md.to_vec());
+        a.attachment_type = Some("event.minidump".into());
+        attachments.push(a);
+    }
+    for a in attachments {
+        let mut item = Item::Attachment(a);
+        let enc = item.encode().clone();
         data.push(b'\n');
         let mut h = enc.headers;
         h.insert("length".into(), enc.payload.len().into());
@@ -416,7 +435,7 @@ fn write_report(
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    use crate::envelope::ItemType;
+    use crate::envelope::{Envelope, ItemType};
 
     #[test]
     fn civil_dates() {
@@ -494,5 +513,26 @@ mod tests {
             panic!()
         };
         assert_eq!(b"bt\nline", a.payload.as_slice());
+    }
+
+    #[test]
+    fn report_with_minidump_attachment_parses_back() {
+        let t = tempfile::tempdir().unwrap();
+        let st = State {
+            dir: t.path().join("c").as_os_str().as_encoded_bytes().to_vec(),
+            prefix: "\"release\":\"1\",\"environment\":\"production\",\"tags\":{".into(),
+        };
+        let md = b"MDMP\0\x01\xff binary".to_vec();
+        let path =
+            write_report_ext(&st, "EXC_BAD_ACCESS", "x", "mach", None, None, Some(&md)).unwrap();
+        let mut env = Envelope::parse_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(2, env.items.len());
+        env.items[1].decode().unwrap();
+        let Item::Attachment(a) = &env.items[1] else {
+            panic!()
+        };
+        assert_eq!("minidump.dmp", a.filename);
+        assert_eq!(Some("event.minidump"), a.attachment_type.as_deref());
+        assert_eq!(md, a.payload);
     }
 }

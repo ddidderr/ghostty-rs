@@ -49,7 +49,7 @@ static SCRATCH: ScratchCell = ScratchCell(UnsafeCell::new(Scratch {
     #[cfg(target_vendor = "apple")]
     native: crate::native::Native::new(),
 }));
-static BUSY: AtomicBool = AtomicBool::new(false);
+pub(crate) static BUSY: AtomicBool = AtomicBool::new(false);
 
 /// A `fmt::Write` into a fixed byte slice; errors when full.
 struct SliceWriter<'a> {
@@ -301,5 +301,12 @@ pub(crate) fn install_handlers() {
             libc::sigemptyset(&raw mut sa.sa_mask);
             libc::sigaction(sig, &raw const sa, std::ptr::null_mut());
         }
+    }
+    // macOS: memory faults are Mach exceptions first; the exception port
+    // handler writes the minidump (see `mach_handler`). The signal handlers
+    // above stay as the path for SIGABRT and as a fallback.
+    #[cfg(target_os = "macos")]
+    if !crate::mach_handler::install() {
+        log::warn!("mach exception port handler unavailable; using signal handlers only");
     }
 }

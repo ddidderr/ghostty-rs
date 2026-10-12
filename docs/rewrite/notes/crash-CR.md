@@ -24,5 +24,15 @@ New crate `crates/ghostty-crash` (workspace member; `unsafe_code = "deny"`, allo
 ## Tests
 `cargo test -p ghostty-crash` (envelope, dir, event/report parse-back, context) and root `tests/crash.rs` (child process: panic, SIGSEGV, stack-overflow fault on altstack, abort; checks envelope contents and that `ghostty +crash-report` lists the file).
 
+## Platform matrix (Z6)
+
+| Platform | Memory faults / illegal insn / FPE | abort / panic | Minidump |
+|---|---|---|---|
+| Linux | signal handler (altstack) | SIGABRT handler / panic hook | yes: forked ptrace helper + `minidump-writer` |
+| macOS | Mach exception port handler thread (`mach_handler.rs`, Breakpad `ExceptionHandler` structure): `task_set_exception_ports` for BAD_ACCESS/BAD_INSTRUCTION/ARITHMETIC/BREAKPOINT, suspends other threads, `thread_get_state` for the event stack, `MinidumpWriter::with_crash_context`, restores previous ports and replies `KERN_FAILURE` so the BSD signal follows; signal handlers remain for SIGABRT and as fallback (event with registers/frames, no minidump) | SIGABRT handler / panic hook | yes (Mach path) |
+| Windows | `SetUnhandledExceptionFilter` -> pre-started dump thread -> `MinidumpWriter::dump_crash_context` (`MiniDumpWriteDump`), returns `EXCEPTION_CONTINUE_SEARCH` (`signal_windows.rs`) | panic hook (no minidump); `__fastfail`/abort bypasses filters | yes |
+
+The Mach/Windows code is compile-checked only (`just check-macos` x2, `just check-windows`); it could not be run here. Platform independent parts (Mach exception message decoding, exception to signal/name mapping, Windows exception names, minidump attachment in the envelope via `write_report_ext`) are unit-tested on Linux (`exception.rs`, `sentry::tests`). macOS dump hang protection: `alarm(20)` watchdog. Not done vs Breakpad: forwarding to previously registered handlers (they are restored instead).
+
 ## Known gaps
-No minidump/native stack in signal reports; no `+crash-report` viewing (upstream doesn't either).
+No minidump for SIGABRT on macOS or panics; no `+crash-report` viewing (upstream doesn't either).

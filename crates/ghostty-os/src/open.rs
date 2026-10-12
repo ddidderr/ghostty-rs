@@ -1,4 +1,5 @@
 use std::{
+    ffi::{OsStr, OsString},
     io,
     process::{Command, Stdio},
 };
@@ -17,6 +18,10 @@ pub enum OpenUrlKind {
 
 /// Open a URL in the default handling application (via `xdg-open`).
 ///
+/// `url` is the core's "config string" form (see [`crate::osbytes`]): a
+/// non-UTF-8 path is carried in an escaped form and is decoded to the real
+/// path bytes here, right before it is handed to the opener.
+///
 /// Any output on stderr is logged as a warning in the application logs.
 /// Output on stdout is ignored.
 ///
@@ -25,7 +30,8 @@ pub enum OpenUrlKind {
 /// apprt for Ghostty, you should consider doing something special-cased
 /// for your platform.
 pub fn open(kind: OpenUrlKind, url: &str) -> io::Result<()> {
-    let mut cmd = open_command(kind, url)?;
+    let url: OsString = crate::osbytes::config_str_to_os(url);
+    let mut cmd = open_command(kind, &url)?;
 
     // Pipe stdout/stderr so we can collect output from the command.
     cmd.stdin(Stdio::null())
@@ -59,17 +65,17 @@ pub fn open(kind: OpenUrlKind, url: &str) -> io::Result<()> {
 /// `builtin.os.tag`).
 #[cfg(windows)]
 #[allow(clippy::unnecessary_wraps)]
-fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+fn open_command(kind: OpenUrlKind, url: &OsStr) -> io::Result<Command> {
     let _ = kind;
     let mut cmd = Command::new("rundll32");
-    cmd.args(["url.dll,FileProtocolHandler", url]);
+    cmd.arg("url.dll,FileProtocolHandler").arg(url);
     Ok(cmd)
 }
 
 /// Linux and the BSDs use `xdg-open`.
 #[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
 #[allow(clippy::unnecessary_wraps)]
-fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+fn open_command(kind: OpenUrlKind, url: &OsStr) -> io::Result<Command> {
     let _ = kind;
     let mut cmd = Command::new("xdg-open");
     cmd.arg(url);
@@ -79,7 +85,7 @@ fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
 /// macOS uses `open` (`open -t` for text files).
 #[cfg(target_os = "macos")]
 #[allow(clippy::unnecessary_wraps)]
-fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+fn open_command(kind: OpenUrlKind, url: &OsStr) -> io::Result<Command> {
     let mut cmd = Command::new("open");
     cmd.args(macos_open_args(kind, url));
     Ok(cmd)
@@ -87,9 +93,9 @@ fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
 
 /// Arguments of the macOS `open` command for a URL kind.
 #[cfg_attr(not(any(target_os = "macos", all(test, unix))), allow(dead_code))]
-fn macos_open_args(kind: OpenUrlKind, url: &str) -> Vec<&str> {
+fn macos_open_args(kind: OpenUrlKind, url: &OsStr) -> Vec<&OsStr> {
     match kind {
-        OpenUrlKind::Text => vec!["-t", url],
+        OpenUrlKind::Text => vec![OsStr::new("-t"), url],
         OpenUrlKind::Html | OpenUrlKind::Unknown => vec![url],
     }
 }
@@ -97,7 +103,7 @@ fn macos_open_args(kind: OpenUrlKind, url: &str) -> Vec<&str> {
 /// iOS cannot spawn processes (`error.Unimplemented`).
 #[cfg(target_os = "ios")]
 #[allow(clippy::unnecessary_wraps)]
-fn open_command(_kind: OpenUrlKind, _url: &str) -> io::Result<Command> {
+fn open_command(_kind: OpenUrlKind, _url: &OsStr) -> io::Result<Command> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
 }
 
@@ -128,9 +134,19 @@ mod tests {
 
     #[test]
     fn macos_open_command_args() {
-        assert_eq!(macos_open_args(OpenUrlKind::Text, "/a"), ["-t", "/a"]);
-        assert_eq!(macos_open_args(OpenUrlKind::Html, "u"), ["u"]);
-        assert_eq!(macos_open_args(OpenUrlKind::Unknown, "u"), ["u"]);
+        let a = OsStr::new("/a");
+        let u = OsStr::new("u");
+        assert_eq!(macos_open_args(OpenUrlKind::Text, a), ["-t", "/a"]);
+        assert_eq!(macos_open_args(OpenUrlKind::Html, u), ["u"]);
+        assert_eq!(macos_open_args(OpenUrlKind::Unknown, u), ["u"]);
+    }
+
+    #[test]
+    fn encoded_non_utf8_path_is_decoded_for_the_opener() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let enc = crate::osbytes::bytes_to_config_string(b"/tmp/a\xffb");
+        let os = crate::osbytes::config_str_to_os(&enc);
+        assert_eq!(os.as_bytes(), b"/tmp/a\xffb");
     }
 
     #[cfg(not(target_vendor = "apple"))]

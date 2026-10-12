@@ -79,6 +79,17 @@ pub(crate) unsafe fn capture(
     // state; the kernel built it for this signal frame.
     let ss = unsafe { uc.uc_mcontext.add(EXCEPTION_STATE_SIZE) };
 
+    // SAFETY: `ss` points at the thread state in the kernel built mcontext.
+    unsafe { fill_thread_state(n, ss) };
+}
+
+/// Fill registers and the frame-pointer stack walk from a thread state
+/// (`x86_thread_state64_t` / `arm_thread_state64_t`, as found in a
+/// `ucontext` or returned by `thread_get_state`).
+///
+/// # Safety
+/// `ss` must point to a valid, aligned thread state of the native flavor.
+pub(crate) unsafe fn fill_thread_state(n: &mut Native, ss: *const u8) {
     #[cfg(target_arch = "x86_64")]
     {
         // SAFETY: as above; the layout is `x86_thread_state64_t`.

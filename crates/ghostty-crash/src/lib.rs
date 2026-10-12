@@ -4,8 +4,8 @@
 //! reports (Sentry envelopes) to disk, and introspecting them. Nothing is
 //! ever sent over the network.
 
-// Fatal-signal handling does not exist on Windows (Zig skips crash capture
-// there), so parts of the shared report writer are unused.
+// The Windows exception filter does not use the signal-safe report writer,
+// so parts of it are unused there.
 #![cfg_attr(windows, allow(dead_code))]
 
 pub mod context;
@@ -13,6 +13,9 @@ pub mod context;
 mod darwin;
 pub mod dir;
 pub mod envelope;
+mod exception;
+#[cfg(target_os = "macos")]
+mod mach_handler;
 #[cfg(target_os = "linux")]
 mod minidump;
 // Pure (platform independent) event-context formatting; only used by the
