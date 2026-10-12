@@ -1,6 +1,6 @@
 # Status
 
-**Overall: complete.** Ghostty 1.3.1 is fully rewritten in Rust for Linux/GTK (see ARCHITECTURE.md for scope and intentional omissions). 3038 tests pass; clippy -D warnings clean; verified in the real app.
+**Overall:** Linux/GTK port complete and verified (3038 tests). **Phase 8 in progress:** libghostty C API, libghostty-vt C API, WASM, macOS Zig paths, Windows, crash handling, GTK compat fallbacks, remaining verification + perf.
 
 Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠️ done with gaps
 
@@ -45,6 +45,19 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | V3 | real-app verification: nvim/htop/less/tmux, mouse, unicode, kitty images, paste dialog | sonnet | ✅ | no product bugs found |
 | DOC | README, CHANGELOG, ARCHITECTURE decomposition | opus | ✅ | |
 
+## Phase 8 — full scope
+| WP | Scope | Owner | State | Notes |
+|---|---|---|---|---|
+| L2 | libghostty-vt C API (lib_vt.zig, terminal/c/*, vt.h) + run example/c-vt* + wasm examples | sonnet | 🟨 | batch A |
+| W1 | WASM: main_wasm, config/Wasm, os/wasm, font web_canvas face+shaper | sonnet | 🟨 | batch A |
+| CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | 🟨 | batch A |
+| PF | perf: RenderState render 2.4x, parser SGR 1.5x | sonnet | 🟨 | batch A |
+| VR | verify IME, paste dialog confirm/deny, quick terminal (niri layer-shell), Flatpak via mock D-Bus | sonnet | 🟨 | batch A |
+| L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | – | ⬜ | batch B |
+| M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | – | ⬜ | batch B |
+| WIN | Windows: ConPTY pty, os/windows, Command | – | ⬜ | batch B |
+| GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators | – | ⬜ | batch B |
+
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
 - 2026-10-11: vt (W1+W2) and font sprite (W7) committed; S1 + T1 launched.
@@ -64,3 +77,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: V1b + P2 committed (2983 tests). I1 inspector + RV2 completeness audit launched.
 - 2026-10-12: I1, X1, X2 committed (3037 tests). Docs written. V3 real-app verification running.
 - 2026-10-12: V3 verification passed, final polish (nightly fmt) done. Rewrite complete.
+- 2026-10-12: Stop-hook review: 'full end-to-end' not met → Phase 8 (full scope) started.

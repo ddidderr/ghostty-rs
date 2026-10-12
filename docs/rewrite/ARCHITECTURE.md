@@ -3,8 +3,15 @@
 Rust rewrite of Ghostty 1.3.1. Reference source: `../ghostty/` (Zig), referred
 to below as `ZIG/` (= `../../../ghostty`).
 
-Target platform: **Linux (GTK4 + libadwaita, OpenGL)**. macOS/Metal/CoreText,
-WASM, Windows and the embedded C API (`libghostty`) are out of scope.
+Primary platform: **Linux (GTK4 + libadwaita, OpenGL)** — built, tested and
+verified at runtime here. Phase 8 extends the port to the rest of Ghostty's
+Zig code: the embedded `libghostty` C API (identical `include/ghostty.h` ABI,
+so Ghostty's unchanged Swift macOS app can link the Rust library), the
+`libghostty-vt` C API (`include/ghostty/vt*.h`), WASM (wasm32), macOS
+(Metal renderer, CoreText fonts, Darwin keymap/os) and Windows (ConPTY).
+Non-Linux targets are compile-checked (`cargo check --target ...`) on this
+machine; they cannot be run here. The Swift macOS app itself is not Zig and
+stays as-is (it is a client of the C ABI).
 
 ## Top-down decomposition
 
@@ -111,6 +118,11 @@ integration), `po/` (translations), crate-local `res/`/`shaders/`/`resources/`.
 
 - macOS (Swift app, Metal, CoreText), Windows, WASM, libghostty C API.
 - (The ImGui inspector was deferred and is now ported: `docs/rewrite/notes/ghostty-inspector.md`.)
+
+## Scope changes
+
+- 2026-10-12: Sentry crash handling and GTK<4.14/libadwaita<1.5 fallbacks,
+  previously omitted, are ported in Phase 8 for full parity.
 
 ## Intentional omissions (decided by the orchestrator)
 
