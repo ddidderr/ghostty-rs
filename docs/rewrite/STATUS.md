@@ -90,7 +90,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z16 | update-channel default, async-backend epoll/io_uring, Windows error map + basename | sonnet | ✅ | 3555 tests |
 | RV14 | final Codex verification (clean HEAD) | codex astra | ✅ | RV13 4/4 addressed; 1 P2 (+show-face u21 panic) + 5 P3 → Z17 |
 | Z17 | show-face u21/UTF-8/ordering, Windows isAbsolute, io_uring detection | sonnet | ✅ | + first fix-deviant(cli) commit |
-| DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | 🟨 | user request |
+| DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
