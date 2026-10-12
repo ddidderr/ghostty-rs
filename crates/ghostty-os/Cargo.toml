@@ -32,6 +32,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
 ] }
 
+# libxev's `IO_Uring.available()` probe (`os/xev.rs`).
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 

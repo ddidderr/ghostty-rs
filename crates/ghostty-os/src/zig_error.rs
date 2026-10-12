@@ -61,63 +61,67 @@ pub fn errno_name(errno: i32) -> &'static str {
 }
 
 /// See the unix variant; this is the Windows (Win32 error code) table.
+///
+/// Zig's Windows file opens go through `std.os.windows.OpenFile`
+/// (`NtCreateFile`), which switches on the NTSTATUS. Rust opens with
+/// `CreateFileW`, whose error is `RtlNtStatusToDosError(status)`, so each arm
+/// below is the Win32 code of the NTSTATUS arm named in its comment (codes
+/// that `OpenFile` does not name are `error.Unexpected`):
+///
+/// | NTSTATUS | Win32 | Zig error |
+/// |---|---|---|
+/// | `OBJECT_NAME_INVALID` | `ERROR_INVALID_NAME` | `BadPathName` |
+/// | `OBJECT_NAME_NOT_FOUND` / `OBJECT_PATH_NOT_FOUND` | `ERROR_FILE_NOT_FOUND` / `ERROR_PATH_NOT_FOUND` | `FileNotFound` |
+/// | `BAD_NETWORK_PATH` / `BAD_NETWORK_NAME` | `ERROR_BAD_NETPATH` / `ERROR_BAD_NET_NAME` | `NetworkNotFound` |
+/// | `NO_MEDIA_IN_DEVICE` | `ERROR_NOT_READY` | `NoDevice` |
+/// | `SHARING_VIOLATION`, `ACCESS_DENIED`, `USER_MAPPED_FILE`, `FILE_IS_A_DIRECTORY` | `ERROR_SHARING_VIOLATION`, `ERROR_ACCESS_DENIED`, `ERROR_USER_MAPPED_FILE` | `AccessDenied` |
+/// | `PIPE_BUSY` / `PIPE_NOT_AVAILABLE` | `ERROR_PIPE_BUSY` | `PipeBusy` |
+/// | `OBJECT_NAME_COLLISION` | `ERROR_ALREADY_EXISTS` | `PathAlreadyExists` |
+/// | `NOT_A_DIRECTORY` | `ERROR_DIRECTORY` | `NotDir` |
+///
+/// plus `wToPrefixedFileW`'s `NameTooLong` (`ERROR_FILENAME_EXCED_RANGE`).
 #[must_use]
 #[cfg(windows)]
-#[allow(non_upper_case_globals)] // windows-sys spells two constants `..._64k`
 pub fn errno_name(code: i32) -> &'static str {
-    use windows_sys::Win32::Foundation::{
-        ERROR_ACCESS_DENIED,
-        ERROR_AUTODATASEG_EXCEEDS_64k,
-        ERROR_BAD_EXE_FORMAT,
-        ERROR_BAD_FORMAT,
-        ERROR_COMMITMENT_LIMIT,
-        ERROR_DIRECTORY,
-        ERROR_DISK_FULL,
-        ERROR_DYNLINK_FROM_INVALID_RING,
-        ERROR_EXE_MACHINE_TYPE_MISMATCH,
-        ERROR_EXE_MARKED_INVALID,
-        ERROR_FILE_NOT_FOUND,
-        ERROR_FILENAME_EXCED_RANGE,
-        ERROR_INFLOOP_IN_RELOC_CHAIN,
-        ERROR_INVALID_EXE_SIGNATURE,
-        ERROR_INVALID_MINALLOCSIZE,
-        ERROR_INVALID_MODULETYPE,
-        ERROR_INVALID_NAME,
-        ERROR_INVALID_SEGDPL,
-        ERROR_INVALID_STACKSEG,
-        ERROR_INVALID_STARTING_CODESEG,
-        ERROR_IOPL_NOT_ENABLED,
-        ERROR_ITERATED_DATA_EXCEEDS_64k,
-        ERROR_PATH_NOT_FOUND,
-        ERROR_RELOC_CHAIN_XEEDS_SEGLIM,
-        ERROR_RING2SEG_MUST_BE_MOVABLE,
-        ERROR_SHARING_VIOLATION,
-    };
-    match code as u32 {
-        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND | ERROR_DIRECTORY => "FileNotFound",
-        ERROR_ACCESS_DENIED => "AccessDenied",
-        ERROR_INVALID_NAME => "InvalidName",
+    windows_errno_name(code as u32)
+}
+
+/// The Windows table on plain numbers (so it is testable on every host).
+#[must_use]
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_errno_name(code: u32) -> &'static str {
+    // Win32 error codes (winerror.h). Mirrors the NTSTATUS mapping of
+    // `std.os.windows.OpenFile` in Zig 0.15.2 (verified against its source).
+    const ERROR_FILE_NOT_FOUND: u32 = 2;
+    const ERROR_PATH_NOT_FOUND: u32 = 3;
+    const ERROR_ACCESS_DENIED: u32 = 5;
+    const ERROR_NOT_READY: u32 = 21;
+    const ERROR_SHARING_VIOLATION: u32 = 32;
+    const ERROR_BAD_NETPATH: u32 = 53;
+    const ERROR_BAD_NET_NAME: u32 = 67;
+    const ERROR_FILE_EXISTS: u32 = 80;
+    const ERROR_INVALID_NAME: u32 = 123;
+    const ERROR_ALREADY_EXISTS: u32 = 183;
+    const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+    const ERROR_VIRUS_INFECTED: u32 = 225;
+    const ERROR_VIRUS_DELETED: u32 = 226;
+    const ERROR_PIPE_BUSY: u32 = 231;
+    const ERROR_DIRECTORY: u32 = 267;
+    const ERROR_USER_MAPPED_FILE: u32 = 1224;
+    match code {
+        ERROR_INVALID_NAME => "BadPathName",
+        ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND => "FileNotFound",
+        ERROR_BAD_NETPATH | ERROR_BAD_NET_NAME => "NetworkNotFound",
+        ERROR_NOT_READY => "NoDevice",
+        // A sharing violation is `AccessDenied` in `OpenFile` (the
+        // running-executable `FileBusy` retry logic is only in Zig 0.16).
+        ERROR_SHARING_VIOLATION | ERROR_ACCESS_DENIED | ERROR_USER_MAPPED_FILE => "AccessDenied",
+        ERROR_PIPE_BUSY => "PipeBusy",
+        // STATUS_OBJECT_NAME_COLLISION surfaces as either code.
+        ERROR_FILE_EXISTS | ERROR_ALREADY_EXISTS => "PathAlreadyExists",
+        ERROR_VIRUS_INFECTED | ERROR_VIRUS_DELETED => "AntivirusInterference",
+        ERROR_DIRECTORY => "NotDir",
         ERROR_FILENAME_EXCED_RANGE => "NameTooLong",
-        ERROR_SHARING_VIOLATION => "FileBusy",
-        ERROR_COMMITMENT_LIMIT => "SystemResources",
-        ERROR_DISK_FULL => "NoSpaceLeft",
-        ERROR_BAD_FORMAT
-        | ERROR_INVALID_STARTING_CODESEG
-        | ERROR_INVALID_STACKSEG
-        | ERROR_INVALID_MODULETYPE
-        | ERROR_INVALID_EXE_SIGNATURE
-        | ERROR_EXE_MARKED_INVALID
-        | ERROR_BAD_EXE_FORMAT
-        | ERROR_ITERATED_DATA_EXCEEDS_64k
-        | ERROR_INVALID_MINALLOCSIZE
-        | ERROR_DYNLINK_FROM_INVALID_RING
-        | ERROR_IOPL_NOT_ENABLED
-        | ERROR_INVALID_SEGDPL
-        | ERROR_AUTODATASEG_EXCEEDS_64k
-        | ERROR_RING2SEG_MUST_BE_MOVABLE
-        | ERROR_RELOC_CHAIN_XEEDS_SEGLIM
-        | ERROR_INFLOOP_IN_RELOC_CHAIN
-        | ERROR_EXE_MACHINE_TYPE_MISMATCH => "InvalidExe",
         _ => "Unexpected",
     }
 }
@@ -209,25 +213,38 @@ mod tests {
         assert_eq!(errno_name(40), "Unexpected");
     }
 
-    #[cfg(windows)]
     #[test]
     fn windows_table() {
         for (code, name) in [
-            (2, "FileNotFound"),
+            (2u32, "FileNotFound"),
             (3, "FileNotFound"),
             (5, "AccessDenied"),
-            (32, "FileBusy"),
-            (112, "NoSpaceLeft"),
-            (123, "InvalidName"),
-            (193, "InvalidExe"),
+            // ERROR_SHARING_VIOLATION: AccessDenied like OpenFile.
+            (32, "AccessDenied"),
+            (1224, "AccessDenied"),
+            (21, "NoDevice"),
+            (53, "NetworkNotFound"),
+            (67, "NetworkNotFound"),
+            (123, "BadPathName"),
+            (183, "PathAlreadyExists"),
+            (80, "PathAlreadyExists"),
+            (225, "AntivirusInterference"),
+            (226, "AntivirusInterference"),
             (206, "NameTooLong"),
-            (267, "FileNotFound"),
-            (1455, "SystemResources"),
+            (231, "PipeBusy"),
+            (267, "NotDir"),
             (87, "Unexpected"),
+            (112, "Unexpected"),
+            (193, "Unexpected"),
         ] {
-            assert_eq!(errno_name(code), name);
+            assert_eq!(windows_errno_name(code), name, "code {code}");
         }
-        let e = std::io::Error::from_raw_os_error(5);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_io_error_name() {
+        let e = std::io::Error::from_raw_os_error(32);
         assert_eq!(io_error_name(&e), "error.AccessDenied");
     }
 }

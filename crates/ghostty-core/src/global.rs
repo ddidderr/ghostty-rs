@@ -204,6 +204,19 @@ fn init_with(opts: InitOptions, default_logging: Logging) -> &'static GlobalStat
         // SIGPIPE is ignored by the Rust runtime already (it sets SIG_IGN
         // before main), which is what Zig's `initSignals` does.
 
+        // Setup our Xev backend if we're dynamic
+        if ghostty_os::xev::is_dynamic()
+            && let Err(err) = ghostty_os::xev::detect()
+        {
+            log::warn!(
+                "failed to detect xev backend, falling back to most compatible backend err={err}"
+            );
+        }
+        log::info!(
+            "libxev default backend={}",
+            ghostty_os::xev::backend().name()
+        );
+
         // As early as possible, initialize our resource limits.
         let rlimits = ResourceLimits::init();
 

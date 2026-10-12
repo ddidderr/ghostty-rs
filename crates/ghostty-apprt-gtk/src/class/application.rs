@@ -206,6 +206,33 @@ fn set_gtk_env(config: &CoreConfig) {
 /// if that fails (usually an invalid `LANG`), retry with `LANG` unset, then fall
 /// back to `en_US.UTF-8` (updating `LANG` on success). Idempotent. This must
 /// run before GTK initializes and before the child environment is captured.
+/// Apply the `async-backend` config (Zig: `startupXev`): `auto` keeps the
+/// backend detected at startup, the others request that backend and fall
+/// back to the detected one when it is not available.
+pub fn apply_async_backend(backend: ghostty_config::types_b::AsyncBackend) -> bool {
+    use ghostty_config::types_b::AsyncBackend;
+    use ghostty_os::xev::{self, Backend};
+
+    // If our backend is auto then we have no setup to do.
+    let want = match backend {
+        AsyncBackend::Auto => return true,
+        AsyncBackend::Epoll => Backend::Epoll,
+        AsyncBackend::IoUring => Backend::IoUring,
+    };
+
+    // Setup our event loop backend to the preferred method
+    let result = xev::is_dynamic() && xev::prefer(want);
+    if result {
+        log::info!("libxev manual backend={}", xev::backend());
+    } else {
+        log::warn!(
+            "libxev manual backend failed, using default={}",
+            xev::backend()
+        );
+    }
+    result
+}
+
 pub fn init_locale() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -328,6 +355,9 @@ mod imp {
 
             // Set ourselves as the default application.
             gio::Application::set_default(obj.upcast_ref::<gio::Application>());
+
+            // Setup our event loop
+            obj.startup_xev();
 
             // Setup our style manager (light/dark mode)
             obj.startup_style_manager();
@@ -888,6 +918,14 @@ impl Application {
 
     // -----------------------------------------------------------------
     // Startup
+
+    /// Configure the event loop (libxev) to use a specific backend.
+    ///
+    /// This must be called before any event loop is created.
+    fn startup_xev(&self) {
+        let config = self.core_config();
+        apply_async_backend(config.async_backend);
+    }
 
     /// Setup the style manager on startup: initial light/dark mode based on
     /// the configuration, plus change listeners.
@@ -1898,5 +1936,37 @@ mod trim_tests {
         );
         assert_eq!(trim_ascii_whitespace("\x0btitle\x0b"), "title");
         assert_eq!(trim_ascii_whitespace(" \t "), "");
+    }
+}
+
+#[cfg(test)]
+mod async_backend_tests {
+    use ghostty_config::types_b::AsyncBackend;
+    use ghostty_os::xev::{self, Backend};
+
+    use super::apply_async_backend;
+
+    #[test]
+    fn async_backend_selects_the_event_loop() {
+        let _ = xev::detect();
+        let detected = xev::backend();
+
+        // auto: nothing to do.
+        assert!(apply_async_backend(AsyncBackend::Auto));
+        assert_eq!(xev::backend(), detected);
+
+        // epoll is always available on Linux.
+        assert!(apply_async_backend(AsyncBackend::Epoll));
+        assert_eq!(xev::backend(), Backend::Epoll);
+
+        // io_uring only when the kernel allows it, else the backend stays.
+        let ok = apply_async_backend(AsyncBackend::IoUring);
+        assert_eq!(ok, xev::available(Backend::IoUring));
+        assert_eq!(
+            xev::backend(),
+            if ok { Backend::IoUring } else { Backend::Epoll }
+        );
+
+        let _ = xev::detect();
     }
 }

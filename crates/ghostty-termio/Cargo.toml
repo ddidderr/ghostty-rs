@@ -18,6 +18,10 @@ ghostty-vt.workspace = true
 log = "0.4.34"
 thiserror = "2.0.21"
 
+# io_uring backend of the IO thread's reactor (libxev `IO_Uring`).
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.190"
 nix = { version = "0.31.3", features = ["signal"] }

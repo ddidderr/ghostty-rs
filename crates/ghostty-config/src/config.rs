@@ -28,6 +28,14 @@ use crate::{
 const NS_PER_S: u64 = 1_000_000_000;
 const NS_PER_MS: u64 = 1_000_000;
 
+/// `build_config.release_channel` as a config value.
+fn build_release_channel() -> ReleaseChannel {
+    match ghostty_build_info::RELEASE_CHANNEL {
+        "tip" => ReleaseChannel::Tip,
+        _ => ReleaseChannel::Stable,
+    }
+}
+
 config_enum! {
     /// The release channel of the build (Zig: `build_config.ReleaseChannel`).
     pub enum ReleaseChannel {
@@ -4656,7 +4664,7 @@ impl Config {
         // We can't set this as a struct default because our config is
         // loaded in environments where a build config isn't available.
         if self.auto_update_channel.is_none() {
-            self.auto_update_channel = Some(ReleaseChannel::Stable);
+            self.auto_update_channel = Some(build_release_channel());
         }
 
         self.faint_opacity = cli_args::zig_clamp(self.faint_opacity, 0.0, 1.0);
@@ -5027,6 +5035,35 @@ impl CliTarget for Config {
     clippy::assert_is_empty
 )]
 mod tests {
+    #[test]
+    fn auto_update_channel_defaults_to_the_build_channel() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.auto_update_channel, None);
+        cfg.finalize().unwrap();
+        let expected = match ghostty_build_info::RELEASE_CHANNEL {
+            "tip" => ReleaseChannel::Tip,
+            "stable" => ReleaseChannel::Stable,
+            other => panic!("unexpected channel {other}"),
+        };
+        assert_eq!(cfg.auto_update_channel, Some(expected));
+    }
+
+    #[test]
+    fn auto_update_channel_explicit_value_is_kept() {
+        for (text, channel) in [
+            ("stable", ReleaseChannel::Stable),
+            ("tip", ReleaseChannel::Tip),
+        ] {
+            let mut cfg = Config::default();
+            let data = format!("auto-update-channel = {text}\n");
+            let mut reader = std::io::Cursor::new(data.into_bytes());
+            cfg.load_reader(&mut reader, &EncodedOs::from_encoded("/c/config"))
+                .unwrap();
+            cfg.finalize().unwrap();
+            assert_eq!(cfg.auto_update_channel, Some(channel));
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn shell_from_env_round_trips_bytes() {

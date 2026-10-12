@@ -48,8 +48,7 @@ pub fn write_version(out: &mut dyn Write, info: &BuildInfo, tty: bool) -> std::i
     writeln!(out, "  - app runtime   : {}", info.app_runtime)?;
     writeln!(out, "  - font engine   : {}", info.font_backend)?;
     writeln!(out, "  - renderer      : {}", info.renderer)?;
-    // There is no libxev in the Rust port.
-    writeln!(out, "  - libxev        : n/a")?;
+    writeln!(out, "  - libxev        : {}", ghostty_os::xev::backend())?;
     if info.app_runtime == ".gtk" {
         let kernel_info = ghostty_os::get_kernel_info();
         writeln!(

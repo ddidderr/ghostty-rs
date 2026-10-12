@@ -29,6 +29,8 @@ pub mod message;
 pub mod options;
 #[cfg_attr(windows, path = "pty_windows.rs")]
 pub mod pty;
+#[cfg(unix)]
+pub mod reactor;
 pub mod shell_integration;
 pub mod sinks;
 pub mod state;

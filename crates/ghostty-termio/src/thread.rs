@@ -12,7 +12,8 @@
 //!
 //! # Event loop
 //!
-//! libxev is replaced by a single `poll(2)` loop over: the mailbox wakeup
+//! libxev is replaced by a single readiness loop (see [`crate::reactor`]:
+//! `io_uring`, `epoll` or `poll(2)` as selected by `async-backend`) over: the mailbox wakeup
 //! eventfd, the stop eventfd, the child's pidfd (or the Flatpak exit
 //! wakeup), the pty (`POLLOUT`, only while writes are queued) and a set of
 //! deadlines (selection scroll, resize coalescing, synchronized-output reset,
@@ -27,9 +28,9 @@ use ghostty_apprt::surface::Message as SurfaceMessage;
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::size::Size;
 use ghostty_vt::{csi, modes::Mode};
-#[cfg(unix)]
-use rustix::event::{PollFd, PollFlags};
 
+#[cfg(unix)]
+use crate::reactor::{Backend, Interest, Reactor};
 use crate::{
     backend::ThreadData as BackendThreadData,
     message::Message,
@@ -42,6 +43,17 @@ use crate::{
 #[cfg(windows)]
 #[path = "thread_windows.rs"]
 mod windows_loop;
+
+#[cfg(unix)]
+const TOKEN_MAILBOX: usize = 0;
+#[cfg(unix)]
+const TOKEN_STOP: usize = 1;
+#[cfg(unix)]
+const TOKEN_PROCESS: usize = 2;
+#[cfg(unix)]
+const TOKEN_FLATPAK: usize = 3;
+#[cfg(unix)]
+const TOKEN_PTY_OUT: usize = 4;
 
 /// The number of milliseconds to coalesce certain messages like resize for.
 /// Not all message types are coalesced.
@@ -87,6 +99,10 @@ pub struct Thread {
 
     flags: Flags,
 
+    /// The event demultiplexer (the xev loop). Taken out while running.
+    #[cfg(unix)]
+    reactor: Option<Reactor>,
+
     /// The surface dimensions recorded in crash reports.
     pub crash_dims: Option<std::sync::Arc<ghostty_crash::SurfaceDims>>,
 }
@@ -96,7 +112,31 @@ impl Thread {
     /// up all the internal state necessary prior to starting the thread. It
     /// is up to the caller to run [`Thread::thread_main`] on a thread.
     pub fn new() -> io::Result<Thread> {
+        #[cfg(unix)]
+        {
+            Thread::with_backend(ghostty_os::xev::backend())
+        }
+        #[cfg(not(unix))]
+        {
+            Thread::new_()
+        }
+    }
+
+    /// Like [`Thread::new`] but with an explicit event loop backend instead
+    /// of the process-wide selection (`ghostty_os::xev`).
+    #[cfg(unix)]
+    pub fn with_backend(backend: Backend) -> io::Result<Thread> {
+        let reactor = Reactor::new(backend)?;
+        log::debug!("io thread event loop backend={}", reactor.name());
+        let mut thread = Thread::new_()?;
+        thread.reactor = Some(reactor);
+        Ok(thread)
+    }
+
+    fn new_() -> io::Result<Thread> {
         Ok(Thread {
+            #[cfg(unix)]
+            reactor: None,
             stop: Wakeup::new()?,
             scroll_active: false,
             scroll_deadline: None,
@@ -156,30 +196,37 @@ impl Thread {
     #[cfg(unix)]
     fn drain_until_stop(&mut self, io: &Termio) {
         let mailbox = io.mailbox().clone();
+        let Some(mut reactor) = self.reactor.take() else {
+            return;
+        };
+        let mut ready = Vec::new();
         loop {
-            let mut fds = [
-                PollFd::from_borrowed_fd(mailbox.wakeup().as_fd(), PollFlags::IN),
-                PollFd::from_borrowed_fd(self.stop.as_fd(), PollFlags::IN),
+            let interests = [
+                Interest {
+                    token: TOKEN_MAILBOX,
+                    fd: mailbox.wakeup().as_fd(),
+                    write: false,
+                },
+                Interest {
+                    token: TOKEN_STOP,
+                    fd: self.stop.as_fd(),
+                    write: false,
+                },
             ];
-            match rustix::event::poll(&mut fds, None) {
-                Ok(_) => {}
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(err) => {
-                    log::error!("failed to poll for draining err={err}");
-                    return;
-                }
+            if let Err(err) = reactor.wait(&interests, None, &mut ready) {
+                log::error!("failed to poll for draining err={err}");
+                break;
             }
-            let stop = fds[1].revents().contains(PollFlags::IN);
-            let msgs = fds[0].revents().contains(PollFlags::IN);
-            if msgs {
+            if ready.contains(&TOKEN_MAILBOX) {
                 mailbox.wakeup().drain();
                 while mailbox.pop().is_some() {}
             }
-            if stop {
+            if ready.contains(&TOKEN_STOP) {
                 self.stop.drain();
-                return;
+                break;
             }
         }
+        self.reactor = Some(reactor);
     }
 
     fn next_deadline(&self, td: &ThreadData) -> Option<Instant> {
@@ -199,72 +246,86 @@ impl Thread {
     /// The event loop. Returns when stopped.
     #[cfg(unix)]
     fn run(&mut self, io: &mut Termio, td: &mut ThreadData) {
+        let Some(mut reactor) = self.reactor.take() else {
+            log::error!("io thread has no event loop");
+            return;
+        };
+        self.run_loop(&mut reactor, io, td);
+        self.reactor = Some(reactor);
+    }
+
+    #[cfg(unix)]
+    fn run_loop(&mut self, reactor: &mut Reactor, io: &mut Termio, td: &mut ThreadData) {
         let mailbox = io.mailbox().clone();
+        let mut ready: Vec<usize> = Vec::new();
 
         loop {
-            let timeout = self.next_deadline(td).map(|d| {
-                let dur = d.saturating_duration_since(Instant::now());
-                rustix::time::Timespec {
-                    tv_sec: dur.as_secs() as _,
-                    tv_nsec: i64::from(dur.subsec_nanos()) as _,
-                }
-            });
+            let timeout = self
+                .next_deadline(td)
+                .map(|d| d.saturating_duration_since(Instant::now()));
 
-            // Build the poll set: fixed entries first, optional ones after.
-            let mut fds: Vec<PollFd<'_>> = Vec::with_capacity(5);
-            fds.push(PollFd::from_borrowed_fd(
-                mailbox.wakeup().as_fd(),
-                PollFlags::IN,
-            ));
-            fds.push(PollFd::from_borrowed_fd(self.stop.as_fd(), PollFlags::IN));
+            // Build the interest set: fixed entries first, optional ones after.
+            let mut interests: Vec<Interest<'_>> = Vec::with_capacity(5);
+            interests.push(Interest {
+                token: TOKEN_MAILBOX,
+                fd: mailbox.wakeup().as_fd(),
+                write: false,
+            });
+            interests.push(Interest {
+                token: TOKEN_STOP,
+                fd: self.stop.as_fd(),
+                write: false,
+            });
             let exec = td.backend.as_exec();
-            let proc_idx = exec.process_fd().map(|fd| {
-                fds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
-                fds.len() - 1
-            });
-            let fp_idx = exec.flatpak_fd().map(|fd| {
-                fds.push(PollFd::from_borrowed_fd(fd, PollFlags::IN));
-                fds.len() - 1
-            });
-            let out_idx = exec.wants_write().then(|| {
-                fds.push(PollFd::from_borrowed_fd(exec.pty_fd(), PollFlags::OUT));
-                fds.len() - 1
-            });
-
-            match rustix::event::poll(&mut fds, timeout.as_ref()) {
-                Ok(_) => {}
-                Err(rustix::io::Errno::INTR) => continue,
-                Err(err) => {
-                    log::error!("io thread poll failed err={err}");
-                    return;
-                }
+            if let Some(fd) = exec.process_fd() {
+                interests.push(Interest {
+                    token: TOKEN_PROCESS,
+                    fd,
+                    write: false,
+                });
             }
-            let rev: Vec<PollFlags> = fds.iter().map(PollFd::revents).collect();
-            drop(fds);
+            if let Some(fd) = exec.flatpak_fd() {
+                interests.push(Interest {
+                    token: TOKEN_FLATPAK,
+                    fd,
+                    write: false,
+                });
+            }
+            if exec.wants_write() {
+                interests.push(Interest {
+                    token: TOKEN_PTY_OUT,
+                    fd: exec.pty_fd(),
+                    write: true,
+                });
+            }
 
-            let ready = |i: usize| !rev[i].is_empty();
+            if let Err(err) = reactor.wait(&interests, timeout, &mut ready) {
+                log::error!("io thread poll failed err={err}");
+                return;
+            }
+            drop(interests);
 
             // Stop requested.
-            if ready(1) {
+            if ready.contains(&TOKEN_STOP) {
                 self.stop.drain();
                 return;
             }
 
             // The mailbox has messages.
-            if ready(0) {
+            if ready.contains(&TOKEN_MAILBOX) {
                 // When we wake up, we check the mailbox. Mailbox producers
                 // should wake up our thread after publishing.
                 mailbox.wakeup().drain();
                 self.drain_mailbox(io, td);
             }
 
-            if proc_idx.is_some_and(ready) {
+            if ready.contains(&TOKEN_PROCESS) {
                 td.backend.as_exec_mut().on_process_ready(None);
             }
-            if fp_idx.is_some_and(ready) {
+            if ready.contains(&TOKEN_FLATPAK) {
                 td.backend.as_exec_mut().on_flatpak_ready();
             }
-            if out_idx.is_some_and(ready) {
+            if ready.contains(&TOKEN_PTY_OUT) {
                 td.backend.as_exec_mut().flush_writes();
             }
 
