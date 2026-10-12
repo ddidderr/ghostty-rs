@@ -66,7 +66,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 
 | XC | cross-check scripts: macOS (2 targets), Windows, wasm — all clippy -D warnings clean | opus | ✅ | just check-all |
 | RV4 | targeted Codex re-audit of RV3 rows | codex astra | ✅ | 26/39 resolved, 13 tail items → Z5 |
-| Z5 | close RV4 tail items (encoded paths at OS boundaries, osbytes non-unix, shader arrays, C alloc, crash aarch64/Darwin, tripwire test, vt soname) | sonnet | 🟨 | |
+| Z5 | close RV4 tail items (encoded paths at OS boundaries, osbytes non-unix, shader arrays, C alloc, crash aarch64/Darwin, tripwire test, vt soname) | sonnet | ✅ | 3342 tests |
+| Z6 | Breakpad-equivalent minidumps on macOS (Mach exception port) + Windows; screen-file open path | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -92,3 +93,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: L1 (libghostty) + GC committed (3278 tests). Final completeness re-audit RV3 running.
 - 2026-10-12: RV3 re-audit: 397/428 full. Z1–Z4 launched for all remaining rows.
 - 2026-10-12: Z1–Z4 committed (3327 tests); cross-check scripts added and passing; RV4 running.
+- 2026-10-12: Z5 committed (3342 tests, all cross-checks green). Z6 (macOS/Windows minidumps) launched.
