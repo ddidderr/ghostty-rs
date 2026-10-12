@@ -53,11 +53,12 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | ✅ | |
 | PF | perf: RenderState render 2.4x, parser SGR 1.5x | sonnet | ✅ | all benches ≤ Zig |
 | VR | verify IME, paste dialog confirm/deny, quick terminal (niri layer-shell), Flatpak via mock D-Bus | sonnet | ✅ | fixed quick-terminal link-order bug |
-| L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | sonnet | 🟨 | |
+| L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | sonnet | ✅ | ABI-checked; Swift app not built |
 | M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | sonnet | ✅ | compile-checked apple-darwin |
 | WIN | Windows: ConPTY pty, os/windows, Command | sonnet | ✅ | compile-checked windows-gnu |
 | W1b | wasm: align JS imports with zig-js ABI | sonnet | ✅ | |
-| GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators, cli windows, ssh-cache lock | sonnet | 🟨 | |
+| GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators, cli windows, ssh-cache lock | sonnet | ✅ | |
+| RV3 | final Codex completeness re-audit (full scope) | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -80,3 +81,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: V3 verification passed, final polish (nightly fmt) done. Rewrite complete.
 - 2026-10-12: Stop-hook review: 'full end-to-end' not met → Phase 8 (full scope) started.
 - 2026-10-12: Phase 8 batch A + M1/WIN/W1b committed (3224 tests). L1, GC launched.
+- 2026-10-12: L1 (libghostty) + GC committed (3278 tests). Final completeness re-audit RV3 running.
