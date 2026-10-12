@@ -1286,20 +1286,30 @@ mod tests {
                 .is_none()
         );
 
-        let path =
-            write_screen_temp_file(&s, WriteScreenLoc::Screen, WriteScreenFormat::Plain).unwrap();
-        assert!(path.ends_with("screen.txt"));
-        let path = path.to_string_lossy().into_owned(); // test-only: ASCII temp path
-        let read = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(read, s);
-        #[cfg(unix)]
-        {
-            let mode = std::os::unix::fs::PermissionsExt::mode(
-                &std::fs::metadata(&path).unwrap().permissions(),
-            );
-            assert_eq!(mode & 0o777, 0o600);
-        }
-        let _ = std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap());
+        // Another test in this binary changes TMPDIR via temp_env, so the
+        // whole temp-file section runs under temp_env's lock with TMPDIR
+        // unset (std::env::temp_dir() then cannot point into that test's
+        // short-lived directory).
+        temp_env::with_var_unset("TMPDIR", || {
+            let own_tmp = std::env::temp_dir()
+                .join(format!("ghostty-screen-file-test-{}", std::process::id()));
+            std::fs::create_dir_all(&own_tmp).unwrap();
+            let path = temp_env::with_var("TMPDIR", Some(&own_tmp), || {
+                write_screen_temp_file(&s, WriteScreenLoc::Screen, WriteScreenFormat::Plain)
+                    .unwrap()
+            });
+            assert!(path.ends_with("screen.txt"));
+            let read = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(read, s);
+            #[cfg(unix)]
+            {
+                let mode = std::os::unix::fs::PermissionsExt::mode(
+                    &std::fs::metadata(&path).unwrap().permissions(),
+                );
+                assert_eq!(mode & 0o777, 0o600);
+            }
+            let _ = std::fs::remove_dir_all(&own_tmp);
+        });
     }
 
     #[cfg(unix)]
