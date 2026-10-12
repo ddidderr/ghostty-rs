@@ -143,12 +143,12 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) ->
         };
     }
 
-    // Rust-specific: development builds run out of `<workspace>/target`, where
-    // there is no installed `share/` tree. Fall back to the in-repo
-    // `<workspace>/resources` directory (it carries the same sentinel,
-    // `terminfo/x/xterm-ghostty`, see scripts/gen-terminfo.sh) if the binary
-    // lives inside this workspace.
-    if debug && let Some(dir) = dev_resources_dir(exe_start) {
+    // Rust-specific: builds of any profile run out of `<workspace>/target`,
+    // where there is no `share/` tree (Zig installs one into `zig-out/share`
+    // next to `zig-out/bin`). Fall back to the in-repo `<workspace>/resources`
+    // directory (it carries the same sentinel, `terminfo/x/xterm-ghostty`, see
+    // scripts/gen-terminfo.sh) if the binary lives inside this workspace.
+    if let Some(dir) = dev_resources_dir(exe_start) {
         return ResourcesDir {
             app_path: Some(enc(&dir)),
             host_path: None,
@@ -261,9 +261,13 @@ mod tests {
         // Outside the workspace there is no fallback.
         let r = resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), None);
         assert_eq!(r.app().map(EncodedOs::as_encoded), None);
-        // Release builds never use it.
+        // Release builds run from the workspace use it too...
+        let exe = workspace_root().join("target/production/ghostty");
         let r = resources_dir_impl(false, Some(&exe), None);
-        assert_eq!(r.app().map(EncodedOs::as_encoded), None);
+        assert!(r.app().is_some_and(|d| d.ends_with_plain("/resources")));
+        // ...but GHOSTTY_RESOURCES_DIR still takes precedence there.
+        let r = resources_dir_impl(false, Some(&exe), Some("/env/res".into()));
+        assert_eq!(r.app_os().unwrap(), Path::new("/env/res"));
     }
 
     #[test]

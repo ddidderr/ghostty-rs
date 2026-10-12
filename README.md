@@ -48,9 +48,9 @@ cargo run -- +list-themes      # CLI actions work like Ghostty's
 cargo run --profile production # optimized build (LTO, no debug assertions)
 ```
 
-Dev-profile builds (`cargo run`) find `resources/` (shell integration,
-themes, terminfo) automatically; other profiles use the installed
-resources or `GHOSTTY_RESOURCES_DIR`. Your existing Ghostty config
+Binaries run from this checkout's `target/` (any profile) find `resources/`
+(shell integration, themes, terminfo) automatically; installed binaries use
+the installed resources or `GHOSTTY_RESOURCES_DIR`. Your existing Ghostty config
 (`~/.config/ghostty/config[.ghostty]`) is used as-is.
 
 ## Installing
