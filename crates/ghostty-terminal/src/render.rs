@@ -205,15 +205,18 @@ pub struct Cell<'a> {
 /// `MultiArrayList(Cell)`) so that the common plain-text case only copies the
 /// raw cells.
 ///
-/// `raw` always has exactly `cols` entries. `grapheme` and `style` either
+/// `raw` always has exactly `cols` entries. `grapheme` and `style_ids` either
 /// have exactly `cols` entries, or are empty when the source row has no
 /// managed memory (in which case every cell has no grapheme and the default
-/// style). Always use the accessors rather than indexing those two directly.
+/// style). Styles are stored sparsely: `style_ids[x]` is 0 for the default
+/// style, otherwise `styles[style_ids[x] - 1]`. Always use the accessors
+/// rather than indexing those directly.
 #[derive(Debug, Clone, Default)]
 pub struct Cells {
     pub raw: Vec<page::Cell>,
     pub grapheme: Vec<Vec<u32>>,
-    pub style: Vec<Style>,
+    pub style_ids: Vec<u16>,
+    pub styles: Vec<Style>,
 }
 
 impl Cells {
@@ -232,7 +235,10 @@ impl Cells {
 
     /// The style of the cell at `x` (default style if none).
     pub fn style(&self, x: usize) -> Style {
-        self.style.get(x).copied().unwrap_or_default()
+        match self.style_ids.get(x) {
+            Some(&id) if id > 0 => self.styles[usize::from(id) - 1],
+            _ => Style::default(),
+        }
     }
 
     /// The full cell at `x`. Panics if out of range.
@@ -252,7 +258,8 @@ impl Cells {
     fn clear(&mut self) {
         self.raw.clear();
         self.grapheme.clear();
-        self.style.clear();
+        self.style_ids.clear();
+        self.styles.clear();
     }
 }
 
@@ -551,12 +558,28 @@ impl RenderState {
                 continue;
             }
 
-            row.cells.style.resize(cols, Style::default());
+            row.cells.style_ids.resize(cols, 0);
+            // Cache of the last page style id and its index in `styles`.
+            let mut last_sid: u16 = 0;
+            let mut last_idx: u16 = 0;
+            let mut last_bg_key: u32 = 0;
+            let mut last_bg_idx: u16 = 0;
             for (x, page_cell) in page_cells.iter().enumerate() {
+                // Plain cells (the vast majority) need nothing more.
+                if page_cell.is_plain() {
+                    continue;
+                }
+
                 // Append assuming its a single-codepoint, styled cell
                 // (most common by far).
-                if page_cell.style_id() > 0 {
-                    row.cells.style[x] = p.style(*page_cell);
+                let sid = page_cell.style_id();
+                if sid > 0 {
+                    if sid != last_sid {
+                        row.cells.styles.push(p.style(*page_cell));
+                        last_sid = sid;
+                        last_idx = row.cells.styles.len() as u16;
+                    }
+                    row.cells.style_ids[x] = last_idx;
                 }
 
                 // Switch on our content tag to handle less likely cases.
@@ -580,17 +603,32 @@ impl RenderState {
                     }
 
                     ContentTag::BgColorRgb => {
-                        row.cells.style[x] = Style {
-                            bg_color: Color::Rgb(page_cell.color_rgb()),
-                            ..Style::default()
-                        };
+                        let c = page_cell.color_rgb();
+                        let key =
+                            1 << 24 | u32::from(c.r) << 16 | u32::from(c.g) << 8 | u32::from(c.b);
+                        if key != last_bg_key {
+                            row.cells.styles.push(Style {
+                                bg_color: Color::Rgb(c),
+                                ..Style::default()
+                            });
+                            last_bg_key = key;
+                            last_bg_idx = row.cells.styles.len() as u16;
+                        }
+                        row.cells.style_ids[x] = last_bg_idx;
                     }
 
                     ContentTag::BgColorPalette => {
-                        row.cells.style[x] = Style {
-                            bg_color: Color::Palette(page_cell.color_palette()),
-                            ..Style::default()
-                        };
+                        let c = page_cell.color_palette();
+                        let key = 2 << 24 | u32::from(c);
+                        if key != last_bg_key {
+                            row.cells.styles.push(Style {
+                                bg_color: Color::Palette(c),
+                                ..Style::default()
+                            });
+                            last_bg_key = key;
+                            last_bg_idx = row.cells.styles.len() as u16;
+                        }
+                        row.cells.style_ids[x] = last_bg_idx;
                     }
                 }
             }

@@ -10,12 +10,11 @@ use ghostty_vt::color::{Palette, Rgb};
 /// color extended for filling padding space in the renderer. This is
 /// a set of heuristics that help making our padding look better.
 ///
-/// `styles` is the (possibly empty) style array of the render-state row;
-/// when empty, every cell has the default style.
+/// `style_of` returns the style of the render-state row's cell at `x`.
 pub fn never_extend_bg(
     row: Row,
     cells: &[Cell],
-    styles: &[Style],
+    style_of: impl Fn(usize) -> Style,
     palette: &Palette,
     default_background: Rgb,
 ) -> bool {
@@ -34,7 +33,7 @@ pub fn never_extend_bg(
         match cell.content_tag() {
             // If it is a background color cell, we check the color.
             ContentTag::BgColorPalette | ContentTag::BgColorRgb => {
-                let s = style_at(*cell, styles, x);
+                let s = style_at(*cell, &style_of, x);
                 let Some(bg) = s.bg(cell, palette) else {
                     return true;
                 };
@@ -60,7 +59,7 @@ pub fn never_extend_bg(
                 // A default background is applied if there is no background
                 // on the style or the explicitly set background
                 // matches our default background.
-                let s = style_at(*cell, styles, x);
+                let s = style_at(*cell, &style_of, x);
                 let Some(bg) = s.bg(cell, palette) else {
                     return true;
                 };
@@ -74,9 +73,9 @@ pub fn never_extend_bg(
     false
 }
 
-fn style_at(cell: Cell, styles: &[Style], x: usize) -> Style {
+fn style_at(cell: Cell, style_of: &impl Fn(usize) -> Style, x: usize) -> Style {
     if cell.has_styling() {
-        styles.get(x).copied().unwrap_or_default()
+        style_of(x)
     } else {
         Style::default()
     }
@@ -96,7 +95,7 @@ mod tests {
         assert!(never_extend_bg(
             Row::default(),
             &cells,
-            &[],
+            |_| Style::default(),
             &color::DEFAULT,
             BG
         ));
@@ -106,7 +105,13 @@ mod tests {
     fn prompt_rows_never_extend() {
         let mut row = Row::default();
         row.set_semantic_prompt(SemanticPrompt::Prompt);
-        assert!(never_extend_bg(row, &[], &[], &color::DEFAULT, BG));
+        assert!(never_extend_bg(
+            row,
+            &[],
+            |_| Style::default(),
+            &color::DEFAULT,
+            BG
+        ));
     }
 
     #[test]
@@ -115,7 +120,7 @@ mod tests {
         assert!(never_extend_bg(
             Row::default(),
             &cells,
-            &[],
+            |_| Style::default(),
             &color::DEFAULT,
             BG
         ));
@@ -129,7 +134,7 @@ mod tests {
         assert!(!never_extend_bg(
             Row::default(),
             &[c],
-            &[],
+            |_| Style::default(),
             &color::DEFAULT,
             BG
         ));
@@ -138,7 +143,7 @@ mod tests {
         assert!(never_extend_bg(
             Row::default(),
             &[c],
-            &[],
+            |_| Style::default(),
             &color::DEFAULT,
             BG
         ));

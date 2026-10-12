@@ -178,7 +178,7 @@ impl Benchmark for TerminalParser {
         let mut p = Parser::new();
         self.data.for_each_chunk(|chunk| {
             for &c in chunk {
-                drop(p.next(c));
+                p.next_with(c, drop);
             }
             Ok(())
         })

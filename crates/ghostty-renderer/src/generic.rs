@@ -2283,7 +2283,7 @@ impl DrawState {
                     pe.up = !never_extend_bg(
                         row.raw,
                         cells_raw,
-                        &cells.style,
+                        |x| cells.style(x),
                         &colors.palette,
                         colors.background,
                     );
@@ -2293,7 +2293,7 @@ impl DrawState {
                     pe.down = !never_extend_bg(
                         row.raw,
                         cells_raw,
-                        &cells.style,
+                        |x| cells.style(x),
                         &colors.palette,
                         colors.background,
                     );

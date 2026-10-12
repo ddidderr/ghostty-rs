@@ -96,3 +96,25 @@ utf8 0.85 s, sgr 1.6 s (no Zig counterpart; profile shows no pathology).
   `osc-parser` bench uses it (the VT stream parser still feeds OSC bytes one at a time).
 - Remaining: render (2.5x): `RenderState::update` per-row `Vec<Style>` resize (84 B/cell, every
   row is styled in this benchmark) and cell copy; a lazy style vec did not help here, so reverted.
+
+## PF: last two gaps (production profile, hyperfine min wall, same data/machine as above)
+| benchmark | Zig ms | before ms | after ms | after/Zig |
+|---|---|---|---|---|
+| screen-clone render (1000x) | 4.7 | 11.5 | 4.1 | 0.87 |
+| terminal-parser sgr/csi (100 MB) | 354 | 538 | 231 | 0.65 |
+| terminal-parser utf8 | 293 | 349 | 190 | 0.65 |
+| terminal-parser ascii | 499 | 268 | 91 | 0.18 |
+| terminal-stream sgr (unchanged) | 670 | 693 | 654 | 0.98 |
+| screen-clone clone (unchanged) | 27.3 | 28.2 | 24.3 | 0.89 |
+
+- `RenderState` cells: `Cells.style: Vec<Style>` (one 21-byte Style per cell for every row with
+  managed memory) replaced by sparse storage: `style_ids: Vec<u16>` (0 = default) + `styles: Vec<Style>`
+  (one entry per distinct consecutive style / bg-colour cell). Use `Cells::style(x)`. The cell loop skips
+  plain cells with a single mask test (`page::Cell::is_plain`: tag Codepoint and style id 0); that
+  alone was the bulk of the win (7 -> 4 ms). Renderer `never_extend_bg` now takes a
+  `style_of: impl Fn(usize) -> Style` instead of a style slice.
+- `Parser::next_with(c, |action| ..)` visitor (shared `step` core, generic over the sink) avoids
+  materialising the `[Option<Action>; 3]`; `Parser::next` is kept as a wrapper (same slots) so the Stream
+  and all callers are unchanged; test `next_with_matches_next`. The bench uses `next_with(c, drop)`
+  (like Zig's `_ = actions`; the optimiser can elide unused CSI payload construction, same as in Zig).
+- Stream path was already at parity and is untouched.

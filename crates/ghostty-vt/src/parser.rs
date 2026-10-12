@@ -302,28 +302,49 @@ impl Parser {
     /// the state exit, transition, and entry actions.
     #[inline]
     pub fn next(&mut self, c: u8) -> [Option<Action>; 3] {
+        let mut out: [Option<Action>; 3] = [None, None, None];
+        self.step(c, &mut |slot, action| out[slot] = Some(action));
+        out
+    }
+
+    /// Visitor form of [`Parser::next`]: `f` is called, in order, with each
+    /// action (exit, transition, entry) instead of returning an array. This
+    /// avoids moving the large `[Option<Action>; 3]` out of the parser.
+    #[inline]
+    pub fn next_with<F: FnMut(Action)>(&mut self, c: u8, mut f: F) {
+        self.step(c, &mut |_, action| f(action));
+    }
+
+    #[inline(always)]
+    fn step<F: FnMut(usize, Action)>(&mut self, c: u8, f: &mut F) {
         let effect = TABLE[c as usize][self.state as usize];
 
         // Fast path: staying in the same state means there are no exit or
         // entry actions, only the transition action.
         if self.state == effect.state {
-            return match effect.action {
-                TransitionAction::Print => [None, Some(Action::Print(u32::from(c))), None],
-                TransitionAction::Execute => [None, Some(Action::Execute(c)), None],
-                action => [None, self.do_action(action, c), None],
-            };
+            match effect.action {
+                TransitionAction::Print => f(1, Action::Print(u32::from(c))),
+                TransitionAction::Execute => f(1, Action::Execute(c)),
+                action => {
+                    if let Some(a) = self.do_action(action, c) {
+                        f(1, a);
+                    }
+                }
+            }
+            return;
         }
 
-        self.next_state_change(c, effect)
+        self.next_state_change(c, effect, f);
     }
 
     /// The general path of [`Parser::next`] when the state changes.
     #[inline(never)]
-    fn next_state_change(
+    fn next_state_change<F: FnMut(usize, Action)>(
         &mut self,
         c: u8,
         effect: crate::parse_table::Transition,
-    ) -> [Option<Action>; 3] {
+        f: &mut F,
+    ) {
         let next_state = effect.state;
         let action = effect.action;
 
@@ -333,20 +354,21 @@ impl Parser {
         // 2. transition action
         // 3. entry action to new state
 
-        // The actions are written straight into the result array: building
-        // the three `Option<Action>` values separately and then moving them
-        // into the array costs a store-forwarding stall per byte.
-        let mut out: [Option<Action>; 3] = [None, None, None];
-
         // Exit depends on current state (we always change state here).
         match self.state {
-            State::OscString => out[0] = self.osc_parser.end(Some(c)).map(Action::OscDispatch),
-            State::DcsPassthrough => out[0] = Some(Action::DcsUnhook),
-            State::SosPmApcString => out[0] = Some(Action::ApcEnd),
+            State::OscString => {
+                if let Some(cmd) = self.osc_parser.end(Some(c)) {
+                    f(0, Action::OscDispatch(cmd));
+                }
+            }
+            State::DcsPassthrough => f(0, Action::DcsUnhook),
+            State::SosPmApcString => f(0, Action::ApcEnd),
             _ => {}
         }
 
-        out[1] = self.do_action(action, c);
+        if let Some(a) = self.do_action(action, c) {
+            f(1, a);
+        }
 
         // Entry depends on new state
         match next_state {
@@ -362,20 +384,21 @@ impl Parser {
                     self.params[self.params_idx as usize] = self.param_acc;
                     self.params_idx += 1;
                 }
-                out[2] = Some(Action::DcsHook(Dcs::new(
-                    &self.intermediates[..self.intermediates_idx as usize],
-                    &self.params[..self.params_idx as usize],
-                    c,
-                )));
+                f(
+                    2,
+                    Action::DcsHook(Dcs::new(
+                        &self.intermediates[..self.intermediates_idx as usize],
+                        &self.params[..self.params_idx as usize],
+                        c,
+                    )),
+                );
             }
-            State::SosPmApcString => out[2] = Some(Action::ApcStart),
+            State::SosPmApcString => f(2, Action::ApcStart),
             _ => {}
         }
 
         // After generating the actions, we set our next state.
         self.state = next_state;
-
-        out
     }
 
     #[inline]
@@ -512,6 +535,20 @@ mod tests {
         match a[1].as_ref().expect("csi_dispatch") {
             Action::CsiDispatch(c) => *c,
             other => panic!("expected csi_dispatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn next_with_matches_next() {
+        let input = b"\x1b[1;38:2::1:2:3m\x1b]0;title\x07a\n\x1bP1$qm\x1b\\\x1b_G\x1b\\\x1b[31";
+        let mut a = Parser::new();
+        let mut b = Parser::new();
+        for &c in input {
+            let expect: Vec<Action> = a.next(c).into_iter().flatten().collect();
+            let mut got = Vec::new();
+            b.next_with(c, |act| got.push(act));
+            assert_eq!(expect, got);
+            assert_eq!(a.state, b.state);
         }
     }
 

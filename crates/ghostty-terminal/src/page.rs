@@ -154,6 +154,12 @@ impl Cell {
     pub fn has_styling(self) -> bool {
         self.style_id() != 0
     }
+    /// True if the cell is a plain single-codepoint cell with the default
+    /// style (content tag `Codepoint` and style id 0): a single mask test.
+    #[inline(always)]
+    pub fn is_plain(self) -> bool {
+        self.0 & (3 | (0xFFFF << 26)) == 0
+    }
     /// True for a blank narrow textual cell; style does not affect this test.
     pub fn is_empty(self) -> bool {
         (self.content_tag() as u8) < 2 && !self.has_text() && self.wide() == Wide::Narrow
@@ -1789,6 +1795,19 @@ fn swap_map<T, S: std::hash::BuildHasher>(map: &mut HashMap<usize, T, S>, a: usi
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cell_is_plain() {
+        let mut c = Cell::init(u32::from('a'));
+        assert!(c.is_plain());
+        c.set_style_id(1);
+        assert!(!c.is_plain());
+        c.set_style_id(0);
+        c.set_content_tag(ContentTag::BgColorRgb);
+        assert!(!c.is_plain());
+        c.set_content_tag(ContentTag::CodepointGrapheme);
+        assert!(!c.is_plain());
+    }
+
     use super::*;
     #[test]
     fn chunk_alloc_matches_naive_first_fit() {
