@@ -12,6 +12,8 @@ path = "src/main.rs"
 # Mirrors upstream's `-Dsentry` build option (off by default on Linux):
 # enables the local crash-report handler (`ghostty-crash`).
 sentry = ["ghostty-crash/sentry"]
+# Mirrors upstream's `-Dsnap` build option (off by default).
+snap = ["ghostty-os/snap"]
 
 [dependencies]
 ghostty-core.workspace = true

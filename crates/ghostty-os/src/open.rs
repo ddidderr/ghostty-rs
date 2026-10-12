@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
-    io,
-    process::{Command, Stdio},
+    io::{self, Read},
+    process::{Child, Command, Stdio},
 };
 
 /// Kind of URL being opened (`apprt.action.OpenUrl.Kind`). On Linux the
@@ -31,25 +31,9 @@ pub enum OpenUrlKind {
 /// apprt for Ghostty, you should consider doing something special-cased
 /// for your platform.
 pub fn open(kind: OpenUrlKind, url: &OsStr) -> io::Result<()> {
-    let mut cmd = open_command(kind, url)?;
-
-    // Pipe stdout/stderr so we can collect output from the command.
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    // In the snap on Linux the launcher exports LD_LIBRARY_PATH pointing at
-    // the snap's bundled libraries. Leaking this into child process can
-    // can be problematic, so let's drop it from the env.
-    // TODO(integration): Zig does this only for `build_config.snap` builds;
-    // we do it when running inside a snap (`SNAP` is set).
-    if std::env::var_os("SNAP").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-    }
-
     // Spawn the process on our same thread so we can detect failure
     // quickly.
-    let child = cmd.spawn()?;
+    let child = spawn_child(open_command(kind, url)?)?;
 
     // Create a thread that handles collecting output and reaping
     // the process. This is done in a separate thread because SOME
@@ -59,6 +43,26 @@ pub fn open(kind: OpenUrlKind, url: &OsStr) -> io::Result<()> {
         .name("open-url".into())
         .spawn(move || open_thread(child))?;
     Ok(())
+}
+
+/// Configure and spawn the opener. Like Zig's `Child.init`, stdin is
+/// inherited.
+fn spawn_child(mut cmd: Command) -> io::Result<Child> {
+    // Pipe stdout/stderr so we can collect output from the command.
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    strip_snap_env(&mut cmd);
+    cmd.spawn()
+}
+
+/// In the snap on Linux the launcher exports LD_LIBRARY_PATH pointing at
+/// the snap's bundled libraries. Leaking this into child process can
+/// can be problematic, so let's drop it from the env. Zig does this only
+/// for `build_config.snap` builds (the `snap` cargo feature here, off by
+/// default).
+fn strip_snap_env(cmd: &mut Command) {
+    if cfg!(feature = "snap") {
+        cmd.env_remove("LD_LIBRARY_PATH");
+    }
 }
 
 /// Build the platform's "open URL" command (Zig `open`'s switch over
@@ -107,24 +111,58 @@ fn open_command(_kind: OpenUrlKind, _url: &OsStr) -> io::Result<Command> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
 }
 
-fn open_thread(child: std::process::Child) {
-    // 50 KiB is the default value used by std.process.Child.run and should
-    // be enough to get the output we care about.
-    const OUTPUT_MAX_SIZE: usize = 50 * 1024;
+/// 50 KiB is the default value used by std.process.Child.run and should
+/// be enough to get the output we care about.
+const OUTPUT_MAX_SIZE: usize = 50 * 1024;
 
-    let output = match child.wait_with_output() {
-        Ok(o) => o,
+/// Read at most [`OUTPUT_MAX_SIZE`] bytes; more is an error
+/// (`error.StdoutStreamTooLong` / `StderrStreamTooLong` in Zig).
+fn read_bounded(mut r: impl Read, name: &str) -> io::Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    (&mut r)
+        .take(OUTPUT_MAX_SIZE as u64 + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() > OUTPUT_MAX_SIZE {
+        return Err(io::Error::other(format!("{name} stream too long")));
+    }
+    Ok(buf)
+}
+
+/// Collect both streams concurrently, bounded per stream.
+fn collect_output(child: &mut Child) -> io::Result<(Vec<u8>, Vec<u8>)> {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_thread = std::thread::spawn(move || match stdout {
+        Some(r) => read_bounded(r, "stdout"),
+        None => Ok(Vec::new()),
+    });
+    let err = match stderr {
+        Some(r) => read_bounded(r, "stderr"),
+        None => Ok(Vec::new()),
+    };
+    let out = out_thread
+        .join()
+        .unwrap_or_else(|_| Err(io::Error::other("stdout reader panicked")));
+    Ok((out?, err?))
+}
+
+fn open_thread(mut child: Child) {
+    let stderr = match collect_output(&mut child) {
+        Ok((_stdout, stderr)) => stderr,
         Err(e) => {
-            log::warn!("error waiting for open command err={e}");
+            log::warn!("error collecting open command output err={e}");
             return;
         }
     };
+    if let Err(e) = child.wait() {
+        log::warn!("error waiting for open command err={e}");
+        return;
+    }
 
     // If we have any stderr output we log it. This makes it easier for
     // users to debug why some open commands may not work as expected.
-    let stderr = &output.stderr[..output.stderr.len().min(OUTPUT_MAX_SIZE)];
     if !stderr.is_empty() {
-        log::warn!("wait stderr={}", String::from_utf8_lossy(stderr));
+        log::warn!("wait stderr={}", String::from_utf8_lossy(&stderr));
     }
 }
 
@@ -166,5 +204,71 @@ mod tests {
             let err = open(OpenUrlKind::Unknown, OsStr::new("https://example.com")).unwrap_err();
             assert_eq!(err.kind(), io::ErrorKind::NotFound);
         });
+    }
+
+    #[test]
+    fn output_collection_is_bounded_per_stream() {
+        let mut ok = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "PATH=/usr/bin:/bin; head -c 51200 /dev/zero; head -c 51200 /dev/zero >&2",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let (out, err) = collect_output(&mut ok).unwrap();
+        assert_eq!((out.len(), err.len()), (OUTPUT_MAX_SIZE, OUTPUT_MAX_SIZE));
+        ok.wait().unwrap();
+
+        for fd in ["", ">&2"] {
+            let script = format!("PATH=/usr/bin:/bin; head -c 51201 /dev/zero {fd}");
+            let mut big = Command::new("/bin/sh")
+                .args(["-c", &script])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            assert!(collect_output(&mut big).is_err(), "{fd}");
+            big.wait().unwrap();
+        }
+    }
+
+    #[test]
+    fn snap_env_is_stripped_only_for_snap_builds() {
+        let mut cmd = Command::new("true");
+        strip_snap_env(&mut cmd);
+        let removed = cmd
+            .get_envs()
+            .any(|(k, v)| k == "LD_LIBRARY_PATH" && v.is_none());
+        assert_eq!(removed, cfg!(feature = "snap"));
+    }
+
+    /// The opener inherits stdin (Zig `Child.init` default).
+    #[test]
+    fn opener_inherits_stdin() {
+        use std::io::Write as _;
+        const CHILD: &str = "GHOSTTY_TEST_OPEN_STDIN_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let child = spawn_child(Command::new("/bin/cat")).unwrap();
+            let out = child.wait_with_output().unwrap();
+            print!("got:{}", String::from_utf8_lossy(&out.stdout));
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "open::tests::opener_inherits_stdin",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"hello").unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(String::from_utf8_lossy(&out.stdout).contains("got:hello"));
     }
 }

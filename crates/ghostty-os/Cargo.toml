@@ -51,6 +51,9 @@ crossbeam-channel = "0.5.17"
 [features]
 # Mirrors Zig's `wasm_shared` build option (SharedArrayBuffer-backed memory).
 wasm-shared = []
+# Mirrors Zig's `snap` build option (`-Dsnap`, off by default): the URL
+# opener drops `LD_LIBRARY_PATH` from the child environment.
+snap = []
 
 # Same as `[workspace.lints]` except `unsafe_code` is denied instead of
 # forbidden: the wasm JS import blocks (`src/wasm`) need `unsafe`.
