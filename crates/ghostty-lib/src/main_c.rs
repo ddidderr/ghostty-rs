@@ -4,12 +4,13 @@
 
 use std::{
     collections::HashMap,
-    ffi::{CStr, CString, c_char, c_int},
+    ffi::{CStr, CString, OsString, c_char, c_int},
     sync::{Mutex, OnceLock},
 };
 
 use ghostty_cli::build_info::{self, BuildInfo};
 use ghostty_core::global::{self, InitOptions};
+use ghostty_os::osbytes;
 
 use crate::types::{build_mode, ghostty_info_s, ghostty_string_s};
 
@@ -77,7 +78,8 @@ pub(crate) fn alloc_c_text(bytes: &[u8]) -> *const c_char {
 /// `argv` must be null or point to `argc` valid NUL terminated strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_int {
-    let mut args = Vec::with_capacity(argc);
+    // Raw argument bytes (Zig: `std.os.argv = argv[0..argc]`).
+    let mut raw: Vec<OsString> = Vec::with_capacity(argc);
     if !argv.is_null() {
         for i in 0..argc {
             // SAFETY: the caller guarantees `argv[0..argc]` are valid.
@@ -87,9 +89,17 @@ pub unsafe extern "C" fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_
             }
             // SAFETY: each argv entry is a NUL terminated string.
             let c = unsafe { CStr::from_ptr(p) };
-            args.push(c.to_string_lossy().into_owned());
+            raw.push(osbytes::os_from_bytes(c.to_bytes().to_vec()));
         }
     }
+
+    // Later config CLI loading (`ghostty_config_load_cli_args`) must see
+    // these arguments rather than the process arguments.
+    ghostty_os::args::set_argv(raw.clone());
+    let args: Vec<String> = raw
+        .iter()
+        .map(|a| osbytes::os_to_config_string(a))
+        .collect();
 
     // We first try to parse any action that we may be executing.
     let action = match ghostty_cli::ghostty::detect(&args) {
@@ -101,14 +111,46 @@ pub unsafe extern "C" fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_
     };
     let _ = ARGS.set(args);
 
+    // `+version` and friends report the library build.
+    build_info::set(lib_build_info());
+
+    // Setup our signal handlers before logging (Zig: `initSignals`). A C or
+    // Swift host does not get the Rust runtime's SIGPIPE ignore.
+    init_signals();
+
     global::init_lib(InitOptions {
         action: action.is_some(),
         resources_dir: None,
+        crash: Some(lib_crash_options()),
     });
 
-    // `+version` and friends report the library build.
-    build_info::set(lib_build_info());
     0
+}
+
+/// Ignore SIGPIPE: it is common with how termio shuts down read threads
+/// (Zig: `GlobalState.initSignals`; not on Windows).
+fn init_signals() {
+    #[cfg(unix)]
+    // SAFETY: installing SIG_IGN for SIGPIPE has no memory safety impact.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+    }
+}
+
+/// Crash metadata for the library artifact: no app runtime, CoreText +
+/// Metal on Apple targets (so the GTK / fontconfig / OpenGL defaults are
+/// not reported for the macOS app).
+fn lib_crash_options() -> ghostty_crash::Options {
+    let info = build_info::get();
+    let tag = |s: &str| s.trim_start_matches('.').to_owned();
+    let mut o = global::default_crash_options();
+    o.release.clone_from(&info.version_string);
+    o.app_runtime = tag(&lib_build_info().app_runtime);
+    if cfg!(target_vendor = "apple") {
+        "coretext".clone_into(&mut o.font_backend);
+        "metal".clone_into(&mut o.renderer);
+    }
+    o
 }
 
 /// The build info of the library (Zig: `build_config` for the lib artifact:

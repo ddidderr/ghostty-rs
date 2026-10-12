@@ -201,6 +201,15 @@ pub trait CoreSurface {
         data: &str,
         confirmed: bool,
     ) -> Result<(), ClipboardError>;
+    /// [`CoreSurface::complete_clipboard_request`] for a paste of raw bytes
+    /// (Zig data is `[]const u8`). The default converts lossily.
+    fn complete_paste_bytes(&self, data: &[u8], confirmed: bool) -> Result<(), ClipboardError> {
+        self.complete_clipboard_request(
+            ClipboardRequest::Paste,
+            &String::from_utf8_lossy(data),
+            confirmed,
+        )
+    }
     /// After the user confirms (`surface.config.clipboard_read = .allow`).
     fn set_clipboard_read_allowed(&self, allow: bool);
     /// See [`CoreSurface::set_clipboard_read_allowed`] (`clipboard_write`).

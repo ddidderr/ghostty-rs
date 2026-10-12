@@ -649,6 +649,11 @@ impl std::fmt::Display for SetTitle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pwd {
+    /// The working directory as reported by OSC 7. Zig keeps raw bytes; here
+    /// non-UTF-8 bytes are carried with the reversible escape of
+    /// `ghostty_os::osbytes` (valid UTF-8 is unchanged). Decode with
+    /// `osbytes::config_str_to_bytes` / `config_str_to_os` before using it
+    /// as a path or handing it to C.
     pub pwd: String,
 }
 

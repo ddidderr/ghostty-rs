@@ -215,6 +215,12 @@ impl Surface {
         }
     }
 
+    /// [`Surface::complete_clipboard_request`] for a paste of raw bytes
+    /// (Zig passes `[]const u8`; e.g. dropped non-UTF-8 file names).
+    pub fn complete_paste_bytes(&self, data: &[u8], confirmed: bool) -> Result<(), ClipboardError> {
+        self.complete_clipboard_paste(data, confirmed)
+    }
+
     /// Paste text (also the target of `text_callback`).
     pub(crate) fn complete_clipboard_paste(
         &self,
@@ -390,7 +396,13 @@ impl Surface {
 
     /// `textCallback`: text input that is pasted verbatim.
     pub fn text_callback(&self, text: &str) -> Result<(), ClipboardError> {
+        self.text_callback_bytes(text.as_bytes())
+    }
+
+    /// [`Surface::text_callback`] for raw bytes (Zig takes `[]const u8`;
+    /// the embedded `ghostty_surface_text` forwards the host bytes as is).
+    pub fn text_callback_bytes(&self, text: &[u8]) -> Result<(), ClipboardError> {
         let _crash = self.crash_guard();
-        self.complete_clipboard_paste(text.as_bytes(), true)
+        self.complete_clipboard_paste(text, true)
     }
 }

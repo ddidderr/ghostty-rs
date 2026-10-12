@@ -1512,6 +1512,12 @@ impl Surface {
         clipboard::paste(self, text);
     }
 
+    /// [`Surface::paste`] for raw bytes (e.g. dropped file names that are
+    /// not valid UTF-8 must reach the pty unchanged).
+    pub fn paste_bytes(&self, bytes: &[u8]) {
+        clipboard::paste_bytes(self, bytes);
+    }
+
     /// Focus this surface. This properly focuses the input part of
     /// our surface. (Shadows `WidgetExt::grab_focus` on purpose, like Zig.)
     pub fn grab_focus(&self) {
@@ -2622,6 +2628,26 @@ mod clipboard {
         }
     }
 
+    /// Paste explicit bytes. Valid UTF-8 takes the normal text path; other
+    /// bytes use the byte-preserving paste (the confirmation dialog, which
+    /// is text based, carries them with the reversible byte escape).
+    pub(super) fn paste_bytes(surface: &Surface, bytes: &[u8]) {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            paste(surface, text);
+            return;
+        }
+
+        let Some(core) = surface.core() else { return };
+        match core.complete_paste_bytes(bytes, false) {
+            Ok(()) => {}
+            Err(ClipboardError::UnsafePaste | ClipboardError::UnauthorizedPaste) => {
+                let text = ghostty_os::osbytes::bytes_to_config_string(bytes);
+                show_clipboard_confirmation(surface, ClipboardRequest::Paste, &text);
+            }
+            Err(err) => log::warn!("failed to complete clipboard request err={err}"),
+        }
+    }
+
     /// Get the specific type of clipboard for a widget.
     fn get(widget: &gtk::Widget, clipboard: Clipboard) -> gdk::Clipboard {
         match clipboard {
@@ -2661,7 +2687,13 @@ mod clipboard {
 
             // Get our text
             let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
-            if let Err(err) = core.complete_clipboard_request(req, &text, true) {
+            let result = if matches!(req, ClipboardRequest::Paste) {
+                // Undo the byte escape used for non-UTF-8 pastes.
+                core.complete_paste_bytes(&ghostty_os::osbytes::config_str_to_bytes(&text), true)
+            } else {
+                core.complete_clipboard_request(req, &text, true)
+            };
+            if let Err(err) = result {
                 log::warn!("failed to complete clipboard request: {err}");
             }
         });
@@ -3375,17 +3407,14 @@ mod imp {
                     let mut w = ghostty_os::ShellEscapeWriter::new(&mut escaped);
                     for file in list.files() {
                         let Some(path) = file.path() else { continue };
-                        let path = path.to_string_lossy().into_owned();
-                        if let Err(err) = w
-                            .write_all(path.as_bytes())
-                            .and_then(|()| w.write_all(b"\n"))
-                        {
+                        // Raw path bytes: non-UTF-8 names must survive.
+                        let path = ghostty_os::osbytes::os_bytes(path.as_os_str());
+                        if let Err(err) = w.write_all(&path).and_then(|()| w.write_all(b"\n")) {
                             log::error!("unable to write path to buffer: {err}");
                         }
                     }
                 }
-                let string = String::from_utf8_lossy(&escaped).into_owned();
-                this.paste(&string);
+                this.paste_bytes(&escaped);
                 return true;
             }
 
@@ -3397,7 +3426,7 @@ mod imp {
                 {
                     let mut w = ghostty_os::ShellEscapeWriter::new(&mut escaped);
                     if let Err(err) = w
-                        .write_all(path.to_string_lossy().as_bytes())
+                        .write_all(&ghostty_os::osbytes::os_bytes(path.as_os_str()))
                         .and_then(|()| w.write_all(b"\n"))
                     {
                         log::error!("unable to write path to buffer: {err}");

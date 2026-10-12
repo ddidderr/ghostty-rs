@@ -1662,7 +1662,7 @@ impl Window {
                 .application_name(name)
                 .developer_name(tr("Ghostty Developers"))
                 .application_icon(icon)
-                .version(env!("CARGO_PKG_VERSION"))
+                .version(ghostty_build_info::VERSION_STRING)
                 .issue_url("https://github.com/ghostty-org/ghostty/issues")
                 .website(website)
                 .build();
@@ -1675,7 +1675,7 @@ impl Window {
                     ("program-name", &name),
                     ("logo-icon-name", &icon),
                     ("title", &tr("About Ghostty")),
-                    ("version", &env!("CARGO_PKG_VERSION")),
+                    ("version", &ghostty_build_info::VERSION_STRING),
                     ("website", &website),
                 ],
             );

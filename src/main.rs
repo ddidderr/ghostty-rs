@@ -20,16 +20,18 @@ fn main() -> ExitCode {
 }
 
 fn real_main() -> ExitCode {
-    // Byte-safe argv (`std::env::args()` panics on non-UTF-8 arguments).
-    let args: Vec<String> = ghostty_os::args::collect_lossy();
+    // Raw argv bytes (Zig `[]const u8`); `std::env::args()` would panic on
+    // non-UTF-8 arguments and a lossy conversion would change them.
+    let args: Vec<std::ffi::OsString> = ghostty_os::args::collect_os();
 
     // We first start by initializing our global state. This sets up
     // process-level state we need to run the terminal. We detect whether a
     // CLI action was requested so logging can be silenced for it.
-    let action_requested = !matches!(ghostty_cli::ghostty::detect(&args), Ok(None));
+    let action_requested = !matches!(ghostty_cli::ghostty::detect_os(&args), Ok(None));
     global::init(InitOptions {
         action: action_requested,
         resources_dir: Some(ghostty_apprt_gtk::flatpak::resources_dir),
+        ..InitOptions::default()
     });
     // Zig `global.init` runs `ensureLocale` before anything locale dependent.
     ghostty_apprt_gtk::class::application::init_locale();
@@ -38,7 +40,7 @@ fn real_main() -> ExitCode {
     // Execute our action if we have one.
     if action_requested {
         ghostty_cli::new_window::set_ipc_handler(new_window_ipc);
-        if let Some(code) = ghostty_cli::run_from_args(&args) {
+        if let Some(code) = ghostty_cli::ghostty::run_from_os_args(&args) {
             return ExitCode::from(code);
         }
     }

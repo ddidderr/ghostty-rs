@@ -115,6 +115,24 @@ fn pwd_osc7() {
 }
 
 #[test]
+fn pwd_osc7_keeps_non_utf8_bytes() {
+    let h = harness!(Harness::recorder(
+        r"\033]7;file://localhost/tmp/a%%FFb\033\\",
+        &[]
+    ));
+    let pwd = h.wait_action("pwd", |a| match a {
+        Action::Pwd(p) if !p.pwd.is_empty() => Some(p.pwd.clone()),
+        _ => None,
+    });
+    assert_eq!(
+        ghostty_os::osbytes::config_str_to_bytes(&pwd),
+        b"/tmp/a\xffb"
+    );
+    assert_eq!(h.surface.pwd_bytes().as_deref(), Some(&b"/tmp/a\xffb"[..]));
+    assert_eq!(h.surface.pwd().as_deref(), Some(pwd.as_str()));
+}
+
+#[test]
 fn bell_rings_once_per_burst() {
     let h = harness!(Harness::recorder(r"\007", &[]));
     h.wait_action("bell", |a| matches!(a, Action::RingBell).then_some(()));

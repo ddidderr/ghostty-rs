@@ -86,7 +86,7 @@ use crate::{
 };
 
 /// `build_config.version_string`.
-pub const VERSION_STRING: &str = "1.3.1";
+pub const VERSION_STRING: &str = ghostty_build_info::VERSION_STRING;
 
 /// The long-lived state of the handler (everything but the terminal).
 pub struct HandlerState {
@@ -1693,7 +1693,11 @@ mod tests {
     fn xtversion() {
         let mut h = Harness::new();
         h.feed(b"\x1b[>q");
-        assert_eq!(b"\x1bP>|ghostty 1.3.1\x1b\\".as_slice(), h.written());
+        let want = format!(
+            "\x1bP>|ghostty {}\x1b\\",
+            ghostty_build_info::VERSION_STRING
+        );
+        assert_eq!(want.as_bytes(), h.written());
     }
 
     #[test]

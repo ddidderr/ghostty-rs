@@ -62,6 +62,7 @@ ghostty-core = { path = "crates/ghostty-core" }
 ghostty-apprt-gtk = { path = "crates/ghostty-apprt-gtk" }
 ghostty-apprt = { path = "crates/ghostty-apprt" }
 ghostty-cli = { path = "crates/ghostty-cli" }
+ghostty-build-info = { path = "crates/ghostty-build-info" }
 ghostty-crash = { path = "crates/ghostty-crash" }
 ghostty-bench = { path = "crates/ghostty-bench" }
 ghostty-inspector = { path = "crates/ghostty-inspector" }
@@ -119,3 +120,6 @@ overflow-checks = false
 lto = true
 incremental = false
 codegen-units = 1
+
+[build-dependencies]
+embed-resource = "3.0.12"

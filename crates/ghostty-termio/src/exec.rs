@@ -181,7 +181,7 @@ impl Exec {
         // set that on the terminal now. This allows rapidly initializing
         // new surfaces to use the proper pwd.
         if let Some(cwd) = &self.subprocess.cwd
-            && let Err(err) = term.set_pwd(cwd.as_bytes())
+            && let Err(err) = term.set_pwd(&ghostty_os::osbytes::config_str_to_bytes(cwd))
         {
             log::warn!("error setting initial pwd err={err:?}");
         }
@@ -907,7 +907,10 @@ impl Subprocess {
 
         // Add the environment variables that override any others.
         for (k, v) in cfg.env_override.iter() {
-            env.insert(k, v);
+            env.insert(
+                ghostty_os::osbytes::config_str_to_os(k),
+                ghostty_os::osbytes::config_str_to_os(v),
+            );
         }
 
         // Build our args list
@@ -925,7 +928,7 @@ impl Subprocess {
         // https://github.com/kovidgoyal/kitty/issues/1595
         // https://github.com/ghostty-org/ghostty/discussions/7769
         if let Some(pwd) = &cwd {
-            env.insert("PWD", pwd.clone());
+            env.insert("PWD", ghostty_os::osbytes::config_str_to_os(pwd));
         }
 
         Ok(Subprocess {
@@ -1037,7 +1040,7 @@ impl Subprocess {
                 }
             }
             Some(proposed) => {
-                if std::path::Path::new(proposed).exists() {
+                if std::path::Path::new(&ghostty_os::osbytes::config_str_to_os(proposed)).exists() {
                     Some(proposed.clone())
                 } else {
                     log::warn!("cannot access cwd, ignoring: {proposed}");

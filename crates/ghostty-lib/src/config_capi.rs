@@ -249,9 +249,10 @@ pub unsafe extern "C" fn ghostty_config_load_file(ptr: ghostty_config_t, path: *
         return;
     }
     // SAFETY: `path` is NUL terminated.
-    let path = unsafe { CStr::from_ptr(path) }
-        .to_string_lossy()
-        .into_owned();
+    // Non-UTF-8 file names are valid on Unix; keep the bytes (reversible
+    // escape understood by the config file loader).
+    let path =
+        ghostty_os::osbytes::bytes_to_config_string(unsafe { CStr::from_ptr(path) }.to_bytes());
     if let Err(err) = c.config.load_file(&path) {
         log::error!("error loading config from file path={path} err={err}");
     }

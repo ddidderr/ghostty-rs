@@ -42,6 +42,7 @@ use ghostty_input::{
     binding::Action as BindingAction,
     keycodes,
 };
+use ghostty_os::osbytes;
 use ghostty_terminal::{
     point::{Coordinate, Point, Tag as PointTag},
     selection::Selection,
@@ -884,17 +885,22 @@ fn string_escape(input: &str) -> String {
 unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_config_s) {
     // If we have a working directory from the options then we set it.
     // SAFETY: per the function contract.
-    if let Some(wd) =
-        unsafe { cstr(opts.working_directory) }.map(|c| c.to_string_lossy().into_owned())
+    if let Some(wd) = unsafe { cstr(opts.working_directory) }.map(CStr::to_bytes)
         && !wd.is_empty()
     {
-        match std::fs::metadata(&wd) {
-            Err(err) => log::warn!("error opening requested working directory dir={wd} err={err}"),
+        // Raw bytes are kept (reversible escape in the String based config).
+        let wd_str = osbytes::bytes_to_config_string(wd);
+        let wd_os = osbytes::os_from_bytes(wd.to_vec());
+        let wd_disp = String::from_utf8_lossy(wd);
+        match std::fs::metadata(&wd_os) {
+            Err(err) => {
+                log::warn!("error opening requested working directory dir={wd_disp} err={err}");
+            }
             Ok(m) if !m.is_dir() => {
-                log::warn!("requested working directory is not a directory dir={wd}");
+                log::warn!("requested working directory is not a directory dir={wd_disp}");
             }
             Ok(_) => {
-                let mut wd_val = WorkingDirectory::Path(wd);
+                let mut wd_val = WorkingDirectory::Path(wd_str);
                 wd_val.finalize();
                 config.working_directory = Some(wd_val);
             }
@@ -903,10 +909,10 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
 
     // If we have a command from the options then we set it.
     // SAFETY: per the function contract.
-    if let Some(cmd) = unsafe { cstr(opts.command) }.map(|c| c.to_string_lossy().into_owned())
+    if let Some(cmd) = unsafe { cstr(opts.command) }.map(CStr::to_bytes)
         && !cmd.is_empty()
     {
-        config.command = Some(Command::Shell(cmd));
+        config.command = Some(Command::Shell(osbytes::bytes_to_config_string(cmd)));
         config.wait_after_command = true;
     }
 
@@ -919,7 +925,10 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
             let (Some(k), Some(v)) = (unsafe { cstr(var.key) }, unsafe { cstr(var.value) }) else {
                 continue;
             };
-            config.env.put(&k.to_string_lossy(), &v.to_string_lossy());
+            config.env.put(
+                &osbytes::bytes_to_config_string(k.to_bytes()),
+                &osbytes::bytes_to_config_string(v.to_bytes()),
+            );
         }
     }
 
@@ -929,10 +938,9 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
         // We need to escape the string because the "raw" field expects a
         // Zig string.
         config.input.list.clear();
-        config
-            .input
-            .list
-            .push(ReadableIO::Raw(string_escape(&input.to_string_lossy())));
+        config.input.list.push(ReadableIO::Raw(string_escape(
+            &osbytes::bytes_to_config_string(input.to_bytes()),
+        )));
     }
 
     // Wait after command
@@ -1107,7 +1115,7 @@ pub unsafe extern "C" fn ghostty_surface_inherited_config(
     }
 
     if should_inherit_working_directory(context, &config)
-        && let Some(cwd) = core.pwd()
+        && let Some(cwd) = core.pwd_bytes()
         && let Ok(c) = CString::new(cwd)
     {
         let mut keep = s.inherited_wd.borrow_mut();
@@ -1593,7 +1601,7 @@ pub unsafe extern "C" fn ghostty_surface_text(
         // SAFETY: `text` points to `len` readable bytes.
         unsafe { std::slice::from_raw_parts(text.cast::<u8>(), len) }
     };
-    if let Err(err) = core.text_callback(&String::from_utf8_lossy(bytes)) {
+    if let Err(err) = core.text_callback_bytes(bytes) {
         log::error!("error in key callback err={err}");
     }
 }
@@ -2153,5 +2161,63 @@ mod darwin {
 
         // Read the selection
         fill_text(core, t, sel, result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::ffi::OsStrExt;
+
+    use super::*;
+    use crate::types::ghostty_env_var_s;
+
+    /// Surface options are raw C bytes in Zig; non-UTF-8 values must reach
+    /// the config unchanged (reversible byte escape).
+    #[test]
+    fn surface_options_keep_non_utf8_bytes() {
+        let td = tempfile::tempdir().unwrap();
+        let mut dir = td.path().as_os_str().as_bytes().to_vec();
+        dir.extend_from_slice(b"/d\xff");
+        std::fs::create_dir(std::ffi::OsStr::from_bytes(&dir)).unwrap();
+
+        let wd = CString::new(dir.clone()).unwrap();
+        let cmd = CString::new(&b"echo \xfe"[..]).unwrap();
+        let key = CString::new(&b"K\xfd"[..]).unwrap();
+        let val = CString::new(&b"v\xfc"[..]).unwrap();
+        let input = CString::new(&b"in\xff\n"[..]).unwrap();
+        let mut env = [ghostty_env_var_s {
+            key: key.as_ptr(),
+            value: val.as_ptr(),
+        }];
+
+        // SAFETY: all-zero is a valid value (null pointers, 0 enums).
+        let mut opts: ghostty_surface_config_s = unsafe { std::mem::zeroed() };
+        opts.working_directory = wd.as_ptr();
+        opts.command = cmd.as_ptr();
+        opts.env_vars = env.as_mut_ptr();
+        opts.env_var_count = 1;
+        opts.initial_input = input.as_ptr();
+
+        let mut config = Config::default();
+        // SAFETY: the pointers above are valid NUL terminated strings.
+        unsafe { apply_surface_options(&mut config, &opts) };
+
+        let got_wd = config
+            .working_directory
+            .as_ref()
+            .and_then(|w| w.value())
+            .unwrap();
+        assert_eq!(osbytes::config_str_to_bytes(got_wd), dir);
+        let Some(Command::Shell(c)) = &config.command else {
+            panic!("no command");
+        };
+        assert_eq!(osbytes::config_str_to_bytes(c), b"echo \xfe");
+        let (k, v) = config.env.iter().next().unwrap();
+        assert_eq!(osbytes::config_str_to_bytes(k), b"K\xfd");
+        assert_eq!(osbytes::config_str_to_bytes(v), b"v\xfc");
+        assert!(matches!(
+            config.input.list.first(),
+            Some(ReadableIO::Raw(_))
+        ));
     }
 }

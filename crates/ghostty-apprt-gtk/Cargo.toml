@@ -23,6 +23,7 @@ ghostty-config.workspace = true
 ghostty-input.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-inspector.workspace = true
+ghostty-build-info.workspace = true
 ghostty-os.workspace = true
 ghostty-vt.workspace = true
 log = "0.4"

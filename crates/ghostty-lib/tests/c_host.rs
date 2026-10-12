@@ -43,7 +43,10 @@ fn host_program_passes() {
         "host failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(stdout.contains("OK"), "stdout:\n{stdout}");
-    assert!(stdout.contains("version=1.3.1"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains(&format!("version={}", ghostty_build_info::VERSION_STRING)),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -55,7 +58,10 @@ fn cli_try_action_runs_version_and_exits() {
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(stdout.starts_with("Ghostty 1.3.1"), "stdout:\n{stdout}");
+    assert!(
+        stdout.starts_with(&format!("Ghostty {}", ghostty_build_info::VERSION_STRING)),
+        "stdout:\n{stdout}"
+    );
     // The action ran instead of the rest of the program.
     assert!(!stdout.contains("OK"));
 }

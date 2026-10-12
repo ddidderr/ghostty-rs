@@ -471,10 +471,15 @@ impl Surface {
                 .and_then(|wd| wd.value())
                 .map(str::to_owned);
             ecfg.resources_dir = global::state().resources_dir.host().map(str::to_owned);
-            ecfg.rt_pre_exec_info = ghostty_termio::command::RtPreExecInfo::init(&config);
-            ecfg.rt_post_fork_info = ghostty_termio::command::RtPostForkInfo::init(&config);
-            ecfg.create_scope = rt_surface.create_scope_fn();
-            ecfg.restore_rlimit = global::state().rlimits.nofile;
+            // The Windows exec backend has no pre-exec/post-fork hooks,
+            // cgroup scopes or rlimits (Zig: Linux/POSIX only).
+            #[cfg(unix)]
+            {
+                ecfg.rt_pre_exec_info = ghostty_termio::command::RtPreExecInfo::init(&config);
+                ecfg.rt_post_fork_info = ghostty_termio::command::RtPostForkInfo::init(&config);
+                ecfg.create_scope = rt_surface.create_scope_fn();
+                ecfg.restore_rlimit = global::state().rlimits.nofile;
+            }
 
             let exec = Exec::new(ecfg)?;
             let args = exec.args().to_vec();
@@ -935,7 +940,9 @@ impl Surface {
             }
 
             Message::PwdChange(w) => {
-                let pwd = String::from_utf8_lossy(w.slice()).into_owned();
+                // Keep the OSC 7 bytes (see `Pwd`): non-UTF-8 bytes are
+                // carried with the reversible byte escape.
+                let pwd = ghostty_os::osbytes::bytes_to_config_string(w.slice());
                 self.perform(RtAction::Pwd(Pwd { pwd }));
             }
 
@@ -1364,7 +1371,14 @@ impl Surface {
     pub fn pwd(&self) -> Option<String> {
         let t = self.lock_terminal();
         let pwd = t.get_pwd()?;
-        Some(String::from_utf8_lossy(pwd).into_owned())
+        Some(ghostty_os::osbytes::bytes_to_config_string(pwd))
+    }
+
+    /// The raw bytes of [`Surface::pwd`] (Zig returns the OSC 7 bytes as is).
+    #[must_use]
+    pub fn pwd_bytes(&self) -> Option<Vec<u8>> {
+        let t = self.lock_terminal();
+        t.get_pwd().map(<[u8]>::to_vec)
     }
 
     /// Returns the x/y coordinate of where the IME (Input Method Editor)
@@ -2053,6 +2067,10 @@ impl CoreSurface for Surface {
         confirmed: bool,
     ) -> Result<(), ClipboardError> {
         Surface::complete_clipboard_request(self, req, data, confirmed)
+    }
+
+    fn complete_paste_bytes(&self, data: &[u8], confirmed: bool) -> Result<(), ClipboardError> {
+        Surface::complete_paste_bytes(self, data, confirmed)
     }
 
     fn set_clipboard_read_allowed(&self, allow: bool) {

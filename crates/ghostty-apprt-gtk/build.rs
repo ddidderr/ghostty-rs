@@ -69,6 +69,17 @@ fn main() {
     println!("cargo:rerun-if-changed=resources");
     println!("cargo:rerun-if-changed=build.rs");
 
+    // Source tarballs ship the prebuilt GResource bundle so packagers need
+    // neither blueprint-compiler nor glib-compile-resources (Zig:
+    // `GhosttyDist.Resource` for `ghostty_resources.{c,h}`). As in Zig, it is
+    // never used in a git checkout.
+    println!("cargo:rerun-if-changed=dist/ghostty.gresource");
+    let prebuilt = manifest.join("dist/ghostty.gresource");
+    if prebuilt.is_file() && !manifest.join("../../.git").exists() {
+        std::fs::copy(&prebuilt, out.join("ghostty.gresource")).unwrap();
+        return;
+    }
+
     let mut xml = String::new();
     xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gresources>\n");
 

@@ -113,11 +113,11 @@ mod imp {
                 return;
             };
             if data.exit_code == 0 {
-                banner.set_title("Command succeeded");
+                banner.set_title(&ghostty_os::i18n::tr("Command succeeded"));
                 this.add_css_class("normal");
                 this.remove_css_class("abnormal");
             } else {
-                banner.set_title("Command failed");
+                banner.set_title(&ghostty_os::i18n::tr("Command failed"));
                 this.remove_css_class("normal");
                 this.add_css_class("abnormal");
             }

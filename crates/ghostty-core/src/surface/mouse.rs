@@ -1664,7 +1664,7 @@ impl Surface {
                         sel: link.selection,
                         trim: false,
                     });
-                    let pwd = t.get_pwd().map(|p| String::from_utf8_lossy(p).into_owned());
+                    let pwd = t.get_pwd().map(ghostty_os::osbytes::bytes_to_config_string);
                     resolve_path_for_opening(pwd.as_deref(), &str).unwrap_or(str)
                 }
 

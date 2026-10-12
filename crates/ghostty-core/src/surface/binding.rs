@@ -424,6 +424,7 @@ pub fn write_screen_temp_file(
     loc: WriteScreenLoc,
     emit: WriteScreenFormat,
 ) -> Result<String, CoreError> {
+    #[cfg(unix)]
     use std::os::unix::fs::OpenOptionsExt as _;
 
     // Create a temporary directory to store our scrollback.
@@ -432,12 +433,11 @@ pub fn write_screen_temp_file(
     let file_path = tmp_dir.path().join(&filename);
 
     let result = (|| -> Result<String, CoreError> {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&file_path)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let mut file = opts.open(&file_path)?;
         file.write_all(contents.as_bytes())?;
         file.flush()?;
         Ok(std::fs::canonicalize(&file_path)?
@@ -1272,10 +1272,13 @@ mod tests {
         assert!(path.ends_with("screen.txt"));
         let read = std::fs::read_to_string(&path).unwrap();
         assert_eq!(read, s);
-        let mode = std::os::unix::fs::PermissionsExt::mode(
-            &std::fs::metadata(&path).unwrap().permissions(),
-        );
-        assert_eq!(mode & 0o777, 0o600);
+        #[cfg(unix)]
+        {
+            let mode = std::os::unix::fs::PermissionsExt::mode(
+                &std::fs::metadata(&path).unwrap().permissions(),
+            );
+            assert_eq!(mode & 0o777, 0o600);
+        }
         let _ = std::fs::remove_dir_all(std::path::Path::new(&path).parent().unwrap());
     }
 

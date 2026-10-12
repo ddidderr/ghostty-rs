@@ -36,7 +36,14 @@ pub struct Keep {
 impl Keep {
     /// A NUL terminated copy of `s` (interior NULs are dropped).
     fn cstr(&mut self, s: &str) -> *const c_char {
-        let c = CString::new(s.replace('\0', "")).unwrap_or_default();
+        self.cstr_bytes(s.as_bytes())
+    }
+
+    /// [`Keep::cstr`] for raw bytes.
+    fn cstr_bytes(&mut self, s: &[u8]) -> *const c_char {
+        let mut s = s.to_vec();
+        s.retain(|&b| b != 0);
+        let c = CString::new(s).unwrap_or_default();
         let ptr = c.as_ptr();
         // The heap buffer of a CString doesn't move when the Vec grows.
         self.strings.push(c);
@@ -123,7 +130,9 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         Action::SetTitle(t) => v.set_title.title = keep.cstr(&t.title),
         Action::SetTabTitle(t) => v.set_tab_title.title = keep.cstr(&t.title),
         Action::PromptTitle(p) => v.prompt_title = *p as c_int,
-        Action::Pwd(p) => v.pwd.pwd = keep.cstr(&p.pwd),
+        Action::Pwd(p) => {
+            v.pwd.pwd = keep.cstr_bytes(&ghostty_os::osbytes::config_str_to_bytes(&p.pwd));
+        }
         Action::MouseShape(s) => v.mouse_shape = *s as c_int,
         Action::MouseVisibility(m) => v.mouse_visibility = *m as c_int,
         Action::MouseOverLink(l) => {

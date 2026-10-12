@@ -116,7 +116,7 @@ pub struct GlobalState {
 static STATE: OnceLock<GlobalState> = OnceLock::new();
 
 /// Options for [`init`].
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct InitOptions {
     /// A CLI action is being executed: disable stderr logging by default
     /// since the action writes to stderr/stdout itself.
@@ -126,6 +126,32 @@ pub struct InitOptions {
     /// `apprt.runtime.resourcesDir`, e.g. GTK's Flatpak host path lookup).
     /// `None` uses the generic `ghostty_os::resourcesdir::resources_dir`.
     pub resources_dir: Option<fn() -> std::io::Result<ResourcesDir>>,
+
+    /// Crash reporting metadata (version, build mode, runtime, font backend
+    /// and renderer tags; Zig: `build_config`). `None` uses
+    /// [`default_crash_options`].
+    pub crash: Option<ghostty_crash::Options>,
+}
+
+/// Crash metadata for this build when the caller supplies none: the
+/// version from the shared build info and the compile-time platform
+/// defaults (Metal + CoreText on Apple targets, fontconfig + OpenGL
+/// elsewhere).
+#[must_use]
+pub fn default_crash_options() -> ghostty_crash::Options {
+    let mut o = ghostty_crash::Options {
+        release: ghostty_build_info::VERSION_STRING.to_owned(),
+        build_mode: ghostty_build_info::BUILD_MODE
+            .trim_start_matches('.')
+            .to_owned(),
+        ..ghostty_crash::Options::default()
+    };
+    if cfg!(target_vendor = "apple") {
+        "none".clone_into(&mut o.app_runtime);
+        "coretext".clone_into(&mut o.font_backend);
+        "metal".clone_into(&mut o.renderer);
+    }
+    o
 }
 
 /// The global state. If [`init`] was never called, a default state (no
@@ -182,11 +208,15 @@ fn init_with(opts: InitOptions, default_logging: Logging) -> &'static GlobalStat
         let rlimits = ResourceLimits::init();
 
         // Initialize our crash reporting.
-        if let Err(err) = ghostty_crash::init(&ghostty_crash::Options {
-            release: ghostty_termio::stream_handler::VERSION_STRING.to_owned(),
-            ..ghostty_crash::Options::default()
-        }) {
+        let crash_opts = opts.crash.clone().unwrap_or_else(default_crash_options);
+        if let Err(err) = ghostty_crash::init(&crash_opts) {
             log::warn!("sentry init failed, no crash capture available err={err}");
+        }
+
+        // We need to make sure the process locale is set properly. Locale
+        // affects a lot of behaviors in a shell.
+        if let Some(locale) = ghostty_os::ensure_locale() {
+            log::debug!("locale set locale={locale}");
         }
 
         // Find our resources directory once for the app so every launch
@@ -350,6 +380,19 @@ mod tests {
         assert_eq!(macos_message("default", &format_args!("hi")), "hi");
         assert_eq!(log_scope("ghostty_font::collection"), "font");
         assert_eq!(log_scope("other::x"), "other");
+    }
+
+    #[test]
+    fn crash_defaults_use_shared_version() {
+        let o = default_crash_options();
+        assert_eq!(o.release, ghostty_build_info::VERSION_STRING);
+        if cfg!(target_vendor = "apple") {
+            assert_eq!(o.renderer, "metal");
+            assert_eq!(o.font_backend, "coretext");
+            assert_eq!(o.app_runtime, "none");
+        } else {
+            assert_eq!(o.renderer, "opengl");
+        }
     }
 
     #[test]

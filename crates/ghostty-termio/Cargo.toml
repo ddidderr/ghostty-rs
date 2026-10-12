@@ -10,6 +10,7 @@ ghostty-apprt.workspace = true
 ghostty-config.workspace = true
 ghostty-crash.workspace = true
 ghostty-datastruct.workspace = true
+ghostty-build-info.workspace = true
 ghostty-os.workspace = true
 ghostty-renderer.workspace = true
 ghostty-terminal.workspace = true

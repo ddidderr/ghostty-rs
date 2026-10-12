@@ -23,6 +23,7 @@ ghostty-bench.workspace = true
 ghostty-cli.workspace = true
 ghostty-config.workspace = true
 ghostty-core.workspace = true
+ghostty-crash.workspace = true
 ghostty-input.workspace = true
 ghostty-inspector.workspace = true
 ghostty-os.workspace = true
@@ -30,6 +31,9 @@ ghostty-renderer.workspace = true
 ghostty-terminal.workspace = true
 ghostty-vt.workspace = true
 log = "0.4.34"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 block2 = "0.6.2"
@@ -40,6 +44,7 @@ objc2-foundation = "0.3.2"
 objc2-metal = { version = "0.3.2", features = ["block2"] }
 
 [dev-dependencies]
+ghostty-build-info.workspace = true
 tempfile = "3"
 
 # The workspace forbids `unsafe`; this crate is the C ABI boundary, so it

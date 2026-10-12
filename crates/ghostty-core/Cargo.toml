@@ -14,6 +14,7 @@ ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
 ghostty-inspector.workspace = true
 ghostty-input.workspace = true
+ghostty-build-info.workspace = true
 ghostty-os.workspace = true
 ghostty-renderer.workspace = true
 ghostty-terminal.workspace = true

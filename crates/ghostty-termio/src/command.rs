@@ -18,7 +18,7 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
-use ghostty_os::file::Rlimit;
+use ghostty_os::{file::Rlimit, osbytes::config_str_to_bytes};
 use rustix::{
     io::Errno,
     process::{self, WaitOptions},
@@ -264,13 +264,13 @@ impl Command {
     }
 
     fn prepare(&self) -> Result<Prepared, NulError> {
-        let path = CString::new(self.path.as_str())?;
+        let path = CString::new(config_str_to_bytes(&self.path))?;
         let argv = if self.args.is_empty() {
             vec![path.clone()]
         } else {
             self.args
                 .iter()
-                .map(|a| CString::new(a.as_str()))
+                .map(|a| CString::new(config_str_to_bytes(a)))
                 .collect::<Result<_, _>>()?
         };
         let envp = match &self.env {
@@ -297,7 +297,7 @@ impl Command {
         #[cfg(target_vendor = "apple")]
         let candidates = exec_candidates(&self.path, std::env::var("PATH").ok().as_deref())
             .into_iter()
-            .map(CString::new)
+            .map(|c| CString::new(config_str_to_bytes(&c)))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Prepared {
             path,
@@ -315,7 +315,10 @@ impl Command {
     pub fn start(&mut self) -> Result<(), StartError> {
         // IMPORTANT: do all allocation prior to the fork().
         let prep = self.prepare()?;
-        let cwd = self.cwd.as_deref().and_then(|c| CString::new(c).ok());
+        let cwd = self
+            .cwd
+            .as_deref()
+            .and_then(|c| CString::new(config_str_to_bytes(c)).ok());
 
         let mut argv_ptrs: Vec<*const c_char> = prep.argv.iter().map(|c| c.as_ptr()).collect();
         argv_ptrs.push(std::ptr::null());
@@ -874,6 +877,35 @@ mod tests {
         assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
 
         assert_eq!("/tmp\n", read_all(stdout));
+    }
+
+    #[test]
+    fn non_utf8_cwd_and_args_are_preserved() {
+        use ghostty_os::osbytes::{bytes_to_config_string, os_from_bytes};
+        let td = TempDir::init().unwrap();
+        let stdout = test_file(&td, "stdout.txt");
+
+        // A directory whose name is not valid UTF-8, handed over with the
+        // reversible byte escape used by the String based layers.
+        let mut raw = ghostty_os::osbytes::os_bytes(td.path().as_os_str());
+        raw.extend_from_slice(b"/d\xff");
+        std::fs::create_dir(os_from_bytes(raw.clone())).unwrap();
+
+        let mut cmd = Command::new("/bin/sh", &["/bin/sh", "-c", "pwd -P; printf %s \"$0\""]);
+        cmd.args.push(bytes_to_config_string(b"a\xffb"));
+        cmd.stdout = Some(stdout.try_clone().unwrap().into());
+        cmd.cwd = Some(bytes_to_config_string(&raw));
+        cmd.start().unwrap();
+        assert_eq!(cmd.wait(true).unwrap(), Exit::Exited(0));
+
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
+            &mut std::fs::File::open(td.path().join("stdout.txt")).unwrap(),
+            &mut bytes,
+        )
+        .unwrap();
+        assert!(bytes.windows(2).any(|w| w == b"d\xff"), "{bytes:?}");
+        assert!(bytes.ends_with(b"a\xffb"), "{bytes:?}");
     }
 
     #[test]

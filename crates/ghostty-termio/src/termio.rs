@@ -173,7 +173,7 @@ impl ThreadEnterState {
         let mut out = Vec::with_capacity(self.input.len());
         for item in &self.input {
             match item {
-                ReadableIO::Raw(v) => out.push(v.clone().into_bytes()),
+                ReadableIO::Raw(v) => out.push(ghostty_os::osbytes::config_str_to_bytes(v)),
                 ReadableIO::Path(path) => {
                     let f = std::fs::File::open(path).map_err(|err| {
                         log::warn!("failed to open input file={path} err={err}");
