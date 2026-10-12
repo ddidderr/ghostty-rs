@@ -101,6 +101,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | P3 | fix the 6 remaining KNOWN_DIFFERENCES rows | sonnet | ✅ | + fix-deviant(termio) getpgid |
 | WINE | run Windows code (incl. ConPTY) under Wine 11, fix bugs | sonnet | ✅ | 2758 tests pass under Wine; 2 fix-deviant |
 | ZWJ | theme search box ZWJ cluster rendering | sonnet | ✅ | |
+| LIVE | live D-Bus/portal runtime comparison vs original (private bus, nested weston) | sonnet | 🟨 | single-instance, +new-window, notifications, portals, systemd scope |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -158,3 +159,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Stop-hook: fix remaining P3s (legit) and runtime-test Windows under Wine (found installed). No further audit rounds.
 - 2026-10-12: P3 + WINE committed (1 parity + 3 fix-deviant commits). Windows now runtime-tested under Wine (2758 pass).
 - 2026-10-12: All remaining legit items fixed (P3 rows, Wine runtime testing, ZWJ). Final gate: 3602 native tests, 2758 under Wine, all cross-checks green. Done.
+- 2026-10-12: Stop-hook: live D-Bus/portal behaviour still unexercised → LIVE launched (private buses; user session untouched).
