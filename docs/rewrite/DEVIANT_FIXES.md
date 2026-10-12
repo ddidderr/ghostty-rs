@@ -1,0 +1,107 @@
+# Deviant fixes: where the Rust port intentionally differs from Ghostty 1.3.1
+
+## The rule
+
+The port is faithful to Ghostty 1.3.1 (including its quirks), with one
+exception: genuine upstream bugs are **fixed, not replicated**. That means
+memory-safety problems and undefined behaviour (use-after-free, stale
+pointers, out-of-bounds reads, leaks), infinite loops, data loss or
+corruption (lost or overwritten output), and crashes/asserts reachable from
+input. See rule 2 in `AGENT_GUIDE.md`.
+
+From now on every such fix is committed on its own as
+`fix-deviant(<scope>): ...` and gets a row in the first table below. This
+register also covers the deviations made **before** that convention; their
+commits bundle other work, so the "Commit" column names the commit that
+introduced the Rust behaviour (found with `git log -S` / `git blame`), not a
+dedicated fix commit.
+
+Conventions: Zig paths are relative to `ghostty/src/`. Line numbers refer to
+the Zig tree used for the port. "unverified" means I could not confirm the
+detail from the notes or code; "none" means no test exercises the deviation.
+"uncommitted" means the change was in the working tree (agent Z17, ghostty-cli)
+when this file was written.
+
+## Upstream bugs fixed (behaviour deliberately differs)
+
+| # | Area | Zig location | Ghostty behaviour | Rust behaviour | Commit | Test |
+|---|------|--------------|-------------------|----------------|--------|------|
+| 1 | Kitty graphics: placement pins | `terminal/kitty/graphics_storage.zig:148-176` (`addPlacement`), `:517-` (`evictImage`) | The tracked pin of a placement is leaked when its image is evicted and when an external placement id is reused (`getOrPut` then overwrite of the value). | `add_image`/`add_placement`/`set_limit` take the `PageList` and release the replaced/evicted placement's tracked pin. | d47408f | `storage_add_placement_replaces_and_releases_pin`, `storage_eviction_prefers_unused_then_oldest` (`ghostty-terminal/src/kitty/graphics_storage.rs`) |
+| 2 | Kitty graphics: `Placement::rect` | `terminal/kitty/graphics_storage.zig:~789-798` (`grid_size.rows - 1`, `grid_size.cols - 1`) | Unsigned underflow for a 0-sized grid. | `saturating_sub(1)` on rows/cols. | d47408f | none |
+| 3 | Kitty graphics: file medium `S=` | `terminal/kitty/graphics_image.zig:268-269` (`appendRemaining(.limited(size))`) | `StreamTooLong` whenever exactly `size` bytes are read, so any satisfiable `S>0` fails with InvalidData (Zig tests only use `S=0`). | Data is truncated to `min(S, 400MB)`, as the Kitty spec says. | d47408f (note clarified in 687752c) | `image_load_file_offset_and_size` (`ghostty-terminal/src/kitty/graphics_image.rs`) |
+| 4 | Kitty graphics: zlib size boundary | `terminal/kitty/graphics_image.zig:412` (`.limited(max_size)`) | Decompression errors at exactly 400MB of output. | Errors only above 400MB (`take(MAX_SIZE + 1)` then `len > MAX_SIZE`). | d47408f | none |
+| 5 | Renderer: link matching | `renderer/link.zig:99-123` (`defer offset = end`) | A zero-length regex match leaves `offset` unchanged, so the loop never terminates. | A zero-length match advances by one character. | 871c301 | none dedicated (`render_cell_map*` in `ghostty-renderer/src/link.rs` do not cover it) |
+| 6 | Input: keybind formatter | `input/Binding.zig:2112-2150` (`Set.Value.formatEntries`) | The shared buffer is rewound to a fixed position after each sub-entry, which corrupts the prefix of sibling entries for chained leaves in sequences. | Each entry is formatted from its own prefix. | e034322 | `set_format_entries_sequence_shares_prefix` (`ghostty-input`) |
+| 7 | Core: selection replacement | `Surface.zig:2310-2322` (`setSelection`) | `select()` untracks the previous selection's pins, then `sel.eql(prev)` compares through those released pins (stale pointers). | The comparison happens before the old selection is replaced. (Rust handles are checked, so the naive port panicked; the e2e tests found it.) | 2f58f02 | `select_all_twice_with_copy_on_select_does_not_panic` (`ghostty-core/tests/e2e_bindings.rs`), `drag_selects_and_copy_on_select_fills_selection_clipboard` (`e2e_mouse.rs`). Dedicated eql-before-replace test: unverified |
+| 8 | Datastruct: `lru` eviction report | `datastruct/lru.zig:163-166` | `entry.data.key` is overwritten with the new key before `entry.data` is copied out as `evicted`, so the evicted key is wrong. | `GetOrPutResult.evicted` carries the old key and old value. | 5b8c92b | `get_or_put` checks only `evicted.value`; the key is not asserted (`ghostty-datastruct/src/lru.rs`) |
+| 9 | Terminal: stale cell pointer in grapheme attach | `terminal/Terminal.zig:482` and `:539` | `prev.cell` survives a page reallocation (`increaseCapacity` in `printCell` of the spacer tail), so `appendGrapheme` writes into freed memory and the grapheme (for example U+FE0F) is lost. | Cells are addressed by index; the grapheme is kept. | 4eb03f6 | `difftest_upstream_uaf_grapheme_survives_page_growth` (`ghostty-terminal/src/stream_readonly.rs`); the difftest harness stores such mismatches as `suspect*` |
+| 10 | Terminal: asserts and segfaults reachable from input | `Terminal.zig:375` (`assert(!graphemeBreak)` after mode 2027 with U+2028/U+2060/BOM), `terminal/page.zig:1012` (`assert(y < size.rows)`; Devanagari conjuncts at the right edge with margins), `Terminal.zig:834` (`assert(!cell.hyperlink)`; REP with a huge count while a hyperlinked page grows) | Zig aborts or segfaults (roughly 0.1-0.4 % of generated difftest cases). | Rust handles the input without panicking. Zig-aborting cases are excluded from the differential comparison, not treated as divergences. | 4eb03f6 | `difftest_grapheme_wrap_with_margins_moves_prev_cell` and the harness (`tools/difftest`, `ZIG CRASH` handling) |
+| 11 | VT: tmux control-mode ids | `terminal/tmux/control.zig:199,230,270,308` (`parseInt(usize) catch unreachable`) | An id that overflows `usize` hits `unreachable` (crash/UB). | The line is treated as a failed match. | b2b248e | none |
+| 12 | VT: SGR separator bitset | `terminal/sgr.zig:228,514` (`params_sep.isSet(idx)` past `MAX_PARAMS`) | Asserts / out-of-range in `StaticBitSet` for long parameter lists. | Bounds-tolerant `sep_is_set`. | b2b248e | `sgr_underline_colon_with_trailing_separator_and_short_slice` (`ghostty-vt/src/sgr.rs`); whether Zig's path is reachable: unverified |
+| 13 | OS: `NOTIFY_SOCKET` | `os/systemd.zig:100-116` | A leading `@` (abstract socket) is accepted by the check, then copied literally into the address, which cannot work. | A leading `@` becomes an abstract-namespace address. | f8c5ce0 | none (the notify tests use a path socket) |
+| 14 | Renderer: GL `Buffer::init_fill` | `renderer/opengl/buffer.zig:62` | `len = data.len * @sizeOf(T)`, so `len` is in bytes while the rest of the type counts elements. | `len` is the element count. | 568ce78 | none |
+| 15 | Renderer: `Pipeline` teardown | `renderer/opengl/Pipeline.zig:72-74` | `deinit` destroys only the program; the FBO and VAO leak. | Drop also deletes the FBO and VAO. | 568ce78 | none |
+| 16 | Renderer: custom-shader uniforms | `renderer/generic.zig:2061-2064` (`cursor_text.color`, and the selection colours) | The union payload is read unconditionally; invalid for `cell-foreground` / `cell-background`. | Uniforms are set only for explicit colours. | 871c301 | none |
+| 17 | Renderer (Metal): texture upload | `renderer/metal/Texture.zig` (`replaceRegion`) | The data length is not checked against the region. | A too-short slice is rejected (safe API). Zig line: unverified. | bab49ee | none |
+| 18 | Input: binding order with catch-all | `input/Binding.zig:287-294` (sort key of `trigger.key`) | Reads the key of a catch-all trigger from the C union, which is undefined. | A catch-all sorts as 0. | e034322 | none |
+| 19 | Font: unsupported FreeType pixel mode | `font/face/freetype.zig:707` | `@panic("unsupported pixel mode")`. | `Error::UnsupportedPixelMode`. | 2580176 | none |
+| 20 | Font: OpenType SVG table | `font/opentype/svg.zig:45-46` | Reads `records[0]` and the last record unconditionally, even for an empty document list. | An empty list returns an error. | 2580176 | none |
+| 21 | Termio (Windows): process thread handle | `Command.zig:347` (`CreateProcessW`) | The thread handle returned by `CreateProcessW` is never closed (leak). | It is closed. | 76771be | none (compile-checked only on Windows) |
+| 22 | Termio (Windows): `focus_gained` | `termio/Exec.zig` (Windows branch; exact line unverified) | `@panic` on Windows. | No-op. | 76771be | none |
+| 23 | GTK: close confirmation dialog (fallback build) | `apprt/gtk/class/close_confirmation_dialog.zig:45-46` | The fallback registers a signal named `close-request`, which already exists on `GtkWindow`; GObject aborts (dead code upstream). | The fallback names it `dialog-close-request`; the default build is unchanged. | f2252bb | runtime check recorded in `notes/compat-GC.md`; no unit test |
+| 24 | libghostty: `ghostty_surface_inherited_config` | `apprt/embedded.zig:1573`, `:941` (`dupeZ` of the working directory) | Allocates a new copy per call and never frees it. | The strings are kept in the surface and freed with it. | 75bf604 | none |
+| 25 | libghostty: invalid enum values from C | `apprt/embedded.zig` (mouse state/button, split direction, colour scheme, key action, pressure stage) | Undefined behaviour or safety panic. | Ignored / returns false; null handles are tolerated. | 75bf604 | unverified |
+| 26 | Crash reporting: envelope attachments | `crash/sentry_envelope.zig:399-419` (`Attachment.encode`) | Never writes the `type` header, so the output cannot be parsed back. | Adds `"type":"attachment"` when absent. | b3145ad | `envelope_parse_multiple` (`ghostty-crash/src/envelope.rs`) is the nearest test; a dedicated test: unverified |
+| 27 | Build data: webgen output | `build/webgen/main_actions.zig:5-6`, `main_commands.zig:6`, `main_config.zig:6` | A 2048-byte stdout buffer that is never flushed, so the generated website files are truncated. | The complete files are emitted. | e4cdd8e | none (checked byte-identical to Zig output of a patched copy, per `final-Z4.md`) |
+| 28 | CLI: `+list-colors` plain output | `cli/list_colors.zig:59-72` | 4096-byte buffer, never flushed; piped output stops midway through `PeachPuff3` (12,297 bytes). | Flushed (15,434 bytes). | 6286e02 | none; found by RV11 (`review-rv11-codex.md`) |
+| 29 | CLI: `+list-themes` diagnostics | `cli/list_themes.zig:124-131,171` | The messages ("Could not find the Ghostty resources directory", "No themes found...") go to a 4096-byte stderr buffer that is never flushed, so they are lost. | Flushed when the action ends. | `410d8fc` fix-deviant(cli) | `zig_writer::tests::unflushed_buffer_is_flushed_on_drop` |
+| 30 | CLI: stdout as a regular file | `std.fs.File.writer` (Zig 0.15.2) as used in `cli/show_face.zig:68-73`, `cli/help.zig:34`, `cli/validate_config.zig:43-46`, `cli/show_config.zig:84` | The writer `pwrite`s at its own offset starting at 0: with stdout redirected to a file, output overwrites itself and earlier file content, and `Writer.end` truncates. | Always appends at the current end; no truncation. | `410d8fc` fix-deviant(cli) (append behaviour first in `f76179f`) | `zig_writer::tests::regular_file_output_is_complete_and_appended` |
+
+## Upstream quirks deliberately kept (not fixed)
+
+These look odd but are not memory-safety, loop, corruption or crash bugs, so
+the port matches Ghostty.
+
+- `shadertoy::Uniforms`: the selection foreground/background fields are swapped relative to the GLSL block. Both are `vec3`, so offsets agree (`ghostty-renderer/src/shadertoy.rs:878`; R1 note).
+- Kitty storage: `delete range` uses `||` (matches everything); eviction stops only when `evicted > req`; `set_limit(0)` resets storage to defaults; screen reset also resets `total_limit`.
+- `lru::get` does not change LRU order. `Tabstops::unset` XORs.
+- `Screen`/keybind docs: `format_entry_docs` emits a blank line only (the `@tagName` lookup never matches).
+- `Search`: an empty needle underflows exactly as in Zig, so the needle must be non-empty.
+- i18n: the `strlen == 7` guard skips the tables for 8-byte locale names.
+- CSI: `CSI K` accepts 0..2 only; ANSI DECRQM is unimplemented; unknown `many keycode` media keys stay a TODO.
+- libghostty C header: `chostty_ipc_target_s` typo kept; `ghostty_inspector_metal_shutdown` is `bool` in the header but `void` in Zig (we follow Zig).
+- Braille sprites: `debug_assert!` where Zig asserts, so odd cell sizes (for example 14x23) trip it in builds with debug assertions, as in Zig.
+- Windows: no file locking in the ssh-cache `DiskCache` (Zig does not lock on Windows either).
+- Config theme-name basename and numeric parsing follow Zig 0.15.2, not 0.16 (`fix(config)` commits 3068e3a, a57ff41).
+
+## Other deliberate deviations (platform/Rust-imposed or out of scope)
+
+Only entries with an observable behavioural difference are listed.
+
+| Area | Zig/Ghostty behaviour | Rust behaviour | Where | Commit |
+|------|-----------------------|----------------|-------|--------|
+| Swift macOS app | Ships `macos/` | Not ported; the Rust side provides the `libghostty` C API, Metal/CoreText code, XCFramework script. Only compile-checked (`just check-macos`), never run (no macOS here). | `ARCHITECTURE.md` (Out of scope), `notes/macos-M1*.md`, `final-Z4.md` | bab49ee, 75bf604, 231ee35 |
+| Windows and wasm | Native targets | Compile-checked only (`just check-windows`, `just check-wasm`); not run. | `notes/windows-WIN.md`, `notes/wasm-W1.md` | 76771be, d89691b |
+| Crash reporting | Sentry with Breakpad on macOS, `SIGSEGV` handlers, local DB/cache, sessions, init thread | In-process reporter: `.ghosttycrash` envelopes in `$XDG_STATE_HOME/ghostty/crash`, panic hook and signal handler, minidumps on macOS/Windows. No Sentry DB/cache dir, no sessions, no init thread; reports are written on any panic; the crash dir is resolved at init; the signal path writes no attachment. | `notes/crash-CR.md`, `ARCHITECTURE.md` (Scope changes) | b3145ad, 72bfac1 |
+| Surface copy-on-select on release | `setSelection` returns early when the new selection equals the old one | Left-release copies directly via `copy_on_select`, because the early return would never copy | `notes/ghostty-core.md` | ad76ae2 |
+| Locking / threading | Renderer mutex held while sending mailbox messages and running mouse reports (`.locked` sends); `process_links` called unlocked | Reports, IO messages and runtime actions are collected and run after the lock is released; `process_links` takes the lock itself; termio overflow goes to an ordered outbox | `notes/ghostty-core.md`, `notes/ghostty-termio-IO*.md` | 6629fb0, ad76ae2 |
+| Invalid preedit text | Returns an error | Decoded lossily (U+FFFD) for renderer codepoints; no panic | `final-Z10.md` | db95444 (unverified) |
+| Rendering of overlay / images | z2d overlay, wuffs image decoding, glslang+SPIR-V+spirv-cross | Direct RGBA overlay with approximate hairline placement; `png`/`jpeg-decoder`; `naga` GLSL front end (narrower than glslang, with a sampler2D helper rewrite) | `notes/ghostty-renderer-R1.md`, `R2.md`, `gaps-X2.md`; `just visual-parity` reports 0 differing pixels for the tested scenes | 568ce78, 871c301, f68b11d |
+| Oniguruma | Native regex library for links and tmux | Hand-written matchers for the tmux parser; link regexes use the minimal `ghostty-onig` FFI crate | `notes/ghostty-vt-W2.md` | b2b248e, 2aa2a12 |
+| zlib / PNG / base64 / shm | zig std, wuffs, simdutf, mmap | `flate2`, `png`, `base64` crate (ASCII whitespace ignored), `rustix` shm reads without mmap | `notes/ghostty-terminal-kitty.md`, `notes/ghostty-vt-W2.md` | d47408f, b2b248e |
+| VT parser buffer | Fixed 2048-byte buffer with a reserved NUL | Growing `Vec<u8>` with a cap; differs only at exactly 2048 payload bytes for osc9/iterm2/text_sizing | `notes/ghostty-vt-W1.md` | b2b248e |
+| CSI W logging | Logs a spurious "invalid cursor tabulation control" after `CSI 2 W` / `CSI 5 W` | No log line (log-only) | `notes/ghostty-vt-stream.md` | 47b479d |
+| Searching | `CircBuf` + overlap buffer, libxev thread | `VecDeque`, `crossbeam-channel`, 24 ms refresh timer; identical results, assertions about buffer layout dropped | `notes/ghostty-terminal-search-tmux.md` | 8e9be42 |
+| Config strings | UTF-8 not required in many places | Escaped-bytes representation (`EncodedOs`) so non-UTF-8 survives; behaviour matched to Zig error names, but some filesystem diagnostics still print Rust OS error text (for example `theme=/etc/passwd/x`) | `notes/review-rv11-codex.md` (item 3; later status: unverified) | 672e8a4, 4bbe0d7 |
+| `initial_input` escaping | `std.zig.stringEscape` (`\xNN`) | Non-ASCII code points use `\u{..}` because the config `Raw` value is a `String` | `notes/libghostty-L1.md` | 75bf604 |
+| `+version` / build info | Real build metadata | Placeholder `build_info` values in places; `Rust version` row empty; `gtk-opengl-debug` follows `cfg!(debug_assertions)` (the `release` profile has them on, `production` off) | `notes/ghostty-cli.md`, `notes/ghostty-config.md` | 6286e02 |
+| `codepoint-width --mode=wcwidth` (bench) | Calls libc `wcwidth` | Warn and no-op (libc FFI is forbidden); `simd` mode uses the same tables | `notes/perf-P1.md`, `notes/compat-GC-bench.md` | 0c4f0ee |
+| D-Bus new-window arguments | Plain strings | Internal escape encoding; a literal U+FDD0 followed by a character can decode differently | `notes/review-rv8-codex.md` item 9 (status: unverified) | 1a13e8b |
+| OSC 52 base64 acceptance | Surface.zig:2149,2163 rules | Was different in both directions (Codex core audit); fixed to match Zig | `notes/review-core-codex.md` | 2f58f02 |
+
+## Maintenance
+
+When you fix a genuine upstream bug, commit it alone as
+`fix-deviant(<scope>): ...` and add a row to the first table with the hash,
+the Zig file:line and the test. Replace "uncommitted" entries with hashes once
+the Z17 work is committed.
