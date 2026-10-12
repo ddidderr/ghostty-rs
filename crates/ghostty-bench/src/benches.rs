@@ -285,6 +285,43 @@ fn decode_each(d: &mut Utf8Decoder, chunk: &[u8], mut func: impl FnMut(u32)) {
     }
 }
 
+/// libc `wcwidth` (`extern "c" fn wcwidth(c: u32) c_int`).
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod libc_wcwidth {
+    unsafe extern "C" {
+        fn wcwidth(c: u32) -> i32;
+    }
+
+    #[allow(unsafe_code)]
+    #[inline]
+    pub fn call(cp: u32) -> i32 {
+        // SAFETY: `wcwidth` is a pure libc function taking a plain integer
+        // (wchar_t) and returning an int; no pointers or preconditions.
+        unsafe { wcwidth(cp) }
+    }
+}
+
+/// The `table` mode: generated two-stage lookup (`unicode.table.get(cp).width`),
+/// with the same `<= 0xFF` shortcut as terminal.zig.
+#[inline]
+fn width_table(
+    table: &ghostty_unicode::lut::Tables<'_, ghostty_unicode::Properties>,
+    cp: u32,
+) -> i32 {
+    if cp <= 0xFF {
+        1
+    } else {
+        i32::from(table.get(cp).width)
+    }
+}
+
+/// `simd.codepointWidth` (scalar port of the highway implementation).
+#[must_use]
+pub fn simd_width(cp: u32) -> i32 {
+    i32::from(crate::simd_width::codepoint_width(cp))
+}
+
 impl Benchmark for CodepointWidth {
     fn setup(&mut self) -> Result {
         self.data.open()
@@ -298,19 +335,37 @@ impl Benchmark for CodepointWidth {
         match self.mode {
             WidthMode::Noop => Ok(()),
             WidthMode::Wcwidth => {
-                // libc wcwidth needs FFI, which this workspace forbids.
-                log::warn!("wcwidth mode is not available in the Rust port");
-                Ok(())
+                #[cfg(unix)]
+                {
+                    let mut d = Utf8Decoder::new();
+                    self.data.for_each_chunk(|chunk| {
+                        decode_each(&mut d, chunk, |cp| {
+                            black_box(libc_wcwidth::call(cp));
+                        });
+                        Ok(())
+                    })
+                }
+                #[cfg(not(unix))]
+                {
+                    log::warn!("wcwidth is not available on this platform");
+                    Ok(())
+                }
             }
-            // The Rust port has no separate SIMD width function: both use
-            // the lookup table.
-            WidthMode::Simd | WidthMode::Table => {
+            WidthMode::Simd => {
+                let mut d = Utf8Decoder::new();
+                self.data.for_each_chunk(|chunk| {
+                    decode_each(&mut d, chunk, |cp| {
+                        black_box(simd_width(cp));
+                    });
+                    Ok(())
+                })
+            }
+            WidthMode::Table => {
                 let mut d = Utf8Decoder::new();
                 let table = ghostty_unicode::table();
                 self.data.for_each_chunk(|chunk| {
                     decode_each(&mut d, chunk, |cp| {
-                        // Same trick as terminal.rs.
-                        black_box(if cp <= 0xFF { 1 } else { table.get(cp).width });
+                        black_box(width_table(&table, cp));
                     });
                     Ok(())
                 })
@@ -375,19 +430,57 @@ impl Benchmark for GraphemeBreak {
 // ---------------------------------------------------------------------------
 // is-symbol
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolMode {
+    /// uucode implementation (computed from general category + block).
+    Uucode,
+    /// Ghostty's table-based approach.
+    Table,
+}
+
 pub struct IsSymbol {
     data: Data,
+    mode: SymbolMode,
+}
+
+/// Computed `is_symbol` (`computeIsSymbol` in uucode_config.zig): private
+/// use (general category Co) or one of the symbol blocks, evaluated directly
+/// from the ranges rather than via the generated table.
+#[must_use]
+pub fn is_symbol_computed(cp: u32) -> bool {
+    matches!(
+        cp,
+        // general_category == other_private_use
+        0xE000..=0xF8FF | 0xF_0000..=0xF_FFFD | 0x10_0000..=0x10_FFFD
+        // arrows
+        | 0x2190..=0x21FF
+        // dingbats
+        | 0x2700..=0x27BF
+        // emoticons
+        | 0x1F600..=0x1F64F
+        // miscellaneous_symbols
+        | 0x2600..=0x26FF
+        // enclosed_alphanumerics
+        | 0x2460..=0x24FF
+        // enclosed_alphanumeric_supplement
+        | 0x1F100..=0x1F1FF
+        // miscellaneous_symbols_and_pictographs
+        | 0x1F300..=0x1F5FF
+        // transport_and_map_symbols
+        | 0x1F680..=0x1F6FF
+    )
 }
 
 impl IsSymbol {
     pub fn create(args: &mut Args) -> std::result::Result<Self, String> {
-        // Modes `uucode` and `table` both use the generated table here.
-        match args.take_opt_string("mode")?.as_deref() {
-            None | Some("uucode" | "table") => {}
+        let mode = match args.take_opt_string("mode")?.as_deref() {
+            None | Some("uucode") => SymbolMode::Uucode,
+            Some("table") => SymbolMode::Table,
             Some(m) => return Err(format!("invalid value for --mode: {m}")),
-        }
+        };
         Ok(IsSymbol {
             data: Data::new(args.take_opt_string("data")?),
+            mode,
         })
     }
 }
@@ -403,13 +496,23 @@ impl Benchmark for IsSymbol {
 
     fn step(&mut self) -> Result {
         let mut d = Utf8Decoder::new();
-        let table = ghostty_unicode::symbols_table::table();
-        self.data.for_each_chunk(|chunk| {
-            decode_each(&mut d, chunk, |cp| {
-                black_box(table.get(cp));
-            });
-            Ok(())
-        })
+        match self.mode {
+            SymbolMode::Uucode => self.data.for_each_chunk(|chunk| {
+                decode_each(&mut d, chunk, |cp| {
+                    black_box(is_symbol_computed(cp));
+                });
+                Ok(())
+            }),
+            SymbolMode::Table => {
+                let table = ghostty_unicode::symbols_table::table();
+                self.data.for_each_chunk(|chunk| {
+                    decode_each(&mut d, chunk, |cp| {
+                        black_box(table.get(cp));
+                    });
+                    Ok(())
+                })
+            }
+        }
     }
 }
 
@@ -562,5 +665,88 @@ pub fn main_action(action: &str, mut args: Args) -> std::result::Result<RunResul
             go(b, args)
         }
         _ => Err(format!("invalid action: +{action}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(action: &str, mode: &str, data: &std::path::Path) -> Result {
+        let mut args = Args::parse([
+            format!("+{action}"),
+            format!("--mode={mode}"),
+            format!("--data={}", data.display()),
+        ])
+        .unwrap();
+        match action {
+            "codepoint-width" => crate::benchmark::run(
+                &mut CodepointWidth::create(&mut args).unwrap(),
+                crate::benchmark::RunMode::Once,
+            ),
+            _ => crate::benchmark::run(
+                &mut IsSymbol::create(&mut args).unwrap(),
+                crate::benchmark::RunMode::Once,
+            ),
+        }
+        .map(|_| ())
+    }
+
+    fn sample_file(tag: &str) -> std::path::PathBuf {
+        let p =
+            std::env::temp_dir().join(format!("ghostty-bench-{tag}-{}.txt", std::process::id()));
+        std::fs::write(
+            &p,
+            "hello \u{4e00}\u{1f600}\u{301}\u{e000} world \u{2190}\n",
+        )
+        .unwrap();
+        p
+    }
+
+    #[test]
+    fn codepoint_width_all_modes_run() {
+        let p = sample_file("cw");
+        for m in ["noop", "wcwidth", "simd", "table"] {
+            run("codepoint-width", m, &p).unwrap();
+        }
+        let mut args = Args::parse(["--mode=bogus".to_owned()]).unwrap();
+        assert!(CodepointWidth::create(&mut args).is_err());
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn is_symbol_modes_run() {
+        let p = sample_file("sym");
+        for m in ["uucode", "table"] {
+            run("is-symbol", m, &p).unwrap();
+        }
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[test]
+    fn is_symbol_computed_matches_table() {
+        let t = ghostty_unicode::symbols_table::table();
+        for cp in 0..=0x11_0000u32 {
+            assert_eq!(is_symbol_computed(cp), t.get(cp), "cp={cp:x}");
+        }
+    }
+
+    #[test]
+    fn simd_matches_table_on_samples() {
+        let t = ghostty_unicode::table();
+        for cp in [
+            0x61, 0x100, 0x3400, 0x2E3A, 0x1F1E6, 0x4E00, 0xF900, 0x1F600, 0x20000, 0x30000, 0x301,
+            0x200B, 0x200D, 0xFE0F, 0x20DD, 0xE0100, 0xE0001, 0x1160, 0xAC00,
+        ] {
+            assert_eq!(simd_width(cp), width_table(&t, cp), "cp={cp:x}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn wcwidth_ascii() {
+        // The C locale is in effect (no setlocale, like Zig): ASCII only.
+        assert_eq!(libc_wcwidth::call(u32::from(b'a')), 1);
+        assert_eq!(libc_wcwidth::call(0), 0);
     }
 }

@@ -1371,6 +1371,13 @@ impl Surface {
         self.imp().child_exited.set(true);
         self.notify("child-exited");
 
+        // If we have the noop child exited overlay then we don't do anything
+        // for child exited. The false return will force libghostty to show
+        // the normal text-based message.
+        if SurfaceChildExited::NOOP {
+            return false;
+        }
+
         self.imp().child_exited_overlay.set_child_exited(Some(data));
         true
     }

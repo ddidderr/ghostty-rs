@@ -8,7 +8,18 @@ use adw::{prelude::*, subclass::prelude::*};
 use ghostty_os::i18n::tr;
 use gtk::{glib, glib::subclass::Signal};
 
-use super::dialog::{Dialog, DialogImpl};
+use super::dialog::{Dialog, dialog_subclass_wrapper, impl_dialog_parent};
+
+/// Name of the "user confirmed the close" signal. Zig always uses
+/// `close-request`, but with the `adw::MessageDialog` parent (a `GtkWindow`)
+/// that name already exists in the class ancestry, which makes GObject
+/// refuse to register it (and would fire it on every window close). Zig's
+/// fallback hits that, so the fallback build renames the signal.
+const CLOSE_REQUEST: &str = if cfg!(feature = "adw_1_5") {
+    "close-request"
+} else {
+    "dialog-close-request"
+};
 
 /// The target of a close dialog (`GhosttyCloseConfirmationDialogTarget`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, glib::Enum)]
@@ -47,19 +58,7 @@ impl Target {
 mod imp {
     use gtk::{glib, glib::prelude::*, subclass::prelude::*};
 
-    use super::{
-        AdwAlertDialogImpl,
-        AdwDialogImpl,
-        Cell,
-        Dialog,
-        DialogImpl,
-        ObjectImpl,
-        ObjectSubclass,
-        OnceLock,
-        Signal,
-        Target,
-        WidgetImpl,
-    };
+    use super::{Cell, Dialog, ObjectImpl, ObjectSubclass, OnceLock, Signal, Target, WidgetImpl};
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::CloseConfirmationDialog)]
@@ -91,7 +90,7 @@ mod imp {
             static SIGNALS: OnceLock<Vec<Signal>> = OnceLock::new();
             SIGNALS.get_or_init(|| {
                 vec![
-                    Signal::builder("close-request").build(),
+                    Signal::builder(super::CLOSE_REQUEST).build(),
                     Signal::builder("cancel").build(),
                 ]
             })
@@ -102,25 +101,17 @@ mod imp {
         }
     }
     impl WidgetImpl for CloseConfirmationDialog {}
-    impl AdwDialogImpl for CloseConfirmationDialog {}
-    impl AdwAlertDialogImpl for CloseConfirmationDialog {
-        fn response(&self, response: &str) {
-            let name = if response == "close" {
-                "close-request"
-            } else {
-                "cancel"
-            };
-            self.obj().emit_by_name::<()>(name, &[]);
-        }
-    }
-    impl DialogImpl for CloseConfirmationDialog {}
+    super::impl_dialog_parent!(CloseConfirmationDialog, |this, response| {
+        let name = if response == "close" {
+            super::CLOSE_REQUEST
+        } else {
+            "cancel"
+        };
+        this.obj().emit_by_name::<()>(name, &[]);
+    });
 }
 
-glib::wrapper! {
-    pub struct CloseConfirmationDialog(ObjectSubclass<imp::CloseConfirmationDialog>)
-        @extends Dialog, adw::AlertDialog, adw::Dialog, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::ShortcutManager;
-}
+dialog_subclass_wrapper!(CloseConfirmationDialog, imp::CloseConfirmationDialog);
 
 impl CloseConfirmationDialog {
     pub fn new(target: Target) -> Self {
@@ -142,7 +133,7 @@ impl CloseConfirmationDialog {
 
     pub fn connect_close_request<F: Fn(&Self) + 'static>(&self, f: F) -> glib::SignalHandlerId {
         self.connect_closure(
-            "close-request",
+            CLOSE_REQUEST,
             false,
             glib::closure_local!(move |obj: &Self| f(obj)),
         )

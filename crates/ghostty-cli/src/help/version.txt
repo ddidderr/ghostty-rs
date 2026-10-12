@@ -1,2 +1,0 @@
-The `version` command is used to display information about Ghostty. Recognized as
-either `+version` or `--version`.

@@ -1,6 +1,8 @@
 //! `+edit-config` (ZIG/src/cli/edit_config.zig).
 
-use std::{io::Write, os::unix::process::CommandExt};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use ghostty_config::config::Config;
 
@@ -62,6 +64,31 @@ fn run_inner(stderr: &mut dyn Write) -> Result<u8, Error> {
     let path = ghostty_config::file_load::preferred_default_file_path()
         .map_err(|e| Error::Other(e.to_string()))?;
 
+    // We don't currently support Windows because we use the exec syscall.
+    #[cfg(windows)]
+    {
+        write_windows_unsupported(stderr, &path)
+    }
+
+    #[cfg(unix)]
+    exec_editor(stderr, &path)
+}
+
+/// Windows branch of `run`: print the path and fail.
+#[cfg(windows)]
+fn write_windows_unsupported(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
+    write!(
+        stderr,
+        "The `ghostty +edit-config` command is not supported on Windows.\n\
+         Please edit the configuration file manually at the following path:\n\
+         \n\
+         {path}\n"
+    )?;
+    Ok(1)
+}
+
+#[cfg(unix)]
+fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
     // Get our editor
     let Some(editor) = find_editor() else {
         // If we don't have `$EDITOR` set then we can't do anything
@@ -87,7 +114,7 @@ fn run_inner(stderr: &mut dyn Write) -> Result<u8, Error> {
 
     // Flush before exec so no output is lost.
     let _ = stderr.flush();
-    let err = std::process::Command::new(&editor).arg(&path).exec();
+    let err = std::process::Command::new(&editor).arg(path).exec();
 
     // If we reached this point then exec failed.
     let err = match err.kind() {

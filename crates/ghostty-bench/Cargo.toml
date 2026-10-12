@@ -19,5 +19,36 @@ ghostty-unicode.workspace = true
 ghostty-vt.workspace = true
 log = "0.4.34"
 
-[lints]
-workspace = true
+# Not `workspace = true`: this crate needs a single audited FFI call (libc
+# `wcwidth`) so `unsafe_code` is `deny` (locally allowed) instead of `forbid`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+# Porting a low-level terminal emulator involves a lot of intentional
+# numeric casts and long state-machine functions; these pedantic lints are
+# noise for this codebase.
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"

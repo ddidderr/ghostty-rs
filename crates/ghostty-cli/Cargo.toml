@@ -19,6 +19,9 @@ termina = "0.3.3"
 thiserror = "2.0.21"
 unicode-width = "0.2.2"
 
+[build-dependencies]
+ghostty-helpgen.workspace = true
+
 [lints]
 workspace = true
 

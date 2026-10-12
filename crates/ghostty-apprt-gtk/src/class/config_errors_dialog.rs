@@ -9,18 +9,15 @@ use gtk::{glib, glib::subclass::Signal};
 
 use super::{
     config::Config,
-    dialog::{Dialog, DialogImpl},
+    dialog::{Dialog, dialog_subclass_wrapper, impl_dialog_parent},
 };
 
 mod imp {
     use gtk::{glib, glib::prelude::*, subclass::prelude::*};
 
     use super::{
-        AdwAlertDialogImpl,
-        AdwDialogImpl,
         Config,
         Dialog,
-        DialogImpl,
         ObjectImpl,
         ObjectSubclass,
         ObjectSubclassExt,
@@ -69,23 +66,15 @@ mod imp {
         }
     }
     impl WidgetImpl for ConfigErrorsDialog {}
-    impl AdwDialogImpl for ConfigErrorsDialog {}
-    impl AdwAlertDialogImpl for ConfigErrorsDialog {
-        fn response(&self, response: &str) {
-            if response != "reload" {
-                return;
-            }
-            self.obj().emit_by_name::<()>("reload-config", &[]);
+    super::impl_dialog_parent!(ConfigErrorsDialog, |this, response| {
+        if response != "reload" {
+            return;
         }
-    }
-    impl DialogImpl for ConfigErrorsDialog {}
+        this.obj().emit_by_name::<()>("reload-config", &[]);
+    });
 }
 
-glib::wrapper! {
-    pub struct ConfigErrorsDialog(ObjectSubclass<imp::ConfigErrorsDialog>)
-        @extends Dialog, adw::AlertDialog, adw::Dialog, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::ShortcutManager;
-}
+dialog_subclass_wrapper!(ConfigErrorsDialog, imp::ConfigErrorsDialog);
 
 impl ConfigErrorsDialog {
     pub fn new(config: &Config) -> Self {

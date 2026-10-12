@@ -1657,18 +1657,29 @@ impl Window {
         let icon = "com.mitchellh.ghostty";
         let website = "https://ghostty.org";
 
-        // libadwaita >= 1.5 is assumed, so AdwAboutDialog is always used
-        // (the Zig GtkAboutDialog fallback is unreachable here).
-        let _ = adw_version::supports_dialogs();
-        let dialog = adw::AboutDialog::builder()
-            .application_name(name)
-            .developer_name(tr("Ghostty Developers"))
-            .application_icon(icon)
-            .version(env!("CARGO_PKG_VERSION"))
-            .issue_url("https://github.com/ghostty-org/ghostty/issues")
-            .website(website)
-            .build();
-        dialog.present(Some(self));
+        if adw_version::supports_dialogs() {
+            let dialog = adw::AboutDialog::builder()
+                .application_name(name)
+                .developer_name(tr("Ghostty Developers"))
+                .application_icon(icon)
+                .version(env!("CARGO_PKG_VERSION"))
+                .issue_url("https://github.com/ghostty-org/ghostty/issues")
+                .website(website)
+                .build();
+            dialog.present(Some(self));
+        } else {
+            // libadwaita < 1.5 has no AdwAboutDialog: use the GTK one.
+            gtk::show_about_dialog(
+                Some(self),
+                &[
+                    ("program-name", &name),
+                    ("logo-icon-name", &icon),
+                    ("title", &tr("About Ghostty")),
+                    ("version", &env!("CARGO_PKG_VERSION")),
+                    ("website", &website),
+                ],
+            );
+        }
     }
 
     fn action_close_tab(&self, param: Option<&glib::Variant>) {

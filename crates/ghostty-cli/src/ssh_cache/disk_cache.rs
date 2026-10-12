@@ -2,12 +2,13 @@
 //! (ZIG/src/cli/ssh-cache/DiskCache.zig). The cache only stores metadata
 //! (hostname, terminfo value, etc.) and does not store any sensitive data.
 
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::{
     collections::BTreeMap,
     fs::{File, OpenOptions},
     io::{Read, Write},
     net::Ipv6Addr,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::PathBuf,
 };
 
@@ -87,13 +88,11 @@ impl DiskCache {
         }
 
         // Open or create cache file with secure permissions
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(&self.path)?;
+        let mut open = OpenOptions::new();
+        open.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        open.mode(0o600);
+        let file = open.open(&self.path)?;
         fixup_permissions(&file)?;
 
         // Lock
@@ -196,12 +195,11 @@ impl DiskCache {
         let tmp_path = cache_dir.join(tmp_name);
 
         let result = (|| -> std::io::Result<()> {
-            let mut f = OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(&tmp_path)?;
+            let mut open = OpenOptions::new();
+            open.write(true).create(true).truncate(true);
+            #[cfg(unix)]
+            open.mode(0o600);
+            let mut f = open.open(&tmp_path)?;
             f.write_all(data.as_bytes())?;
             f.sync_all()?;
             std::fs::rename(&tmp_path, &self.path)
@@ -227,6 +225,18 @@ impl Drop for Lock<'_> {
 /// Zig: `_ = file.tryLock(.exclusive) catch return error.CacheIsLocked;`
 /// The boolean result is ignored upstream, so a lock held by someone else
 /// does not fail; only a real error does.
+///
+/// Zig skips locking entirely on Windows
+/// (`if (comptime builtin.os.tag != .windows)`), so we do too. On unix
+/// `File::try_lock` is `flock(LOCK_EX | LOCK_NB)`, the same call as Zig's
+/// `File.tryLock(.exclusive)`.
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+fn lock(_file: &File) -> Result<Lock<'_>, Error> {
+    Ok(Lock(None))
+}
+
+#[cfg(not(windows))]
 fn lock(file: &File) -> Result<Lock<'_>, Error> {
     match file.try_lock() {
         Ok(()) => Ok(Lock(Some(file))),
@@ -235,7 +245,20 @@ fn lock(file: &File) -> Result<Lock<'_>, Error> {
     }
 }
 
+#[cfg_attr(windows, allow(clippy::unnecessary_wraps))]
 fn fixup_permissions(file: &File) -> Result<(), Error> {
+    // Windows does not support chmod
+    #[cfg(windows)]
+    {
+        let _ = file;
+        Ok(())
+    }
+    #[cfg(unix)]
+    fixup_permissions_unix(file)
+}
+
+#[cfg(unix)]
+fn fixup_permissions_unix(file: &File) -> Result<(), Error> {
     // Ensure file has correct permissions (readable/writable by
     // owner only)
     let meta = file.metadata()?;
@@ -323,6 +346,34 @@ fn is_valid_user(user: &str) -> bool {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    #[cfg(not(windows))]
+    #[test]
+    fn lock_is_exclusive_until_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock");
+        let a = File::create(&path).unwrap();
+        let b = File::options().read(true).write(true).open(&path).unwrap();
+
+        let held = super::lock(&a).unwrap();
+        assert!(held.0.is_some());
+        // A second handle can't take the lock; Zig ignores that result.
+        assert!(matches!(
+            b.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+        assert!(super::lock(&b).unwrap().0.is_none());
+        drop(held);
+        // Unlocked on drop.
+        assert!(b.try_lock().is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn lock_is_noop_on_windows() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = File::create(dir.path().join("lock")).unwrap();
+        assert!(super::lock(&a).unwrap().0.is_none());
+    }
     use super::*;
 
     #[test]
@@ -389,8 +440,9 @@ mod tests {
         assert_eq!(vec![std::ffi::OsString::from("cache")], names);
     }
 
+    #[cfg(unix)]
     #[test]
-    fn disk_cache_file_permissions_and_invalid_host() {
+    fn disk_cache_file_permissions() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = DiskCache {
             path: tmp.path().join("sub/cache"),
@@ -398,6 +450,15 @@ mod tests {
         cache.add("example.com").unwrap();
         let mode = std::fs::metadata(&cache.path).unwrap().permissions().mode();
         assert_eq!(0o600, mode & 0o777);
+    }
+
+    #[test]
+    fn disk_cache_invalid_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = DiskCache {
+            path: tmp.path().join("sub/cache"),
+        };
+        cache.add("example.com").unwrap();
         assert!(matches!(
             cache.add("bad host"),
             Err(Error::HostnameIsInvalid)

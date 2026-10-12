@@ -264,9 +264,20 @@ fn write_style_change(w: &mut dyn Write, cursor: &Style, next: &Style) -> std::i
     Ok(())
 }
 
+/// Fixed `(cols, rows)` used on Windows instead of querying the tty.
+#[cfg(windows)]
+const WINDOWS_WINSIZE: (u16, u16) = (120, 24);
+
 /// The terminal size in columns and rows (`vaxis.Tty.getWinsize`).
 #[must_use]
 pub fn window_size() -> (u16, u16) {
+    // On Windows we use some default; it doesn't really matter for what we're
+    // doing because we don't do any wrapping (rows = 24, cols = 120).
+    #[cfg(windows)]
+    {
+        WINDOWS_WINSIZE
+    }
+    #[cfg(not(windows))]
     ratatui::crossterm::terminal::size().unwrap_or((80, 24))
 }
 

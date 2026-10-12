@@ -180,6 +180,16 @@ impl Boo {
 
 /// The `boo` command is used to display the animation from the Ghostty website in the terminal
 pub fn run(args: &[String]) -> Result<u8, Error> {
+    // Disable on non-desktop systems.
+    if cfg!(not(any(
+        windows,
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "freebsd"
+    ))) {
+        return Ok(1);
+    }
+
     let mut opts = Options;
     crate::parse_options(&mut opts, args)?;
 

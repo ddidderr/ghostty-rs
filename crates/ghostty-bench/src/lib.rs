@@ -10,4 +10,5 @@
 pub mod args;
 pub mod benches;
 pub mod benchmark;
+mod simd_width;
 pub mod synthetic;

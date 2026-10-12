@@ -1,0 +1,9 @@
+[package]
+name = "ghostty-helpgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Build-time help text generator (port of ghostty src/helpgen.zig)"
+
+[lints]
+workspace = true

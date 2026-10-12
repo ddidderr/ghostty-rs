@@ -15,7 +15,10 @@ use ghostty_apprt::structs::ClipboardRequest;
 use ghostty_os::i18n::tr;
 use gtk::{glib, glib::subclass::Signal};
 
-use super::dialog::{Dialog, DialogImpl};
+use super::dialog::{Dialog, dialog_subclass_wrapper, impl_dialog_parent};
+
+/// Whether we're able to have the remember switch (Zig: `can_remember`).
+pub const CAN_REMEMBER: bool = crate::adw_version::COMPTIME_SUPPORTS_SWITCH_ROW;
 
 /// GBoxed wrapper for [`ClipboardRequest`] (Zig: boxed `apprt.ClipboardRequest`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, glib::Boxed)]
@@ -27,13 +30,10 @@ mod imp {
     use gtk::{glib, subclass::prelude::*};
 
     use super::{
-        AdwAlertDialogImpl,
-        AdwDialogImpl,
         Cell,
         ClipboardRequest,
         ClipboardRequestBoxed,
         Dialog,
-        DialogImpl,
         ObjectImpl,
         ObjectSubclass,
         OnceLock,
@@ -45,7 +45,14 @@ mod imp {
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::ClipboardConfirmationDialog)]
-    #[template(resource = "/com/mitchellh/ghostty/ui/1.4/clipboard-confirmation-dialog.ui")]
+    #[cfg_attr(
+        feature = "adw_1_4",
+        template(resource = "/com/mitchellh/ghostty/ui/1.4/clipboard-confirmation-dialog.ui")
+    )]
+    #[cfg_attr(
+        not(feature = "adw_1_4"),
+        template(resource = "/com/mitchellh/ghostty/ui/1.0/clipboard-confirmation-dialog.ui")
+    )]
     pub struct ClipboardConfirmationDialog {
         /// The request that this dialog is for.
         #[property(get, set, nullable)]
@@ -71,6 +78,8 @@ mod imp {
         pub reveal_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub hide_button: TemplateChild<gtk::Button>,
+        // Only exists in the 1.4+ template (`adw::SwitchRow`).
+        #[cfg(feature = "adw_1_4")]
         #[template_child]
         pub remember_choice: TemplateChild<adw::SwitchRow>,
     }
@@ -190,26 +199,24 @@ mod imp {
     }
 
     impl WidgetImpl for ClipboardConfirmationDialog {}
-    impl AdwDialogImpl for ClipboardConfirmationDialog {}
-    impl AdwAlertDialogImpl for ClipboardConfirmationDialog {
-        fn response(&self, response: &str) {
-            let remember = self.remember_choice.is_active();
-            let obj = self.obj();
-            if response == "cancel" {
-                obj.emit_by_name::<()>("deny", &[&remember]);
-            } else if response == "ok" {
-                obj.emit_by_name::<()>("confirm", &[&remember]);
-            }
+    super::impl_dialog_parent!(ClipboardConfirmationDialog, |this, response| {
+        #[cfg(feature = "adw_1_4")]
+        let remember = this.remember_choice.is_active();
+        #[cfg(not(feature = "adw_1_4"))]
+        let remember = false;
+        let obj = this.obj();
+        if response == "cancel" {
+            obj.emit_by_name::<()>("deny", &[&remember]);
+        } else if response == "ok" {
+            obj.emit_by_name::<()>("confirm", &[&remember]);
         }
-    }
-    impl DialogImpl for ClipboardConfirmationDialog {}
+    });
 }
 
-glib::wrapper! {
-    pub struct ClipboardConfirmationDialog(ObjectSubclass<imp::ClipboardConfirmationDialog>)
-        @extends Dialog, adw::AlertDialog, adw::Dialog, gtk::Widget,
-        @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::ShortcutManager;
-}
+dialog_subclass_wrapper!(
+    ClipboardConfirmationDialog,
+    imp::ClipboardConfirmationDialog
+);
 
 impl ClipboardConfirmationDialog {
     pub fn new() -> Self {

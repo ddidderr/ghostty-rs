@@ -8,6 +8,8 @@ pub mod class;
 pub mod css;
 pub mod debug_input;
 pub mod ext;
+#[cfg(debug_assertions)]
+mod fake_version;
 pub mod flatpak;
 pub mod gl;
 pub mod gsettings;

@@ -62,6 +62,7 @@ ghostty-bench (benchmarks), ghostty-build-data (completions, man pages, syntax).
 | `ghostty-cli` | cli/* actions, build_config.zig (build info) | apprt, config, font, input, os, vt |
 | `ghostty-apprt-gtk` | apprt/gtk/* (+ ui/*.blp, css) | apprt, config, input, inspector, os, vt, datastruct |
 | `ghostty-bench` | benchmark/*, synthetic/* | terminal, unicode, vt |
+| `ghostty-helpgen` | helpgen.zig (build-time doc-comment extraction for CLI-action and keybind-action help; used from `build.rs` of ghostty-cli / ghostty-input) | – |
 | `ghostty-build-data` | main_build_data.zig, extra/*, build/mdgen | cli, config, input, os, termio |
 | root `ghostty-rs` (bin `ghostty`) | main_ghostty.zig | apprt, apprt-gtk, cli, config, core, os |
 
@@ -123,11 +124,19 @@ integration), `po/` (translations), crate-local `res/`/`shaders/`/`resources/`.
 
 - 2026-10-12: Sentry crash handling and GTK<4.14/libadwaita<1.5 fallbacks,
   previously omitted, are ported in Phase 8 for full parity.
+- 2026-10-12 (GC): the GTK/libadwaita compatibility fallbacks are ported
+  (MessageDialog, SwitchRow-less clipboard template, pre-Banner debug warning
+  and child-exited, GtkAboutDialog, CSS error source bytes, all blueprint
+  variants in the gresource). Minimum versions: **GTK 4.14, libadwaita 1.5** --
+  Ghostty's own floor (its build compiles every blueprint, incl. the `1.5/`
+  ones, and calls `gtk_css_provider_load_from_bytes` (4.12) and
+  `gtk_im_context_activate_osk` (4.14) unconditionally); the `gnome_44`
+  binding feature was dropped. Version gating mirrors Zig's `atLeast`
+  (build level AND runtime): cargo features `adw_1_3|1_4|1_5` and `gtk_4_16`
+  (all default) are the "header version"; building without them selects the
+  Zig fallbacks at compile time. See `notes/compat-GC.md`.
 
 ## Intentional omissions (decided by the orchestrator)
 
 - Sentry crash reporting (`crash/*`): optional and disabled by default in
   upstream Linux builds; `+crash-report` listing is ported.
-- GTK < 4.14 / libadwaita < 1.5 compatibility fallbacks (MessageDialog,
-  pre-Banner widgets, old about dialog, 1.0–1.3 blueprint variants): the
-  Rust port requires GTK ≥ 4.14 and libadwaita ≥ 1.5.

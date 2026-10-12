@@ -5,6 +5,18 @@ edition.workspace = true
 license.workspace = true
 build = "build.rs"
 
+[features]
+# Build-time ("header") capability levels, the Rust counterpart of the C
+# headers' version macros that Zig's `gtk_version.atLeast`/`adw_version.atLeast`
+# check at comptime. Every `atLeast` is "build level >= requested AND runtime
+# library >= requested", so with a lower build level the code that needs newer
+# API (and the Zig compatibility fallbacks) is compiled instead.
+default = ["adw_1_5", "gtk_4_16"]
+adw_1_3 = []
+adw_1_4 = ["adw_1_3"]
+adw_1_5 = ["adw_1_4"]
+gtk_4_16 = ["gtk/v4_16"]
+
 [dependencies]
 ghostty-apprt.workspace = true
 ghostty-config.workspace = true
@@ -16,7 +28,7 @@ ghostty-vt.workspace = true
 log = "0.4"
 thiserror = "2"
 bitflags = "2"
-gtk = { package = "gtk4", version = "0.11", features = ["v4_14", "gnome_44"] }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }
 gtk4-layer-shell = "0.8"
 gdk4-x11 = { version = "0.11.5", features = ["x11", "xlib"] }

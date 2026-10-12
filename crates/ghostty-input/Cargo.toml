@@ -10,6 +10,9 @@ ghostty-unicode.workspace = true
 indexmap = "2.14.2"
 thiserror = "2.0.21"
 
+[build-dependencies]
+ghostty-helpgen.workspace = true
+
 # Same as `[workspace.lints]` except `unsafe_code` is denied instead of
 # forbidden: the macOS Carbon keymap (`keymap_darwin.rs`) needs `unsafe` FFI.
 [lints.rust]

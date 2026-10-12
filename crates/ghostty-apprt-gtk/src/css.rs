@@ -31,13 +31,36 @@ pub struct CssProviders {
 }
 
 fn at_least_gtk(major: u32, minor: u32) -> bool {
-    (gtk::major_version(), gtk::minor_version()) >= (major, minor)
+    crate::gtk_version::runtime_at_least(major, minor, 0)
 }
 
 /// Log a CSS parsing error (Zig: `signalCssParsingError`).
 fn log_parsing_error(section: &gtk::CssSection, err: &glib::Error) {
     let location = section.to_str();
-    log::warn!("css parsing failed at {location}: {err}");
+    // GTK >= 4.16 can also hand us the offending source bytes.
+    #[cfg(feature = "gtk_4_16")]
+    if crate::gtk_version::at_least(4, 16, 0)
+        && let Some(bytes) = section.bytes()
+    {
+        log::warn!("{}", parsing_error_message(&location, err, Some(&bytes)));
+        return;
+    }
+    log::warn!("{}", parsing_error_message(&location, err, None));
+}
+
+/// Builds the log line for [`log_parsing_error`]; with `data` the source
+/// bytes follow on their own line (`css parsing failed at {s}: {s} {d} {s}\n{s}`).
+fn parsing_error_message(location: &str, err: &glib::Error, data: Option<&[u8]>) -> String {
+    let base = format!(
+        "css parsing failed at {location}: {} {} {}",
+        err.domain().as_str(),
+        err.code(),
+        err.message(),
+    );
+    match data {
+        Some(data) => format!("{base}\n{}", String::from_utf8_lossy(data)),
+        None => base,
+    }
 }
 
 fn new_provider() -> gtk::CssProvider {
@@ -329,5 +352,22 @@ mod tests {
         };
         assert!(runtime_css(&c, true).contains("--ghostty-bg"));
         assert!(runtime_css(&c, false).contains("windowhandle:backdrop"));
+    }
+
+    #[test]
+    fn parsing_error_message_includes_source_bytes() {
+        let err = glib::Error::with_domain(
+            glib::Quark::from_str("gtk-css-parser-error-quark"),
+            7,
+            "bad",
+        );
+        assert_eq!(
+            parsing_error_message("<data>:1:2", &err, None),
+            "css parsing failed at <data>:1:2: gtk-css-parser-error-quark 7 bad"
+        );
+        assert_eq!(
+            parsing_error_message("<data>:1:2", &err, Some(b"a { b }")),
+            "css parsing failed at <data>:1:2: gtk-css-parser-error-quark 7 bad\na { b }"
+        );
     }
 }
