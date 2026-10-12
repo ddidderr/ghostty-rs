@@ -8,24 +8,40 @@
 
 use std::time::Instant;
 
-use ghostty_apprt::action::{Action as RtAction, MouseOverLink, OpenUrl, OpenUrlKind};
-use ghostty_apprt::runtime_api::CoreError;
-use ghostty_apprt::structs::{Clipboard, ClipboardRequest, CursorPos};
-use ghostty_config::types_a::LinkPreviews;
-use ghostty_config::types_b::{
-    CopyOnSelect, MouseShiftCapture as ConfigShiftCapture, RightClickAction,
+use ghostty_apprt::{
+    action::{Action as RtAction, MouseOverLink, OpenUrl, OpenUrlKind},
+    runtime_api::CoreError,
+    structs::{Clipboard, ClipboardRequest, CursorPos},
 };
-use ghostty_input::link::{Action as LinkAction, Highlight};
-use ghostty_input::{Mods, MouseButton, MouseButtonState, MousePressureStage, ScrollMods};
-use ghostty_renderer::size::{Coordinate as SizeCoordinate, CoordinateTag, Size, SurfaceCoord};
-use ghostty_renderer::state::State as RenderStateData;
-use ghostty_terminal::page_list::{Direction, PageList, Pin, TrackedPin};
-use ghostty_terminal::point::{Coordinate as PointCoordinate, Point};
-use ghostty_terminal::screen::{Screen, SelectLine, SelectionString, SemanticClick};
-use ghostty_terminal::screen_set::Key as ScreenKey;
-use ghostty_terminal::selection::Selection;
-use ghostty_terminal::terminal::{
-    MouseEvents, MouseFormat, MouseShiftCapture as TerminalShiftCapture, ScrollViewport, Terminal,
+use ghostty_config::{
+    types_a::LinkPreviews,
+    types_b::{CopyOnSelect, MouseShiftCapture as ConfigShiftCapture, RightClickAction},
+};
+use ghostty_input::{
+    Mods,
+    MouseButton,
+    MouseButtonState,
+    MousePressureStage,
+    ScrollMods,
+    link::{Action as LinkAction, Highlight},
+};
+use ghostty_renderer::{
+    size::{Coordinate as SizeCoordinate, CoordinateTag, Size, SurfaceCoord},
+    state::State as RenderStateData,
+};
+use ghostty_terminal::{
+    page_list::{Direction, PageList, Pin, TrackedPin},
+    point::{Coordinate as PointCoordinate, Point},
+    screen::{Screen, SelectLine, SelectionString, SemanticClick},
+    screen_set::Key as ScreenKey,
+    selection::Selection,
+    terminal::{
+        MouseEvents,
+        MouseFormat,
+        MouseShiftCapture as TerminalShiftCapture,
+        ScrollViewport,
+        Terminal,
+    },
 };
 use ghostty_termio::message::Message as IoMessage;
 use ghostty_vt::modes::Mode;
@@ -2239,9 +2255,10 @@ impl Drop for RenderOnDrop<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_renderer::size::{CellSize, Padding, ScreenSize};
     use ghostty_terminal::screen::Options as ScreenOptions;
+
+    use super::*;
 
     /// Our screen size is 10x5 cells that are 10x20 px, with 5px padding on
     /// all sides.

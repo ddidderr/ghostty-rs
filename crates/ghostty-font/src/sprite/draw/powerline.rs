@@ -11,11 +11,13 @@
 
 use std::f64::consts::SQRT_2;
 
-use super::box_;
-use super::common::{DrawFn, Range, Thickness};
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{
-    Canvas, CapMode, Color, DrawError, Path, Point, StrokeOptions, Triangle,
+use super::{
+    box_,
+    common::{DrawFn, Range, Thickness},
+};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, Point, StrokeOptions, Triangle},
 };
 
 pub const RANGES: &[Range] = &[

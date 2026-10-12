@@ -1,8 +1,7 @@
 //! URI parsing. Extends a faithful port of Zig's `std.Uri.parse` with the
 //! additional [`ParseOptions`] from `os/uri.zig`.
 
-use std::borrow::Cow;
-use std::fmt::Write as _;
+use std::{borrow::Cow, fmt::Write as _};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ParseOptions {

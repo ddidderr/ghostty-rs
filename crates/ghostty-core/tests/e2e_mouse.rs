@@ -5,8 +5,7 @@
 
 mod common;
 use common::*;
-use ghostty_apprt::action::Action;
-use ghostty_apprt::structs::Clipboard;
+use ghostty_apprt::{action::Action, structs::Clipboard};
 use ghostty_input::{Key, MouseButton};
 
 const L: MouseButton = MouseButton::Left;

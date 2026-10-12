@@ -1,10 +1,14 @@
 //! `ConfigField` implementations for types owned by `ghostty-input`
 //! (the input crate cannot depend on the config crate).
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::formatter::EntryFormatter;
-use ghostty_input::{KeyRemapSet, OptionAsAlt};
 use std::fmt;
+
+use ghostty_input::{KeyRemapSet, OptionAsAlt};
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    formatter::EntryFormatter,
+};
 
 impl ConfigField for KeyRemapSet {
     fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {

@@ -13,9 +13,11 @@
 //! lives in the same page.
 
 use super::sliding_window::{Direction, SlidingWindow};
-use crate::highlight::Flattened;
-use crate::page_list::{Direction as ListDirection, NodeId, PageList};
-use crate::point::{Coordinate, Point, Tag};
+use crate::{
+    highlight::Flattened,
+    page_list::{Direction as ListDirection, NodeId, PageList},
+    point::{Coordinate, Point, Tag},
+};
 
 #[derive(Debug)]
 pub struct ViewportSearch {
@@ -223,8 +225,7 @@ impl ViewportSearch {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::*;
-    use super::*;
+    use super::{super::test_util::*, *};
     use crate::terminal::ScrollViewport;
 
     fn check(list: &PageList, h: &Flattened, tag: Tag, s: (u16, u32), e: (u16, u32)) {

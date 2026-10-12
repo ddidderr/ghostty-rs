@@ -1,8 +1,6 @@
 //! Transient systemd scope creation over D-Bus (port of `apprt/gtk/cgroup.zig`).
 
-use gtk::gio;
-use gtk::glib;
-use gtk::prelude::*;
+use gtk::{gio, glib, prelude::*};
 
 /// Properties for the transient scope.
 #[derive(Debug, Clone, Copy, Default)]

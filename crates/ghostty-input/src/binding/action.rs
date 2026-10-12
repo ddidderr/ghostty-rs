@@ -3,8 +3,10 @@
 
 #![allow(clippy::needless_raw_string_hashes)]
 
-use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::{
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 use super::Error;
 

@@ -1,6 +1,12 @@
 //! Wrapper for handling render pipelines (`opengl/Pipeline.zig`).
 use super::gl::{
-    self, AttribType, FramebufferTarget, Gl, RawFramebuffer, RawProgram, RawVertexArray,
+    self,
+    AttribType,
+    FramebufferTarget,
+    Gl,
+    RawFramebuffer,
+    RawProgram,
+    RawVertexArray,
 };
 
 /// Vertex step function.

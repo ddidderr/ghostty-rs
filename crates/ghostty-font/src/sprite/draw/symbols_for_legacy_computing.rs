@@ -3,16 +3,38 @@
 //!
 //! Port of `sprite/draw/symbols_for_legacy_computing.zig`.
 
-use super::block;
-use super::box_;
-use super::common::{
-    Alignment, Corner, DrawFn, Edge, FIVE_EIGHTHS, Fraction, HALF, HAlign, ONE_EIGHTH, ONE_QUARTER,
-    ONE_THIRD, Quads, Range, SEVEN_EIGHTHS, Shade, THREE_EIGHTHS, THREE_QUARTERS, TWO_THIRDS,
-    Thickness, VAlign, fill,
+use super::{
+    block,
+    box_,
+    common::{
+        Alignment,
+        Corner,
+        DrawFn,
+        Edge,
+        FIVE_EIGHTHS,
+        Fraction,
+        HALF,
+        HAlign,
+        ONE_EIGHTH,
+        ONE_QUARTER,
+        ONE_THIRD,
+        Quads,
+        Range,
+        SEVEN_EIGHTHS,
+        Shade,
+        THREE_EIGHTHS,
+        THREE_QUARTERS,
+        TWO_THIRDS,
+        Thickness,
+        VAlign,
+        fill,
+    },
+    geometric_shapes as geo,
 };
-use super::geometric_shapes as geo;
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, Color, DrawError, Line, Path, Point, Rect, StrokeOptions};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, Color, DrawError, Line, Path, Point, Rect, StrokeOptions},
+};
 
 const _: (f64, f64) = (ONE_THIRD, TWO_THIRDS);
 

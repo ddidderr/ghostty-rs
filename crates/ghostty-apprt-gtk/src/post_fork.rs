@@ -1,10 +1,11 @@
 //! Parent post-fork hook creating the transient scope (port of
 //! `apprt/gtk/post_fork.zig`).
 
-use ghostty_config::config::Config;
-use ghostty_config::types_b::{GtkSingleInstance, LinuxCgroup};
-use gtk::gio;
-use gtk::prelude::*;
+use ghostty_config::{
+    config::Config,
+    types_b::{GtkSingleInstance, LinuxCgroup},
+};
+use gtk::{gio, prelude::*};
 
 use crate::cgroup;
 

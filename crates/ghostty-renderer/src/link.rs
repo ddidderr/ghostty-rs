@@ -2,10 +2,11 @@
 
 use std::collections::HashSet;
 
-use ghostty_input::Mods;
-use ghostty_input::link::{Highlight, Link as InputLink};
-use ghostty_terminal::point::Coordinate;
-use ghostty_terminal::render::RenderState;
+use ghostty_input::{
+    Mods,
+    link::{Highlight, Link as InputLink},
+};
+use ghostty_terminal::{point::Coordinate, render::RenderState};
 use onig::{Regex, Region, SearchOptions};
 
 #[derive(Debug, thiserror::Error)]
@@ -155,9 +156,10 @@ impl Set {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_input::link::Action;
     use ghostty_terminal::terminal::{Options, Terminal};
+
+    use super::*;
 
     fn link(regex: &str, highlight: Highlight) -> InputLink {
         InputLink {

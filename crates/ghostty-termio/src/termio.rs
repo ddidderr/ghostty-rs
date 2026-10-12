@@ -22,39 +22,46 @@
 //! Lock order is always terminal mutex first, then the stream mutex inside
 //! [`Output`].
 
-use std::io::Read;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant},
+};
 
-use ghostty_config::conditional;
-use ghostty_config::config::Config;
-use ghostty_config::io::ReadableIO;
-use ghostty_config::types_a::{Color, CursorStyle, TerminalColor};
-use ghostty_config::types_b::{ClipboardAccess, GraphemeWidthMethod, OSCColorReportFormat};
+use ghostty_config::{
+    conditional,
+    config::Config,
+    io::ReadableIO,
+    types_a::{Color, CursorStyle, TerminalColor},
+    types_b::{ClipboardAccess, GraphemeWidthMethod, OSCColorReportFormat},
+};
 use ghostty_datastruct::blocking_queue::Timeout;
-use ghostty_renderer::message::Message as RendererMessage;
-use ghostty_renderer::size::Size;
-use ghostty_renderer::state::InspectorHook;
-use ghostty_terminal::kitty::graphics_storage::TerminalInfo;
-use ghostty_terminal::point::{Coordinate, Point};
-use ghostty_terminal::screen::Scroll;
-use ghostty_terminal::screen_set::Key as ScreenKey;
-use ghostty_terminal::terminal::{Colors, Options as TerminalOptions, ScrollViewport, Terminal};
-use ghostty_vt::color::{DynamicPalette, DynamicRgb, Palette};
-use ghostty_vt::csi;
-use ghostty_vt::kitty::graphics_command::Delete as KittyDelete;
-use ghostty_vt::modes::{Mode, ModePacked};
-use std::sync::MutexGuard;
+use ghostty_renderer::{message::Message as RendererMessage, size::Size, state::InspectorHook};
+use ghostty_terminal::{
+    kitty::graphics_storage::TerminalInfo,
+    point::{Coordinate, Point},
+    screen::Scroll,
+    screen_set::Key as ScreenKey,
+    terminal::{Colors, Options as TerminalOptions, ScrollViewport, Terminal},
+};
+use ghostty_vt::{
+    color::{DynamicPalette, DynamicRgb, Palette},
+    csi,
+    kitty::graphics_command::Delete as KittyDelete,
+    modes::{Mode, ModePacked},
+};
 
-use crate::backend::{self, Backend};
-use crate::exec;
-use crate::mailbox::Mailbox;
-use crate::message::{Message, SizeReport};
-use crate::options::Options;
-use crate::sinks::{RendererMailbox, SurfaceMailbox};
-use crate::state::{SharedState, SharedStateExt, State};
-use crate::stream_handler::{HandlerOptions, HandlerState, TerminalStream};
-use crate::wakeup::Wakeup;
+use crate::{
+    backend::{self, Backend},
+    exec,
+    mailbox::Mailbox,
+    message::{Message, SizeReport},
+    options::Options,
+    sinks::{RendererMailbox, SurfaceMailbox},
+    state::{SharedState, SharedStateExt, State},
+    stream_handler::{HandlerOptions, HandlerState, TerminalStream},
+    wakeup::Wakeup,
+};
 
 /// Errors from termio initialization and thread setup.
 #[derive(Debug, thiserror::Error)]

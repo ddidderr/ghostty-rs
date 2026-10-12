@@ -7,12 +7,12 @@
 //! The canonical definition lives in `ghostty-config` (the `font-codepoint-map`
 //! option parses straight into it); it is re-exported here.
 
-pub use ghostty_config::font_types::CodepointMap;
-pub use ghostty_config::font_types::CodepointMapEntry as Entry;
+pub use ghostty_config::font_types::{CodepointMap, CodepointMapEntry as Entry};
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_config::font_types::Descriptor;
+
+    use super::*;
 
     fn desc(family: &str) -> Descriptor {
         Descriptor {

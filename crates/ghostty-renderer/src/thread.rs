@@ -31,17 +31,20 @@
 //! The event loop (libxev in Zig) is replaced by a `crossbeam_channel::select!`
 //! over the wakeup / stop / draw-now channels and the next timer deadline.
 
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, Sender, bounded, never, select};
-use ghostty_config::config::Config;
-use ghostty_config::types_a::CustomShaderAnimation;
+use ghostty_config::{config::Config, types_a::CustomShaderAnimation};
 use ghostty_datastruct::blocking_queue::{BlockingQueue, Timeout};
 
-use crate::generic::{Host, Renderer};
-use crate::message::Message;
-use crate::state::SharedState;
+use crate::{
+    generic::{Host, Renderer},
+    message::Message,
+    state::SharedState,
+};
 
 /// 120 FPS
 pub const DRAW_INTERVAL: Duration = Duration::from_millis(8);

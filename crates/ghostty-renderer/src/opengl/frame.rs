@@ -1,9 +1,11 @@
 //! Wrapper for handling render frames (`opengl/Frame.zig`).
 use std::sync::Arc;
 
-use super::OpenGL;
-use super::render_pass::{Attachment, Options as RenderPassOptions, RenderPass};
-use super::target::Target;
+use super::{
+    OpenGL,
+    render_pass::{Attachment, Options as RenderPassOptions, RenderPass},
+    target::Target,
+};
 use crate::backend::Health;
 
 /// Options for beginning a frame.

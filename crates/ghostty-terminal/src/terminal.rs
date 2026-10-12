@@ -18,19 +18,6 @@
     clippy::items_after_statements,
     clippy::too_many_lines
 )]
-use crate::{
-    page::{Cell, ContentTag, Page, SemanticContent, SemanticPrompt as RowPrompt, Wide},
-    page_list::{Direction, IncreaseCapacity, Pin},
-    point::{Coordinate, Point},
-    screen::{
-        CharsetState, InputClear, Options as ScreenOptions, Resize as ScreenResize, SavedCursor,
-        Screen, Scroll, SemanticClick, SemanticContentSet as SetSemantic,
-    },
-    screen_set::{Key as ScreenKey, ScreenSet},
-    size,
-    style::{self, Color as StyleColor, Style},
-    tabstops::Tabstops,
-};
 use ghostty_vt::{
     ansi::{ProtectedMode, StatusDisplay},
     charsets::{self, Charset, Slots},
@@ -47,6 +34,26 @@ use ghostty_vt::{
 };
 
 pub use crate::page::Error;
+use crate::{
+    page::{Cell, ContentTag, Page, SemanticContent, SemanticPrompt as RowPrompt, Wide},
+    page_list::{Direction, IncreaseCapacity, Pin},
+    point::{Coordinate, Point},
+    screen::{
+        CharsetState,
+        InputClear,
+        Options as ScreenOptions,
+        Resize as ScreenResize,
+        SavedCursor,
+        Screen,
+        Scroll,
+        SemanticClick,
+        SemanticContentSet as SetSemantic,
+    },
+    screen_set::{Key as ScreenKey, ScreenSet},
+    size,
+    style::{self, Color as StyleColor, Style},
+    tabstops::Tabstops,
+};
 
 /// Default tabstop interval
 const TABSTOP_INTERVAL: usize = 8;

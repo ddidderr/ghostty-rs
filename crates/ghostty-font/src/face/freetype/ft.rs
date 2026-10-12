@@ -8,8 +8,10 @@
 // c_long is i64 on Linux but not everywhere; keep the casts portable.
 #![allow(clippy::unnecessary_cast)]
 
-use std::ffi::{CStr, c_int, c_long, c_uint, c_ulong, c_void};
-use std::ptr::{self, NonNull};
+use std::{
+    ffi::{CStr, c_int, c_long, c_uint, c_ulong, c_void},
+    ptr::{self, NonNull},
+};
 
 use freetype_sys as sys;
 

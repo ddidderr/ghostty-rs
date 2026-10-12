@@ -17,7 +17,6 @@ pub mod graphics_storage;
 pub mod graphics_unicode;
 
 pub use ghostty_vt::kitty::{color, graphics_command, key};
-
 pub use graphics_command::{Command, Parser as CommandParser, Response};
 pub use graphics_exec::{ExecTerminal, execute};
 pub use graphics_image::Image;

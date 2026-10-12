@@ -6,9 +6,11 @@
 
 use ghostty_terminal::page::Cell as PageCell;
 
-use crate::cursor::Style as CursorStyle;
-use crate::opengl::shaders::{CellBg, CellText};
-use crate::size::{CellCountInt, GridSize};
+use crate::{
+    cursor::Style as CursorStyle,
+    opengl::shaders::{CellBg, CellText},
+    size::{CellCountInt, GridSize},
+};
 
 /// The possible cell content keys that exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -297,9 +299,12 @@ fn is_powerline(ch: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use ghostty_terminal::{
+        render::RenderState,
+        terminal::{Options, Terminal},
+    };
+
     use super::*;
-    use ghostty_terminal::render::RenderState;
-    use ghostty_terminal::terminal::{Options, Terminal};
 
     fn fg(x: u16, y: u16) -> CellText {
         CellText {

@@ -24,8 +24,10 @@
 //! Port of `sprite/draw/braille.zig`.
 
 use super::common::{DrawFn, Range};
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, Color, DrawError};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, Color, DrawError},
+};
 
 pub const RANGES: &[Range] = &[Range {
     min: 0x2800,

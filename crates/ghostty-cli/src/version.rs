@@ -2,8 +2,10 @@
 
 use std::io::{IsTerminal, Write};
 
-use crate::build_info::{self, BuildInfo};
-use crate::error::Error;
+use crate::{
+    build_info::{self, BuildInfo},
+    error::Error,
+};
 
 /// The `version` command is used to display information about Ghostty. Recognized as
 /// either `+version` or `--version`.

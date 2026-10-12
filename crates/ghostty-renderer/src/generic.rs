@@ -40,54 +40,91 @@
 //! [`Renderer::display_unrealized`], dropping the `Renderer`) must run on the
 //! thread with the GL context current. The renderer thread never does.
 
-use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Instant;
-
-use ghostty_config::config::Config;
-use ghostty_config::path::Path as ConfigPath;
-use ghostty_config::types_a::{BoldColor, FontShapingBreak, TerminalColor, WindowPaddingColor};
-use ghostty_config::types_b::{
-    AlphaBlending, BackgroundBlur, BackgroundImageFit, BackgroundImagePosition, WindowColorspace,
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        Mutex,
+        MutexGuard,
+        PoisonError,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+    },
+    time::Instant,
 };
-use ghostty_font::face::{Constraint, ConstraintSize, RenderOptions};
-use ghostty_font::nerd_font_attributes::get_constraint;
-use ghostty_font::shape::{self, Cache as ShaperCache, RunIterator, RunOptions, TextRun};
-use ghostty_font::shaper::run::RunCell;
-use ghostty_font::{Atlas, Presentation, SPRITE_INDEX, SharedGrid, Sprite, Style as FontStyle};
+
+use ghostty_config::{
+    config::Config,
+    path::Path as ConfigPath,
+    types_a::{BoldColor, FontShapingBreak, TerminalColor, WindowPaddingColor},
+    types_b::{
+        AlphaBlending,
+        BackgroundBlur,
+        BackgroundImageFit,
+        BackgroundImagePosition,
+        WindowColorspace,
+    },
+};
+use ghostty_font::{
+    Atlas,
+    Presentation,
+    SPRITE_INDEX,
+    SharedGrid,
+    Sprite,
+    Style as FontStyle,
+    face::{Constraint, ConstraintSize, RenderOptions},
+    nerd_font_attributes::get_constraint,
+    shape::{self, Cache as ShaperCache, RunIterator, RunOptions, TextRun},
+    shaper::run::RunCell,
+};
 use ghostty_input::Mods;
-use ghostty_terminal::highlight::Flattened;
-use ghostty_terminal::page::{self, Cell as PageCell, Wide};
-use ghostty_terminal::page_list::Scrollbar;
-use ghostty_terminal::point::{Coordinate, Tag};
-use ghostty_terminal::render::{Cursor as RenderCursor, Dirty, RenderState, Row as RenderRow};
-use ghostty_terminal::style::{self, Style};
-use ghostty_terminal::terminal::ScrollViewport;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::modes::Mode;
-use ghostty_vt::sgr::Underline;
-
-use crate::backend::Health;
-use crate::cell::{self, Contents, Key as CellKey};
-use crate::cursor::{self, Style as CursorStyle};
-use crate::image::{self, Gpu};
-use crate::link;
-use crate::math;
-use crate::opengl::buffer::Buffer;
-use crate::opengl::gl::{self, Gl, Primitive};
-use crate::opengl::render_pass::{Attachment, AttachmentTarget, Draw, Step};
-use crate::opengl::shaders::{
-    BgImage, BgImageFit, BgImageInfo, BgImagePosition, Bools, CellBg, CellText, CellTextAtlas,
-    PaddingExtend, Shaders, Uniforms,
+use ghostty_terminal::{
+    highlight::Flattened,
+    page::{self, Cell as PageCell, Wide},
+    page_list::Scrollbar,
+    point::{Coordinate, Tag},
+    render::{Cursor as RenderCursor, Dirty, RenderState, Row as RenderRow},
+    style::{self, Style},
+    terminal::ScrollViewport,
 };
-use crate::opengl::{self, OpenGL, Sampler, Target, Texture};
-use crate::options::Options;
-use crate::overlay::{self, Overlay};
-use crate::row::never_extend_bg;
-use crate::shadertoy::{self, PathItem};
-use crate::size::{CellSize, GridSize, Padding, Size};
-use crate::state::{Preedit, SharedState};
+use ghostty_vt::{color::Rgb, modes::Mode, sgr::Underline};
+
+use crate::{
+    backend::Health,
+    cell::{self, Contents, Key as CellKey},
+    cursor::{self, Style as CursorStyle},
+    image::{self, Gpu},
+    link,
+    math,
+    opengl::{
+        self,
+        OpenGL,
+        Sampler,
+        Target,
+        Texture,
+        buffer::Buffer,
+        gl::{self, Gl, Primitive},
+        render_pass::{Attachment, AttachmentTarget, Draw, Step},
+        shaders::{
+            BgImage,
+            BgImageFit,
+            BgImageInfo,
+            BgImagePosition,
+            Bools,
+            CellBg,
+            CellText,
+            CellTextAtlas,
+            PaddingExtend,
+            Shaders,
+            Uniforms,
+        },
+    },
+    options::Options,
+    overlay::{self, Overlay},
+    row::never_extend_bg,
+    shadertoy::{self, PathItem},
+    size::{CellSize, GridSize, Padding, Size},
+    state::{Preedit, SharedState},
+};
 
 /// The graphics API used by the renderer on Linux.
 pub type GraphicsApi = OpenGL;
@@ -3287,8 +3324,9 @@ impl DrawState {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_config::types_a::Color as ConfigColor;
+
+    use super::*;
 
     fn rgb(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }

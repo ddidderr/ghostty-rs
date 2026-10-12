@@ -8,47 +8,71 @@
 //! into) is [`RtSurfaceHandle`], which implements [`ghostty_apprt::runtime_api::RtSurface`]
 //! and holds only a weak reference to the widget.
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::io::Write as _;
-use std::rc::Rc;
-use std::sync::OnceLock;
-
-use adw::prelude::*;
-use adw::subclass::prelude::*;
-use ghostty_apprt::action::{CommandFinished, Inspector, KeySequence, KeyTable, Readonly};
-use ghostty_apprt::structs::{
-    Clipboard, ClipboardRequest, ContentScale, CursorPos, ImePos, SurfaceSize,
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    io::Write as _,
+    rc::Rc,
+    sync::OnceLock,
 };
-use ghostty_apprt::surface::{ChildExited, NewSurfaceContext, Scrollbar};
-use ghostty_config::command::Command;
-use ghostty_config::config::Config as CoreConfig;
-use ghostty_config::path::Path as ConfigPath;
-use ghostty_config::types_a::WorkingDirectory;
-use ghostty_config::types_b::{
-    BellFeatures, NotifyOnCommandFinish, ResizeOverlay as ResizeOverlayMode, ResizeOverlayPosition,
+
+use adw::{prelude::*, subclass::prelude::*};
+use ghostty_apprt::{
+    action::{CommandFinished, Inspector, KeySequence, KeyTable, Readonly},
+    runtime_api::{
+        ClipboardError,
+        CoreSurface,
+        DesiredFontSize,
+        InputEffect,
+        MIN_WINDOW_HEIGHT_CELLS,
+        MIN_WINDOW_WIDTH_CELLS,
+        RtSurface,
+        SurfaceId,
+    },
+    structs::{Clipboard, ClipboardRequest, ContentScale, CursorPos, ImePos, SurfaceSize},
+    surface::{ChildExited, NewSurfaceContext, Scrollbar},
+};
+use ghostty_config::{
+    command::Command,
+    config::Config as CoreConfig,
+    path::Path as ConfigPath,
+    types_a::WorkingDirectory,
+    types_b::{
+        BellFeatures,
+        NotifyOnCommandFinish,
+        ResizeOverlay as ResizeOverlayMode,
+        ResizeOverlayPosition,
+    },
 };
 use ghostty_input::{Action as KeyAction, Key, KeyEvent, Mods, MouseButton, MouseButtonState};
-use ghostty_vt::mouse_shape::MouseShape;
-use ghostty_vt::osc::{ProgressReport, ProgressState};
-use gtk::glib::subclass::Signal;
-use gtk::glib::translate::{FromGlib, IntoGlib};
-use gtk::{gdk, gio, glib};
+use ghostty_vt::{
+    mouse_shape::MouseShape,
+    osc::{ProgressReport, ProgressState},
+};
+use gtk::{
+    gdk,
+    gio,
+    glib,
+    glib::{
+        subclass::Signal,
+        translate::{FromGlib, IntoGlib},
+    },
+};
 
-use crate::class::application::Application;
-use crate::class::clipboard_confirmation_dialog::ClipboardConfirmationDialog;
-use crate::class::config::Config;
-use crate::class::inspector_window::InspectorWindow;
-use crate::class::key_state_overlay::KeyStateOverlay;
-use crate::class::resize_overlay::ResizeOverlay;
-use crate::class::search_overlay::SearchOverlay;
-use crate::class::surface_child_exited::SurfaceChildExited;
-use crate::class::title_dialog::{self, TitleDialog};
-use crate::class::window::Window;
-use crate::key as gtk_key;
-use ghostty_apprt::runtime_api::{
-    ClipboardError, CoreSurface, DesiredFontSize, InputEffect, MIN_WINDOW_HEIGHT_CELLS,
-    MIN_WINDOW_WIDTH_CELLS, RtSurface, SurfaceId,
+use crate::{
+    class::{
+        application::Application,
+        clipboard_confirmation_dialog::ClipboardConfirmationDialog,
+        config::Config,
+        inspector_window::InspectorWindow,
+        key_state_overlay::KeyStateOverlay,
+        resize_overlay::ResizeOverlay,
+        search_overlay::SearchOverlay,
+        surface_child_exited::SurfaceChildExited,
+        title_dialog::{self, TitleDialog},
+        window::Window,
+    },
+    key as gtk_key,
 };
 
 /// Simple dimensions struct for the surface used by various properties
@@ -2268,12 +2292,18 @@ impl RtSurface for RtSurfaceHandle {
 
 /// A namespace for our clipboard-related functions so Surface isn't SO large.
 mod clipboard {
+    use adw::{prelude::*, subclass::prelude::ObjectSubclassIsExt};
+
     use super::{
-        Clipboard, ClipboardConfirmationDialog, ClipboardError, ClipboardRequest, Surface, gdk,
-        gio, glib,
+        Clipboard,
+        ClipboardConfirmationDialog,
+        ClipboardError,
+        ClipboardRequest,
+        Surface,
+        gdk,
+        gio,
+        glib,
     };
-    use adw::prelude::*;
-    use adw::subclass::prelude::ObjectSubclassIsExt;
 
     /// Set the clipboard contents.
     pub(super) fn set(

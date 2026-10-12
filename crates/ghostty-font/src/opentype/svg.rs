@@ -119,8 +119,7 @@ impl<'a> SVG<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded;
-    use crate::opentype::sfnt::Sfnt;
+    use crate::{embedded, opentype::sfnt::Sfnt};
 
     // NOTE: the Zig test obtains the table through `Face.copyTable`; we read
     // the same bytes through the SFNT directory (Face-based variant lives

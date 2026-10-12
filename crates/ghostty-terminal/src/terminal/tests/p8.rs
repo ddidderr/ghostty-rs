@@ -1,12 +1,17 @@
-use super::*;
-use crate::page::{ContentTag, SemanticContent, SemanticPrompt as RowPrompt};
-use crate::screen::SemanticClick;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::osc::{
-    SemanticPrompt as Cmd,
-    semantic_prompt::{Action as A, Click},
+use ghostty_vt::{
+    color::Rgb,
+    osc::{
+        SemanticPrompt as Cmd,
+        semantic_prompt::{Action as A, Click},
+    },
+    sgr::Attribute,
 };
-use ghostty_vt::sgr::Attribute;
+
+use super::*;
+use crate::{
+    page::{ContentTag, SemanticContent, SemanticPrompt as RowPrompt},
+    screen::SemanticClick,
+};
 
 fn sp(a: A) -> Cmd {
     Cmd::init(a)

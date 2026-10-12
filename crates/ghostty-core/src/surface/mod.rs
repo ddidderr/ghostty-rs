@@ -41,55 +41,90 @@ pub mod inspector;
 pub mod keyboard;
 pub mod mouse;
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::thread::JoinHandle;
-use std::time::{Duration as StdDuration, Instant};
-
-use ghostty_apprt::action::{
-    Action as RtAction, CellSize as ActionCellSize, ColorChange, ColorKind, CommandFinished,
-    ConfigChange, InitialSize, MouseVisibility, Pwd, ReloadConfig, SecureInput, SetTitle,
-    SizeLimit, Target,
-};
-use ghostty_apprt::runtime_api::{
-    ClipboardError, CoreError, CoreSurface, DesiredFontSize, InputEffect, RtApp, RtSurface,
-    SurfaceId,
-};
-use ghostty_apprt::structs::{
-    ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize,
-};
-use ghostty_apprt::surface::{Mailbox as SurfaceMailboxImpl, Message};
-use ghostty_config::conditional;
-use ghostty_config::config::Config;
-use ghostty_config::types_a::ConfirmCloseSurface;
-use ghostty_datastruct::blocking_queue::Timeout;
-use ghostty_font::face::DesiredSize;
-use ghostty_font::metrics::Metrics;
-use ghostty_font::shared_grid_set::{DerivedConfig as FontDerivedConfig, Key as FontGridKey};
-use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
-use ghostty_renderer::generic::Host as RendererHost;
-use ghostty_renderer::message::{FontGridChange, Message as RendererMessage};
-use ghostty_renderer::opengl::OpenGL;
-use ghostty_renderer::options::Options as RendererOptions;
-use ghostty_renderer::size::{CellSize, Coordinate, Padding, ScreenSize, Size};
-use ghostty_renderer::state::{Preedit, PreeditCodepoint, State as RenderStateData};
-use ghostty_renderer::thread::{Handle as RendererHandle, Running as RendererRunning};
-use ghostty_renderer::{Health, Renderer};
-use ghostty_terminal::page_list::Scrollbar;
-use ghostty_terminal::point::Coordinate as PointCoordinate;
-use ghostty_terminal::selection::Selection;
-use ghostty_termio::exec;
-use ghostty_termio::message::Message as IoMessage;
-use ghostty_termio::{
-    Backend, DerivedConfig as IoDerivedConfig, Exec, Mailbox as IoMailbox, Options as IoOptions,
-    RendererMailbox, SharedState, SharedStateExt, TerminalGuard, Termio, Thread as IoThread,
-    Wakeup,
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    thread::JoinHandle,
+    time::{Duration as StdDuration, Instant},
 };
 
-use crate::app::{AppState, Mailbox, Message as AppMessage};
-use crate::global;
 use config::DerivedConfig;
+use ghostty_apprt::{
+    action::{
+        Action as RtAction,
+        CellSize as ActionCellSize,
+        ColorChange,
+        ColorKind,
+        CommandFinished,
+        ConfigChange,
+        InitialSize,
+        MouseVisibility,
+        Pwd,
+        ReloadConfig,
+        SecureInput,
+        SetTitle,
+        SizeLimit,
+        Target,
+    },
+    runtime_api::{
+        ClipboardError,
+        CoreError,
+        CoreSurface,
+        DesiredFontSize,
+        InputEffect,
+        RtApp,
+        RtSurface,
+        SurfaceId,
+    },
+    structs::{ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize},
+    surface::{Mailbox as SurfaceMailboxImpl, Message},
+};
+use ghostty_config::{conditional, config::Config, types_a::ConfirmCloseSurface};
+use ghostty_datastruct::blocking_queue::Timeout;
+use ghostty_font::{
+    face::DesiredSize,
+    metrics::Metrics,
+    shared_grid_set::{DerivedConfig as FontDerivedConfig, Key as FontGridKey},
+};
+use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
+use ghostty_renderer::{
+    Health,
+    Renderer,
+    generic::Host as RendererHost,
+    message::{FontGridChange, Message as RendererMessage},
+    opengl::OpenGL,
+    options::Options as RendererOptions,
+    size::{CellSize, Coordinate, Padding, ScreenSize, Size},
+    state::{Preedit, PreeditCodepoint, State as RenderStateData},
+    thread::{Handle as RendererHandle, Running as RendererRunning},
+};
+use ghostty_terminal::{
+    page_list::Scrollbar,
+    point::Coordinate as PointCoordinate,
+    selection::Selection,
+};
+use ghostty_termio::{
+    Backend,
+    DerivedConfig as IoDerivedConfig,
+    Exec,
+    Mailbox as IoMailbox,
+    Options as IoOptions,
+    RendererMailbox,
+    SharedState,
+    SharedStateExt,
+    TerminalGuard,
+    Termio,
+    Thread as IoThread,
+    Wakeup,
+    exec,
+    message::Message as IoMessage,
+};
+
+use crate::{
+    app::{AppState, Mailbox, Message as AppMessage},
+    global,
+};
 
 /// Minimum window size in cells (Zig: `min_window_width_cells`).
 pub const MIN_WINDOW_WIDTH_CELLS: u32 = ghostty_apprt::runtime_api::MIN_WINDOW_WIDTH_CELLS;
@@ -793,8 +828,7 @@ impl Surface {
             Message::ColorChange(change) => {
                 // Notify our apprt, but don't send a mode 2031 DSR report
                 // because VT sequences were used to change the color.
-                use ghostty_vt::color::Dynamic as D;
-                use ghostty_vt::osc::color::Target;
+                use ghostty_vt::{color::Dynamic as D, osc::color::Target};
                 let kind = match change.target {
                     Target::Palette(v) => ColorKind::Palette(i32::from(v)),
                     Target::Dynamic(dyn_) => match dyn_ {

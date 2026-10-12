@@ -1,7 +1,8 @@
 //! Synthetic data generators (port of `ZIG/src/synthetic`): random bytes,
 //! UTF-8 and OSC sequences, used to feed the benchmarks.
-use ghostty_vt::string_encoding::url_percent_encode;
 use std::io::{self, Write};
+
+use ghostty_vt::string_encoding::url_percent_encode;
 
 /// xoshiro256++ (what Zig's `std.Random.DefaultPrng` is).
 #[derive(Debug, Clone)]
@@ -666,8 +667,9 @@ fn finished(r: io::Result<usize>) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_vt::osc::Parser;
+
+    use super::*;
 
     const SEED: u64 = 0xC0FFEEEEEEEEEEEE;
 

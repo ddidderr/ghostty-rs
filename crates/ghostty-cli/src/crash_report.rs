@@ -4,14 +4,15 @@
 //! Ghostty uses sentry for crash reporting; only the listing behaviour is
 //! ported.
 
-use std::io::{IsTerminal, Write};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    io::{IsTerminal, Write},
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use ghostty_config::types_b::Duration;
 
 use crate::error::Error;
-
 pub use crate::options::NoOptions as Options;
 
 /// A crash report file (Zig: `crash.Report`).

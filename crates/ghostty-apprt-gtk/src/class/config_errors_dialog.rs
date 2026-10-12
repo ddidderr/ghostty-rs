@@ -2,25 +2,33 @@
 //!
 //! Property `config` (GhosttyConfig); signal `reload-config`.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, sync::OnceLock};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
-use std::sync::OnceLock;
+use adw::{prelude::*, subclass::prelude::*};
+use gtk::{glib, glib::subclass::Signal};
 
-use super::config::Config;
-use super::dialog::{Dialog, DialogImpl};
+use super::{
+    config::Config,
+    dialog::{Dialog, DialogImpl},
+};
 
 mod imp {
+    use gtk::{glib, glib::prelude::*, subclass::prelude::*};
+
     use super::{
-        AdwAlertDialogImpl, AdwDialogImpl, Config, Dialog, DialogImpl, ObjectImpl, ObjectSubclass,
-        ObjectSubclassExt, OnceLock, RefCell, Signal, WidgetImpl,
+        AdwAlertDialogImpl,
+        AdwDialogImpl,
+        Config,
+        Dialog,
+        DialogImpl,
+        ObjectImpl,
+        ObjectSubclass,
+        ObjectSubclassExt,
+        OnceLock,
+        RefCell,
+        Signal,
+        WidgetImpl,
     };
-    use gtk::glib;
-    use gtk::glib::prelude::*;
-    use gtk::subclass::prelude::*;
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::ConfigErrorsDialog)]

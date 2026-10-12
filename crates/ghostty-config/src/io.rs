@@ -1,9 +1,12 @@
 //! Readable IO config values (port of `config/io.zig`).
 
-use crate::cli_args::{ArgError, ConfigField, split_tagged_union};
-use crate::formatter::EntryFormatter;
-use crate::string;
 use std::fmt;
+
+use crate::{
+    cli_args::{ArgError, ConfigField, split_tagged_union},
+    formatter::EntryFormatter,
+    string,
+};
 
 /// ReadableIO is some kind of IO source that is readable.
 ///

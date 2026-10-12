@@ -3,8 +3,10 @@
 
 use std::io::Write;
 
-use crate::action::{ActionEnum, DetectError, SpecialCase, detect_iter};
-use crate::error::Error;
+use crate::{
+    action::{ActionEnum, DetectError, SpecialCase, detect_iter},
+    error::Error,
+};
 
 /// Special commands that can be invoked via CLI flags. These are all
 /// invoked by using `+<action>` as a CLI flag. The only exception is
@@ -117,8 +119,7 @@ impl Action {
     /// Used by the build-data generator for shell completions.
     #[must_use]
     pub fn option_fields(self) -> Vec<(&'static str, ghostty_config::cli_args::FieldKind)> {
-        use ghostty_config::cli_args::FieldKind;
-        use ghostty_config::macros::ConfigStruct;
+        use ghostty_config::{cli_args::FieldKind, macros::ConfigStruct};
         fn of<T: ConfigStruct>() -> Vec<(&'static str, FieldKind)> {
             T::FIELDS
                 .iter()
@@ -297,8 +298,9 @@ pub fn run_from_args(args: &[String]) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use ghostty_config::cli_args::split_args;
+
+    use super::*;
 
     fn detect_str(s: &str) -> Result<Option<Action>, DetectError> {
         detect_iter::<Action, _, _>(split_args(s))

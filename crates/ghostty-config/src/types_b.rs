@@ -3,11 +3,16 @@
 
 #![allow(clippy::format_push_string, clippy::single_match_else)]
 
-use crate::cli_args::{ArgError, ConfigField, parse_auto_struct_with, parse_bool, trim_ws};
-use crate::formatter::EntryFormatter;
-use crate::{config_enum, config_packed};
-use ghostty_input::binding::Action;
 use std::fmt;
+
+use ghostty_input::binding::Action;
+
+use crate::{
+    cli_args::{ArgError, ConfigField, parse_auto_struct_with, parse_bool, trim_ws},
+    config_enum,
+    config_packed,
+    formatter::EntryFormatter,
+};
 
 /// Write `name = <s>\n` (Zig: `formatEntry([]const u8, s)`).
 fn fmt_str(f: &mut EntryFormatter<'_>, s: &str) -> fmt::Result {

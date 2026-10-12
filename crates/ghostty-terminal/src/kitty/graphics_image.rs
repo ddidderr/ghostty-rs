@@ -3,14 +3,20 @@
 //! [`LoadingImage`] is an image that is still being transmitted (possibly in
 //! chunks). [`Image`] is a fully loaded and validated image.
 
-use std::io::{Cursor, Read, Seek, SeekFrom};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::FileExt;
-use std::path::Path;
-use std::time::Instant;
+use std::{
+    io::{Cursor, Read, Seek, SeekFrom},
+    os::unix::{ffi::OsStrExt, fs::FileExt},
+    path::Path,
+    time::Instant,
+};
 
 use ghostty_vt::kitty::graphics_command::{
-    Command, Display, Quiet, TransmissionCompression, TransmissionFormat, TransmissionMedium,
+    Command,
+    Display,
+    Quiet,
+    TransmissionCompression,
+    TransmissionFormat,
+    TransmissionMedium,
 };
 
 use crate::page_list::Pin;
@@ -138,8 +144,7 @@ impl LoadingImage {
 
     /// Reads the data from a shared memory segment.
     fn read_shared_memory(&mut self, offset: u32, size: u32, path: &[u8]) -> Result<(), Error> {
-        use rustix::fs::Mode;
-        use rustix::shm;
+        use rustix::{fs::Mode, shm};
 
         let path_str = String::from_utf8_lossy(path);
         let fd = match shm::open(path, shm::OFlags::RDONLY, Mode::empty()) {
@@ -565,8 +570,9 @@ pub struct Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_vt::kitty::graphics_command::{Control, Transmission};
+
+    use super::*;
 
     const RGB_NONE_20X15: &[u8] =
         include_bytes!("testdata/image-rgb-none-20x15-2147483647-raw.data");
@@ -894,9 +900,9 @@ mod tests {
 
     #[test]
     fn image_load_shared_memory() {
-        use rustix::fs::Mode;
-        use rustix::shm;
         use std::io::Write;
+
+        use rustix::{fs::Mode, shm};
 
         let name = format!("/ghostty-kitty-test-{}", std::process::id());
         let fd = shm::open(

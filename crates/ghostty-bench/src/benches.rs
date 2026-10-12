@@ -1,7 +1,7 @@
 //! The individual benchmarks (ports of `benchmark/*.zig`) and the CLI action
 //! dispatch (`benchmark/cli.zig`).
-use crate::args::{Args, data_file, read_short};
-use crate::benchmark::{Benchmark, BenchmarkFailed, Result, RunMode, RunResult, run};
+use std::{hint::black_box, io::Read};
+
 use ghostty_terminal::{
     point::{Coordinate, Point},
     render::RenderState,
@@ -14,8 +14,11 @@ use ghostty_vt::{
     stream::{Action, Handler, Stream},
     utf8_decoder::Utf8Decoder,
 };
-use std::hint::black_box;
-use std::io::Read;
+
+use crate::{
+    args::{Args, data_file, read_short},
+    benchmark::{Benchmark, BenchmarkFailed, Result, RunMode, RunResult, run},
+};
 
 const CHUNK: usize = 4096;
 

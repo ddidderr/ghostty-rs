@@ -5,8 +5,10 @@
 
 mod common;
 use common::*;
-use ghostty_apprt::action::Action;
-use ghostty_apprt::structs::{Clipboard, SurfaceSize};
+use ghostty_apprt::{
+    action::Action,
+    structs::{Clipboard, SurfaceSize},
+};
 use ghostty_input::Key;
 use ghostty_vt::osc::ProgressState;
 

@@ -8,8 +8,10 @@
 //! The version can be overridden with `GHOSTTY_VERSION_STRING` (Zig:
 //! `-Dversion-string`), which must be a semantic version.
 
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 fn run(cmd: &str, args: &[&str], dir: &Path) -> Option<String> {
     let out = Command::new(cmd)

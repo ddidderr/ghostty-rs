@@ -11,9 +11,11 @@
 //! prepare/add/finalize/shape sequence.
 
 use super::hb;
-use crate::face::freetype::Face;
-use crate::shape::{self, Cell, DEFAULT_FEATURES, FeatureList, TextRun};
-use crate::shared_grid::SharedGrid;
+use crate::{
+    face::freetype::Face,
+    shape::{self, Cell, DEFAULT_FEATURES, FeatureList, TextRun},
+    shared_grid::SharedGrid,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShapeError {
@@ -297,13 +299,22 @@ impl Shaper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::face::{DesiredSize, FontData, Options};
-    use crate::shaper::run::{RunIterator, RunOptions};
-    use crate::shaper::test_util::{
-        Term, TestFont, shape_all, test_shaper, test_shaper_with_discovered_font,
-        test_shaper_with_font,
+    use crate::{
+        Library,
+        embedded,
+        face::{DesiredSize, FontData, Options},
+        shaper::{
+            run::{RunIterator, RunOptions},
+            test_util::{
+                Term,
+                TestFont,
+                shape_all,
+                test_shaper,
+                test_shaper_with_discovered_font,
+                test_shaper_with_font,
+            },
+        },
     };
-    use crate::{Library, embedded};
 
     fn text(s: &str) -> Vec<(u32, u32)> {
         s.chars()

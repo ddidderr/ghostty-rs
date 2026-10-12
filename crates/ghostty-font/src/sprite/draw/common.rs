@@ -3,8 +3,10 @@
 //! are generally applicable to multiple sets of glyphs
 //! rather than being single-use. Port of `sprite/draw/common.zig`.
 
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, Color, DrawError};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, Color, DrawError},
+};
 
 /// A function that draws a glyph on the provided canvas.
 pub type DrawFn = fn(

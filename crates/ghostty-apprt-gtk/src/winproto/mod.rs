@@ -8,15 +8,11 @@
 //! code held a `*ApprtWindow` pointer; here the window GObject implements
 //! [`WindowHost`] (a small, weak-referencing adapter), see below.
 
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use gtk::gdk;
-use gtk::prelude::*;
-
-use ghostty_config::config::Config;
-use ghostty_config::types_b::WindowDecoration;
+use ghostty_config::{config::Config, types_b::WindowDecoration};
 use ghostty_input::Mods;
+use gtk::{gdk, prelude::*};
 
 pub mod noop;
 pub mod wayland;

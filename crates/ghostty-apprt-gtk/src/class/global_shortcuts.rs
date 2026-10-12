@@ -8,21 +8,28 @@
 
 #![allow(deprecated)] // gio D-Bus signal_subscribe: replacement API is awkward for portal use
 
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    sync::OnceLock,
+};
 
-use ghostty_input::binding::Action as BindingAction;
-use ghostty_input::binding::set::Value as BindingValue;
-use gtk::gio::{self, prelude::*};
-use gtk::glib::{self, subclass::Signal, subclass::prelude::*, variant::ObjectPath};
+use ghostty_input::binding::{Action as BindingAction, set::Value as BindingValue};
+use gtk::{
+    gio::{self, prelude::*},
+    glib::{
+        self,
+        subclass::{Signal, prelude::*},
+        variant::ObjectPath,
+    },
+};
 
 use crate::class::config::Config;
 
 mod imp {
+    use glib::{prelude::*, subclass::prelude::*};
+
     use super::{BindingAction, Cell, Config, OnceLock, RefCell, Signal, gio, glib};
-    use glib::prelude::*;
-    use glib::subclass::prelude::*;
 
     #[derive(glib::Properties, Default)]
     #[properties(wrapper_type = super::GlobalShortcuts)]

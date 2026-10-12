@@ -1,9 +1,6 @@
 //! GAction helpers (port of `apprt/gtk/ext/actions.zig`).
 
-use gtk::gio;
-use gtk::glib;
-use gtk::glib::prelude::*;
-use gtk::prelude::*;
+use gtk::{gio, glib, glib::prelude::*, prelude::*};
 
 fn g_action_name_is_valid(name: &str) -> bool {
     !name.is_empty()

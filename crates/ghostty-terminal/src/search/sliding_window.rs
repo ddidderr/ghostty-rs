@@ -23,11 +23,13 @@
 
 use std::collections::VecDeque;
 
-use crate::formatter::{Options, PageFormatter};
-use crate::highlight::{Chunk, Flattened};
-use crate::page::Page;
-use crate::page_list::{Node, NodeId, PageList};
-use crate::point::Coordinate;
+use crate::{
+    formatter::{Options, PageFormatter},
+    highlight::{Chunk, Flattened},
+    page::Page,
+    page_list::{Node, NodeId, PageList},
+    point::Coordinate,
+};
 
 /// The search direction. If the direction is forward then pages should
 /// be appended in forward linked list order from the PageList. If the
@@ -464,11 +466,12 @@ impl SlidingWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::*;
-    use super::*;
-    use crate::highlight::Flattened;
-    use crate::point::{Point, Tag};
-    use crate::screen::Screen;
+    use super::{super::test_util::*, *};
+    use crate::{
+        highlight::Flattened,
+        point::{Point, Tag},
+        screen::Screen,
+    };
 
     fn check(list: &PageList, h: &Flattened, tag: Tag, s: (u16, u32), e: (u16, u32)) {
         let sel = h.untracked();

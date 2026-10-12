@@ -4,8 +4,7 @@
 //! `adw::MessageDialog` fallback is not needed). Subclasses implement
 //! [`DialogImpl`] and may override `response` via `AlertDialogImpl`.
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib;
 
 mod imp {

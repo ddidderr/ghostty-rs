@@ -1,11 +1,14 @@
 //! `ghostty-synthetic +<ascii|utf8|osc> [--option=value ...]`: endless
 //! synthetic data on stdout (port of `synthetic/main.zig`).
+use std::{
+    io::{BufWriter, Write},
+    process::ExitCode,
+};
+
 use ghostty_bench::{
     args::Args,
     synthetic::{OscStyle, Rng, run_ascii, run_osc, run_sgr, run_utf8},
 };
-use std::io::{BufWriter, Write};
-use std::process::ExitCode;
 
 fn run() -> Result<(), String> {
     let argv: Vec<String> = std::env::args().skip(1).collect();

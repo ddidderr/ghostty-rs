@@ -316,8 +316,9 @@ pub fn format(vars: &[Variable], delimiter: char) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use Variable::*;
+
+    use super::*;
 
     fn flag(v: Variable) {
         assert_eq!(v.parse("1"), Ok(Value::Bool(true)));

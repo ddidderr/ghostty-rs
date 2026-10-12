@@ -4,8 +4,7 @@ use std::io::Write;
 
 use ghostty_config::config_struct;
 
-use crate::error::Error;
-use crate::ghostty::Action;
+use crate::{error::Error, ghostty::Action};
 
 config_struct! {
     // Note that this options struct doesn't implement the `help` decl like other

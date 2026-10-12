@@ -19,14 +19,22 @@
 
 #![allow(clippy::collapsible_if, clippy::if_not_else, clippy::float_cmp)]
 
-use std::collections::HashMap;
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::{
+    collections::HashMap,
+    sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
+};
 
-use crate::atlas::{self, Atlas};
-use crate::codepoint_resolver::{CodepointResolver, RenderGlyphError};
-use crate::collection::{self, Collection, GetFaceError, Index, PresentationMode};
-use crate::face::{Constraint, ConstraintSize, RenderOptions};
-use crate::{Glyph, Metrics, Presentation, SpriteFace, Style};
+use crate::{
+    Glyph,
+    Metrics,
+    Presentation,
+    SpriteFace,
+    Style,
+    atlas::{self, Atlas},
+    codepoint_resolver::{CodepointResolver, RenderGlyphError},
+    collection::{self, Collection, GetFaceError, Index, PresentationMode},
+    face::{Constraint, ConstraintSize, RenderOptions},
+};
 
 /// The size of a grid cell in pixels.
 // TODO(integration): replace with `renderer::CellSize` once the renderer
@@ -386,9 +394,13 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collection::{AddOptions, LoadOptions, SizeAdjustment};
-    use crate::face::{DesiredSize, Options};
-    use crate::{Face, Library, embedded};
+    use crate::{
+        Face,
+        Library,
+        collection::{AddOptions, LoadOptions, SizeAdjustment},
+        embedded,
+        face::{DesiredSize, Options},
+    };
 
     fn test_grid(lib: &Library) -> SharedGrid {
         let mut c = Collection::new();

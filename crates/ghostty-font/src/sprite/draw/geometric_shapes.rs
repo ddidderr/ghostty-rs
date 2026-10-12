@@ -14,8 +14,10 @@
 //! Port of `sprite/draw/geometric_shapes.zig`.
 
 use super::common::{Corner, DrawFn, Range, Shade, Thickness};
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions},
+};
 
 pub const RANGES: &[Range] = &[
     Range {

@@ -6,14 +6,18 @@
 //!
 //! Port of `font/face/freetype.zig`.
 
-use std::ffi::CString;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::{
+    ffi::CString,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
 
 use super::{DesiredSize, FontData, FreetypeLoadFlags, Options, RenderOptions, Variation};
-use crate::atlas::{self, Atlas};
-use crate::glyph::Glyph;
-use crate::library::Library;
-use crate::metrics::FaceMetrics;
+use crate::{
+    atlas::{self, Atlas},
+    glyph::Glyph,
+    library::Library,
+    metrics::FaceMetrics,
+};
 
 pub(crate) mod ft;
 mod resize;

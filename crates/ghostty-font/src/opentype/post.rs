@@ -4,8 +4,11 @@
 //! - https://learn.microsoft.com/en-us/typography/opentype/spec/post
 #![allow(non_snake_case)]
 
-use super::sfnt::{Fixed, Version16Dot16};
-use super::{EndOfStream, Reader};
+use super::{
+    EndOfStream,
+    Reader,
+    sfnt::{Fixed, Version16Dot16},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Post {
@@ -44,8 +47,7 @@ impl Post {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded;
-    use crate::opentype::sfnt::Sfnt;
+    use crate::{embedded, opentype::sfnt::Sfnt};
 
     #[test]
     fn post() {

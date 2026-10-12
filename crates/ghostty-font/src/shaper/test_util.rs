@@ -9,19 +9,29 @@
 
 #![allow(clippy::collapsible_if)]
 
-use ghostty_terminal::page::Cell;
-use ghostty_terminal::point::{Coordinate, Point};
-use ghostty_terminal::screen::{Options, Screen};
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute;
+use ghostty_terminal::{
+    page::Cell,
+    point::{Coordinate, Point},
+    screen::{Options, Screen},
+};
+use ghostty_vt::{color::Rgb, sgr::Attribute};
 
-use crate::codepoint_resolver::CodepointResolver;
-use crate::collection::{AddOptions, Collection, LoadOptions, SizeAdjustment};
-use crate::discovery::{Descriptor, Fontconfig};
-use crate::face::{DesiredSize, FontData, Options as FaceOptions};
-use crate::shaper::harfbuzz::Shaper;
-use crate::shaper::run::{RunCell, RunIterator, RunOptions};
-use crate::{Face, Library, SharedGrid, Style, embedded, shape};
+use crate::{
+    Face,
+    Library,
+    SharedGrid,
+    Style,
+    codepoint_resolver::CodepointResolver,
+    collection::{AddOptions, Collection, LoadOptions, SizeAdjustment},
+    discovery::{Descriptor, Fontconfig},
+    embedded,
+    face::{DesiredSize, FontData, Options as FaceOptions},
+    shape,
+    shaper::{
+        harfbuzz::Shaper,
+        run::{RunCell, RunIterator, RunOptions},
+    },
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum TestFont {

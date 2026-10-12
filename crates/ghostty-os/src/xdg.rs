@@ -3,8 +3,7 @@
 
 use std::ffi::CStr;
 
-use crate::env::getenv_not_empty;
-use crate::{homedir, path_join};
+use crate::{env::getenv_not_empty, homedir, path_join};
 
 #[derive(Debug, Clone, Default)]
 pub struct Options<'a> {

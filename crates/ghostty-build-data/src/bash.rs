@@ -4,8 +4,13 @@ use std::fmt::Write as _;
 
 use ghostty_config::cli_args::FieldKind;
 
-use crate::chunks_bash::{C0, C1, C2, C3, C4, C5, C6};
-use crate::{actions, config_fields, join_names, join_packed};
+use crate::{
+    actions,
+    chunks_bash::{C0, C1, C2, C3, C4, C5, C6},
+    config_fields,
+    join_names,
+    join_packed,
+};
 
 const COMPGEN_PREFIX: &str = "_compreply compgen -W \"";
 const COMPGEN_SUFFIX: &str = "\" -- \"$cur\"; _add_spaces ;;";

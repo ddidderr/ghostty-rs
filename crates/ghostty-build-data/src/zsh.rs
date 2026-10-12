@@ -4,8 +4,13 @@ use std::fmt::Write as _;
 
 use ghostty_config::cli_args::FieldKind;
 
-use crate::chunks_zsh::{C0, C1, C2, C3};
-use crate::{actions, config_fields, join_names, join_packed};
+use crate::{
+    actions,
+    chunks_zsh::{C0, C1, C2, C3},
+    config_fields,
+    join_names,
+    join_packed,
+};
 
 const EQUALS_REQUIRED: &str = "=-:::";
 

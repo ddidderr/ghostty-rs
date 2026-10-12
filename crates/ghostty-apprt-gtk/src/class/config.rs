@@ -3,19 +3,19 @@
 //! Wraps a core config in a GObject so it can be reference counted and bound
 //! from blueprints (`diagnostics-buffer`, `has-diagnostics`).
 
-use std::cell::RefCell;
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 use ghostty_config::config::Config as CoreConfig;
-use gtk::glib;
-use gtk::glib::subclass::prelude::*;
+use gtk::{glib, glib::subclass::prelude::*};
 
 mod imp {
+    use gtk::{
+        glib,
+        glib::{prelude::*, subclass::prelude::*},
+        prelude::TextBufferExt,
+    };
+
     use super::{Arc, CoreConfig, RefCell};
-    use gtk::glib;
-    use gtk::glib::prelude::*;
-    use gtk::glib::subclass::prelude::*;
-    use gtk::prelude::TextBufferExt;
 
     #[derive(glib::Properties)]
     #[properties(wrapper_type = super::Config)]

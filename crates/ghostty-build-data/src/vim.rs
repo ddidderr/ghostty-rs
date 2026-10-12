@@ -2,8 +2,10 @@
 
 use std::fmt::Write as _;
 
-use crate::chunks_vim::{C0, C1, C2, C3, C4};
-use crate::config_fields;
+use crate::{
+    chunks_vim::{C0, C1, C2, C3, C4},
+    config_fields,
+};
 
 pub const FTDETECT: &str = C0;
 pub const FTPLUGIN: &str = C1;

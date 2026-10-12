@@ -4,8 +4,10 @@
 //! sleeps. The wait loop is shared with `ghostty-termio` via
 //! `ghostty_os::cgroup::wait_for_scope`.
 
-use ghostty_config::config::Config;
-use ghostty_config::types_b::{GtkSingleInstance, LinuxCgroup};
+use ghostty_config::{
+    config::Config,
+    types_b::{GtkSingleInstance, LinuxCgroup},
+};
 
 use crate::cgroup;
 

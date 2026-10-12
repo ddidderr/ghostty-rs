@@ -1,9 +1,11 @@
 //! Shared helpers for search tests.
 
-use crate::page_list::{NodeId, PageList};
-use crate::point::{Coordinate, Point, Tag};
-use crate::screen::{Options, Screen};
-use crate::terminal::{self, Terminal};
+use crate::{
+    page_list::{NodeId, PageList},
+    point::{Coordinate, Point, Tag},
+    screen::{Options, Screen},
+    terminal::{self, Terminal},
+};
 
 pub fn screen(cols: u16, rows: u16, max_scrollback: usize) -> Screen {
     Screen::new(Options::new(cols, rows, max_scrollback)).unwrap()

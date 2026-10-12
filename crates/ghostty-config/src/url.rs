@@ -116,8 +116,9 @@ pub const REGEX: &str = concatcp!(
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
     use onig::Regex;
+
+    use super::*;
 
     #[test]
     fn url_regex() {

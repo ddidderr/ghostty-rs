@@ -16,10 +16,17 @@
 
 #![allow(clippy::collapsible_if, clippy::if_not_else, clippy::float_cmp)]
 
-use crate::config_types::{FontSyntheticStyle, FreetypeLoadFlags};
-use crate::face::{self, DesiredSize};
-use crate::metrics::{FaceMetrics, ModifierSet};
-use crate::{DeferredFace, Face, Library, Metrics, Presentation, Style};
+use crate::{
+    DeferredFace,
+    Face,
+    Library,
+    Metrics,
+    Presentation,
+    Style,
+    config_types::{FontSyntheticStyle, FreetypeLoadFlags},
+    face::{self, DesiredSize},
+    metrics::{FaceMetrics, ModifierSet},
+};
 
 /// The available faces we have. This shouldn't be modified manually.
 /// Instead, use the functions available on Collection.
@@ -1016,8 +1023,10 @@ impl Index {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded;
-    use crate::face::{DesiredSize, Options};
+    use crate::{
+        embedded,
+        face::{DesiredSize, Options},
+    };
 
     fn opts_96(points: f32) -> Options {
         Options::new(DesiredSize {

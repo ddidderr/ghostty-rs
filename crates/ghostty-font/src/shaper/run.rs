@@ -12,12 +12,17 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use ghostty_config::types_a::FontShapingBreak;
-use ghostty_terminal::page::{Cell, ContentTag, Page, Wide};
-use ghostty_terminal::style::{Color, Style as TermStyle};
+use ghostty_terminal::{
+    page::{Cell, ContentTag, Page, Wide},
+    style::{Color, Style as TermStyle},
+};
 
-use crate::collection::Index;
-use crate::shared_grid::{Error as GridError, SharedGrid};
-use crate::{Presentation, Style};
+use crate::{
+    Presentation,
+    Style,
+    collection::Index,
+    shared_grid::{Error as GridError, SharedGrid},
+};
 
 /// The Kitty graphics unicode placeholder codepoint
 /// (`terminal.kitty.graphics.unicode.placeholder`).

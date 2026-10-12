@@ -4,8 +4,10 @@
 //! allocated entries; here the entries live in a slab and are linked by
 //! index.
 
-use std::collections::HashMap as StdHashMap;
-use std::hash::{BuildHasher, Hash, RandomState};
+use std::{
+    collections::HashMap as StdHashMap,
+    hash::{BuildHasher, Hash, RandomState},
+};
 
 /// Create a HashMap for a key type that can be automatically hashed.
 /// If you want finer-grained control, use [`HashMap`] directly.

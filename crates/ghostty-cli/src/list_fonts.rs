@@ -49,8 +49,7 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
-    use std::collections::HashMap;
-    use std::io::Write;
+    use std::{collections::HashMap, io::Write};
 
     // We'll be putting our fonts into a list categorized by family
     // so it is easier to read the output.

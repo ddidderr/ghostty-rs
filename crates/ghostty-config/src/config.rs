@@ -4,21 +4,24 @@
 //! invocation below with its exact name, type, default value and doc comment.
 //! The doc comments are user-visible (`ghostty +show-config --docs`).
 
-use crate::cli_args::{self, ArgError, ArgIter, CliTarget};
-use crate::command::Command;
-use crate::conditional::{self, Conditional};
-use crate::config_enum;
-use crate::diagnostics::{Diagnostic, DiagnosticList};
-use crate::io::RepeatableReadableIO;
-use crate::key::Key;
-use crate::keybinds::Keybinds;
-use crate::macros::ConfigStruct;
-use crate::metric_modifier::MetricModifier;
-use crate::path::{Path, RepeatablePath};
-use crate::repeatable_string_map::RepeatableStringMap;
-use crate::types_a::*;
-use crate::types_b::*;
 use std::collections::HashSet;
+
+use crate::{
+    cli_args::{self, ArgError, ArgIter, CliTarget},
+    command::Command,
+    conditional::{self, Conditional},
+    config_enum,
+    diagnostics::{Diagnostic, DiagnosticList},
+    io::RepeatableReadableIO,
+    key::Key,
+    keybinds::Keybinds,
+    macros::ConfigStruct,
+    metric_modifier::MetricModifier,
+    path::{Path, RepeatablePath},
+    repeatable_string_map::RepeatableStringMap,
+    types_a::*,
+    types_b::*,
+};
 
 const NS_PER_S: u64 = 1_000_000_000;
 const NS_PER_MS: u64 = 1_000_000;
@@ -4820,10 +4823,12 @@ impl CliTarget for Config {
     clippy::assert_is_empty
 )]
 mod tests {
+    use std::io::Cursor;
+
+    use ghostty_os::TempDir;
+
     use super::*;
     use crate::cli_args::VecIterator;
-    use ghostty_os::TempDir;
-    use std::io::Cursor;
 
     fn it(args: &[&str]) -> VecIterator {
         VecIterator::new(args.iter().map(|s| (*s).to_string()).collect())

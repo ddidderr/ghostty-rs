@@ -17,9 +17,9 @@
     clippy::expect_used
 )]
 
+use std::{fs, path::Path};
+
 use crate::props::{GraphemeBreakNoControl as Gb, Properties};
-use std::fs;
-use std::path::Path;
 
 /// Highest codepoint known to the UCD (`uucode.config.max_code_point`).
 pub const MAX_CODE_POINT: u32 = 0x10FFFF;

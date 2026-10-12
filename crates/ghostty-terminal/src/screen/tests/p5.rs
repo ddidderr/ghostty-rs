@@ -1,8 +1,7 @@
+use ghostty_vt::{color::Rgb, sgr::Attribute as A};
+
 use super::*;
-use crate::page::STD_CAPACITY;
-use crate::style::Color;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute as A;
+use crate::{page::STD_CAPACITY, style::Color};
 
 fn sel_str(s: &Screen, sel: Selection, trim: bool) -> String {
     s.selection_string(SelectionString { sel, trim })

@@ -34,6 +34,13 @@
 //! waste, it is recommended that the caller drop and start with an
 //! empty render state every so often.
 
+use std::collections::HashSet;
+
+use ghostty_vt::{
+    color::{self, Palette, Rgb},
+    modes::Mode,
+};
+
 use crate::{
     cursor,
     highlight::Flattened,
@@ -46,11 +53,6 @@ use crate::{
     style::{Color, Style},
     terminal::{Dirty as TerminalDirty, Terminal},
 };
-use ghostty_vt::{
-    color::{self, Palette, Rgb},
-    modes::Mode,
-};
-use std::collections::HashSet;
 
 /// Contains the state required to render the screen. See the module docs.
 #[derive(Debug, Clone)]

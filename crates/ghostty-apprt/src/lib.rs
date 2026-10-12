@@ -13,6 +13,14 @@ pub mod surface;
 
 pub use action::{Action, Target};
 pub use structs::{
-    Clipboard, ClipboardContent, ClipboardRequest, ClipboardRequestType, ColorScheme, ContentScale,
-    CursorPos, ImePos, Selection, SurfaceSize,
+    Clipboard,
+    ClipboardContent,
+    ClipboardRequest,
+    ClipboardRequestType,
+    ColorScheme,
+    ContentScale,
+    CursorPos,
+    ImePos,
+    Selection,
+    SurfaceSize,
 };

@@ -6,8 +6,7 @@
 //! Field names are in camelCase to match names in the spec.
 #![allow(non_snake_case)]
 
-use super::sfnt::Fixed;
-use super::{EndOfStream, Reader};
+use super::{EndOfStream, Reader, sfnt::Fixed};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Head {
@@ -81,8 +80,7 @@ impl Head {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded;
-    use crate::opentype::sfnt::Sfnt;
+    use crate::{embedded, opentype::sfnt::Sfnt};
 
     #[test]
     fn head() {

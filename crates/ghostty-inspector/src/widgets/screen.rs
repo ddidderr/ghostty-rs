@@ -1,10 +1,12 @@
 //! Screen information (ZIG/src/inspector/widgets/screen.zig).
 
 use dear_imgui_rs::{DockNodeFlags, TableFlags, TreeNodeFlags, Ui, WindowFlags};
-use ghostty_terminal::kitty::graphics_storage::ImageStorage;
-use ghostty_terminal::screen::{Cursor, Screen, SemanticClick, SemanticPrompt};
-use ghostty_terminal::screen_set::Key as ScreenKey;
-use ghostty_terminal::style::Style;
+use ghostty_terminal::{
+    kitty::graphics_storage::ImageStorage,
+    screen::{Cursor, Screen, SemanticClick, SemanticPrompt},
+    screen_set::Key as ScreenKey,
+    style::Style,
+};
 use ghostty_vt::color::{DynamicPalette, Palette};
 
 use super::{help_marker, pagelist, style as style_widget};

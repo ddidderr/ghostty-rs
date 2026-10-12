@@ -10,8 +10,7 @@
 //!   2. Set the label with `set_label`
 //!   3. Schedule to show it with `schedule`
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib;
 
 glib::wrapper! {

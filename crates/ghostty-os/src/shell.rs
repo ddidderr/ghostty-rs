@@ -1,5 +1,7 @@
-use std::ffi::{CString, NulError};
-use std::io::{self, Write};
+use std::{
+    ffi::{CString, NulError},
+    io::{self, Write},
+};
 
 /// Builder for constructing space-separated shell command strings.
 #[derive(Debug, Default, Clone)]

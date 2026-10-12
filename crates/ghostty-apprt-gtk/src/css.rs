@@ -12,9 +12,7 @@
 
 use std::fmt::Write as _;
 
-use ghostty_config::config::Config;
-use ghostty_config::path::Path;
-use ghostty_config::types_b::WindowTheme;
+use ghostty_config::{config::Config, path::Path, types_b::WindowTheme};
 use gtk::{gdk, glib, prelude::*};
 
 /// Maximum size of a `gtk-custom-css` file.

@@ -3,8 +3,10 @@
 //!
 //! <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
 
-use crate::osc::{Command as OscCommand, Parser, State};
-use crate::string_encoding::{printf_q_decode, url_percent_decode};
+use crate::{
+    osc::{Command as OscCommand, Parser, State},
+    string_encoding::{printf_q_decode, url_percent_decode},
+};
 
 /// Error returned when decoding a command line fails (Zig
 /// `error.DecodeError`).

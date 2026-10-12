@@ -3,9 +3,11 @@
 
 use dear_imgui_rs::{DockNodeFlags, TableFlags, TreeNodeFlags, Ui, WindowFlags};
 use ghostty_renderer::size::{Coordinate, CoordinateTag, Size, SurfaceCoord};
-use ghostty_terminal::page_list::Pin;
-use ghostty_terminal::point::{Coordinate as PointCoordinate, Tag};
-use ghostty_terminal::terminal::Terminal;
+use ghostty_terminal::{
+    page_list::Pin,
+    point::{Coordinate as PointCoordinate, Tag},
+    terminal::Terminal,
+};
 
 use super::{key, renderer, terminal, termio};
 use crate::dock::begin_window;

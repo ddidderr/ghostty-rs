@@ -26,8 +26,9 @@ pub fn set_retry_limit_in_search(param: &mut MatchParam, limit: u32) {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use onig::{Regex, SearchOptions};
+
+    use super::*;
 
     fn search(re: &Regex, text: &str, limit: Option<u32>) -> Result<Option<usize>, onig::Error> {
         let mut param = MatchParam::default();

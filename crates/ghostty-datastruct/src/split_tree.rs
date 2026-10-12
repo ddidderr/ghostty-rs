@@ -20,8 +20,9 @@
 //! parameters / `Allocator.Error`), the arena is replaced by a `Vec`, and the
 //! GObject boxed-type glue (`getGObjectType`) is left to the GTK crate.
 
-use half::f16;
 use std::fmt;
+
+use half::f16;
 
 /// The requirements on the view type stored in a [`SplitTree`].
 pub trait SplitTreeView: Clone {

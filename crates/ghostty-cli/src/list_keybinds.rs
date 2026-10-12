@@ -1,18 +1,28 @@
 //! `+list-keybinds` (ZIG/src/cli/list_keybinds.zig), including its pretty
 //! (tty) output.
 
-use std::cmp::Ordering;
-use std::io::{IsTerminal, Write};
+use std::{
+    cmp::Ordering,
+    io::{IsTerminal, Write},
+};
 
-use ghostty_config::config::Config;
-use ghostty_config::config_struct;
-use ghostty_config::formatter::EntryFormatter;
-use ghostty_config::keybinds::Keybinds;
-use ghostty_input::binding::set::{Set, Value};
-use ghostty_input::binding::{Action as BindingAction, Trigger, TriggerKey};
+use ghostty_config::{
+    config::Config,
+    config_struct,
+    formatter::EntryFormatter,
+    keybinds::Keybinds,
+};
+use ghostty_input::binding::{
+    Action as BindingAction,
+    Trigger,
+    TriggerKey,
+    set::{Set, Value},
+};
 
-use crate::error::Error;
-use crate::tui::{self, Color, PrettySession, Style, gwidth};
+use crate::{
+    error::Error,
+    tui::{self, Color, PrettySession, Style, gwidth},
+};
 
 config_struct! {
     pub struct Options {

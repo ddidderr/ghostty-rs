@@ -1,5 +1,6 @@
-use super::*;
 use ghostty_vt::modes::Mode;
+
+use super::*;
 
 /// Format the screen with the given extras, returning output and pin map.
 fn screen_vt(t: &Terminal, mutate: impl FnOnce(&mut ScreenFormatter<'_>)) -> (String, Vec<Pin>) {

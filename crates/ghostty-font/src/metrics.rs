@@ -1,7 +1,6 @@
 //! Font metrics for the terminal grid. Port of `font/Metrics.zig`.
 
-use std::collections::HashMap;
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 /// Metrics describing the terminal grid cell for a font.
 #[derive(Debug, Clone, Copy, PartialEq)]

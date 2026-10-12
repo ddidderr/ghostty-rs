@@ -3,10 +3,12 @@
 
 use std::sync::Arc;
 
-use crate::collection::Collection;
-use crate::deferred_face::{DeferredFace, Fontconfig as DeferredFontconfig};
-use crate::face::Variation;
-use crate::fontconfig as fc;
+use crate::{
+    collection::Collection,
+    deferred_face::{DeferredFace, Fontconfig as DeferredFontconfig},
+    face::Variation,
+    fontconfig as fc,
+};
 
 /// Discover implementation for the compile options.
 pub type Discover = Fontconfig;

@@ -7,9 +7,13 @@
 //!
 //! Port of `font/DeferredFace.zig` (fontconfig variant only).
 
-use crate::face::{self, Options, Variation};
-use crate::fontconfig as fc;
-use crate::{Face, Library, Presentation};
+use crate::{
+    Face,
+    Library,
+    Presentation,
+    face::{self, Options, Variation},
+    fontconfig as fc,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {

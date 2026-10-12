@@ -2,8 +2,9 @@
 //!
 //! macOS Application Support paths are not supported (Linux only).
 
-use ghostty_os::xdg;
 use std::fs::File;
+
+use ghostty_os::xdg;
 
 /// Default path for the XDG home configuration file.
 pub fn default_xdg_path() -> Result<String, xdg::Error> {

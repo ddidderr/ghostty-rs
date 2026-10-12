@@ -3,16 +3,20 @@
 //! The non-interactive listing is a faithful port. The interactive preview
 //! (libvaxis in Zig) is implemented with ratatui + crossterm in [`preview`].
 
-use std::cmp::Ordering;
-use std::fmt::Write as _;
-use std::io::{IsTerminal, Write};
+use std::{
+    cmp::Ordering,
+    fmt::Write as _,
+    io::{IsTerminal, Write},
+};
 
-use ghostty_config::config::Config;
-use ghostty_config::theme::{Location, LocationIterator};
-use ghostty_config::{config_enum, config_struct};
+use ghostty_config::{
+    config::Config,
+    config_enum,
+    config_struct,
+    theme::{Location, LocationIterator},
+};
 
-use crate::error::Error;
-use crate::tui;
+use crate::{error::Error, tui};
 
 pub mod preview;
 

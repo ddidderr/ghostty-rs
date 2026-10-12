@@ -1,12 +1,10 @@
 //! `+edit-config` (ZIG/src/cli/edit_config.zig).
 
-use std::io::Write;
-use std::os::unix::process::CommandExt;
+use std::{io::Write, os::unix::process::CommandExt};
 
 use ghostty_config::config::Config;
 
 use crate::error::Error;
-
 pub use crate::options::NoOptions as Options;
 
 /// The `edit-config` command opens the Ghostty configuration file in the

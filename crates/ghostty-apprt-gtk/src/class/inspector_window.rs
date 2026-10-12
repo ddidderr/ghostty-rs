@@ -2,13 +2,10 @@
 //!
 //! Window for displaying the Ghostty inspector.
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib;
 
-use super::debug_warning::DebugWarning;
-use super::inspector_widget::InspectorWidget;
-use super::surface::Surface;
+use super::{debug_warning::DebugWarning, inspector_widget::InspectorWidget, surface::Surface};
 
 glib::wrapper! {
     pub struct InspectorWindow(ObjectSubclass<imp::InspectorWindow>)

@@ -21,6 +21,8 @@ pub use key_mods::{Mods, RemapSet as KeyRemapSet};
 pub use keyboard::Layout as KeyboardLayout;
 pub use link::Link;
 pub use mouse::{
-    Button as MouseButton, ButtonState as MouseButtonState, PressureStage as MousePressureStage,
+    Button as MouseButton,
+    ButtonState as MouseButtonState,
+    PressureStage as MousePressureStage,
     ScrollMods,
 };

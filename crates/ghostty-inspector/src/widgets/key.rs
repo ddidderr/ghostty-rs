@@ -3,8 +3,7 @@
 use std::collections::VecDeque;
 
 use dear_imgui_rs::{InputTextFlags, TableColumnFlags, TableColumnWidth, TableFlags, Ui};
-use ghostty_input::binding::Action as BindingAction;
-use ghostty_input::{Action, Key, KeyEvent, Mods};
+use ghostty_input::{Action, Key, KeyEvent, Mods, binding::Action as BindingAction};
 
 /// The maximum number of recorded events (Zig: the ring grows by doubling up
 /// to this capacity, after which the oldest event is dropped).

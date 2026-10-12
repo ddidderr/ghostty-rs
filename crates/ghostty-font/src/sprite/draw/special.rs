@@ -6,8 +6,10 @@
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, Rect, StrokeOptions};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, Rect, StrokeOptions},
+};
 
 pub fn underline(
     _cp: u32,

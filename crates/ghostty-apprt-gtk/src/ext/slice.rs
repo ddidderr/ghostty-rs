@@ -20,8 +20,9 @@ impl StringList {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use gtk::glib::prelude::*;
+
+    use super::*;
 
     #[test]
     fn string_list_create_and_destroy() {

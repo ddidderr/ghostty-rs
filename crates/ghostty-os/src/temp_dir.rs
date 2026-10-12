@@ -1,9 +1,11 @@
 //! Creates a temporary directory at runtime that can be safely used to
 //! store temporary data and is destroyed on drop.
 
-use std::io;
-use std::os::unix::fs::DirBuilderExt;
-use std::path::{Path, PathBuf};
+use std::{
+    io,
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
+};
 
 use crate::file::alloc_tmp_dir;
 

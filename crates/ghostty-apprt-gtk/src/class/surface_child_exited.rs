@@ -6,11 +6,9 @@
 
 use std::sync::OnceLock;
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_apprt::surface::ChildExited;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
+use gtk::{glib, glib::subclass::Signal};
 
 /// Boxed wrapper so `ChildExited` can be a GObject property.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, glib::Boxed)]

@@ -7,14 +7,15 @@
 //! app.terminate();
 //! ```
 
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use ghostty_apprt::action::{Action, Target};
-use ghostty_apprt::ipc;
+use ghostty_apprt::{
+    action::{Action, Target},
+    ipc,
+    runtime_api::{CoreApp, SurfaceId, Waker},
+};
 
 use crate::class::application::{Application, RunError};
-use ghostty_apprt::runtime_api::{CoreApp, SurfaceId, Waker};
 
 /// This is detected by the Renderer, in which case it sends a
 /// `redraw_surface` message so that we can call `drawFrame` ourselves from

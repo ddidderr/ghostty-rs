@@ -5,10 +5,8 @@
 
 use std::sync::OnceLock;
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
-use gtk::glib::subclass::Signal;
-use gtk::{gdk, glib};
+use adw::{prelude::*, subclass::prelude::*};
+use gtk::{gdk, glib, glib::subclass::Signal};
 
 glib::wrapper! {
     pub struct SearchOverlay(ObjectSubclass<imp::SearchOverlay>)

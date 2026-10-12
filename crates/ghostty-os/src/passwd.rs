@@ -47,9 +47,12 @@ pub fn get() -> std::io::Result<Entry> {
 /// `Pty`) depends on this crate, so a minimal openpt/ptsname pair is opened
 /// here with rustix instead. Like Zig, only `shell` and `home` are filled in.
 fn host_entry(name: &str) -> std::io::Result<Entry> {
-    use rustix::fs::{Mode, OFlags};
-    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
     use std::io::Read;
+
+    use rustix::{
+        fs::{Mode, OFlags},
+        pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt},
+    };
 
     let err = std::io::Error::from;
     let master =

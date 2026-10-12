@@ -3,9 +3,9 @@
 //! Zig reads the resources dir from global state; here it is passed
 //! explicitly (`resources_dir`, the value of `ResourcesDir.app()`).
 
+use std::{fs::File, path::Path};
+
 use crate::diagnostics::{Diagnostic, DiagnosticList};
-use std::fs::File;
-use std::path::Path;
 
 /// Location of possible themes. The order of this enum matters because it
 /// defines the priority of theme search (from top to bottom).

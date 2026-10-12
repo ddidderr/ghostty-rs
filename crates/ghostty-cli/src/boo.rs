@@ -5,17 +5,20 @@
 //! joined with `\x01` and raw-deflate compressed into `boo_frames.deflate`
 //! (the same format `framegen` produces for Zig's `framedata`).
 
-use std::io::Read;
-use std::time::{Duration, Instant};
+use std::{
+    io::Read,
+    time::{Duration, Instant},
+};
 
 use flate2::read::DeflateDecoder;
-use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::{
+    buffer::Buffer,
+    crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
+    layout::Rect,
+    style::{Color, Style},
+};
 
-use crate::error::Error;
-use crate::options::NoOptions as Options;
+use crate::{error::Error, options::NoOptions as Options};
 
 static FRAME_DATA: &[u8] = include_bytes!("boo_frames.deflate");
 

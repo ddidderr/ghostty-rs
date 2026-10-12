@@ -3,8 +3,9 @@
 //!
 //! Port of `ZIG/src/terminal/StringMap.zig`. Regex matching uses Oniguruma
 //! (the `onig` crate), like Ghostty.
-use crate::{page_list::Pin, selection::Selection};
 use onig::{MatchParam, Regex, Region, SearchOptions};
+
+use crate::{page_list::Pin, selection::Selection};
 
 /// Retry budget for StringMap regex searches.
 ///

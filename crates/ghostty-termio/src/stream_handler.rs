@@ -23,44 +23,67 @@
 //! [`HandlerState`], which the caller flushes after unlocking
 //! ([`TerminalStream::flush_outbox`]; `Termio::process_output` does this).
 
-use std::collections::VecDeque;
-use std::fmt::Write as _;
-use std::sync::{Arc, OnceLock};
+use std::{
+    collections::VecDeque,
+    fmt::Write as _,
+    sync::{Arc, OnceLock},
+};
 
-use ghostty_apprt::structs::Clipboard;
-use ghostty_apprt::surface::{
-    DesktopNotification, Message as SurfaceMessage, ReportTitleStyle, SET_TITLE_LEN, WriteReq,
+use ghostty_apprt::{
+    structs::Clipboard,
+    surface::{
+        DesktopNotification,
+        Message as SurfaceMessage,
+        ReportTitleStyle,
+        SET_TITLE_LEN,
+        WriteReq,
+    },
 };
 use ghostty_config::types_b::{ClipboardAccess, OSCColorReportFormat};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::size::Size;
-use ghostty_terminal::cursor::Style as CursorStyle;
-use ghostty_terminal::terminal::{
-    DeccolmMode, Error, MouseEvents, MouseFormat, MouseShiftCapture, ScrollViewport,
-    SwitchScreenMode, Terminal,
+use ghostty_terminal::{
+    cursor::Style as CursorStyle,
+    terminal::{
+        DeccolmMode,
+        Error,
+        MouseEvents,
+        MouseFormat,
+        MouseShiftCapture,
+        ScrollViewport,
+        SwitchScreenMode,
+        Terminal,
+    },
 };
-use ghostty_vt::ansi::{
-    CursorStyle as AnsiCursorStyle, DeviceAttributeReq, ModifyKeyFormat, ProtectedMode,
+use ghostty_vt::{
+    ansi::{CursorStyle as AnsiCursorStyle, DeviceAttributeReq, ModifyKeyFormat, ProtectedMode},
+    apc,
+    color::{Dynamic as DynamicColor, Rgb},
+    csi,
+    dcs,
+    device_status,
+    kitty::{self, key::SetMode as KittySetMode},
+    modes::Mode,
+    mouse_shape::MouseShape,
+    osc::{
+        ProgressReport,
+        ProgressState,
+        Terminator,
+        color::{self as osc_color, Request, Target},
+        semantic_prompt::Action as PromptAction,
+    },
+    parser::{Dcs, Parser},
+    stream::{self, Action},
+    utf8_decoder::Utf8Decoder,
 };
-use ghostty_vt::color::{Dynamic as DynamicColor, Rgb};
-use ghostty_vt::csi;
-use ghostty_vt::device_status;
-use ghostty_vt::kitty::{self, key::SetMode as KittySetMode};
-use ghostty_vt::modes::Mode;
-use ghostty_vt::mouse_shape::MouseShape;
-use ghostty_vt::osc::color::{self as osc_color, Request, Target};
-use ghostty_vt::osc::semantic_prompt::Action as PromptAction;
-use ghostty_vt::osc::{ProgressReport, ProgressState, Terminator};
-use ghostty_vt::parser::{Dcs, Parser};
-use ghostty_vt::stream::{self, Action};
-use ghostty_vt::utf8_decoder::Utf8Decoder;
-use ghostty_vt::{apc, dcs};
 
-use crate::mailbox::Mailbox;
-use crate::message::{Message, SizeReport};
-use crate::sinks::SurfaceMailbox;
-use crate::terminfo;
-use crate::wakeup::Wakeup;
+use crate::{
+    mailbox::Mailbox,
+    message::{Message, SizeReport},
+    sinks::SurfaceMailbox,
+    terminfo,
+    wakeup::Wakeup,
+};
 
 /// `build_config.version_string`.
 pub const VERSION_STRING: &str = "1.3.1";
@@ -648,8 +671,10 @@ impl StreamHandler<'_> {
     fn dcs_command(&mut self, cmd: dcs::Command) {
         match cmd {
             dcs::Command::Tmux(tmux) => {
-                use ghostty_terminal::tmux::control::Notification;
-                use ghostty_terminal::tmux::viewer::{Action as ViewerAction, Input};
+                use ghostty_terminal::tmux::{
+                    control::Notification,
+                    viewer::{Action as ViewerAction, Input},
+                };
 
                 log::info!("tmux control mode event cmd={tmux:?}");
 
@@ -1510,9 +1535,11 @@ impl stream::Handler for StreamHandler<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use ghostty_terminal::terminal::Options;
     use std::sync::Mutex;
+
+    use ghostty_terminal::terminal::Options;
+
+    use super::*;
 
     /// Records surface messages.
     #[derive(Default)]

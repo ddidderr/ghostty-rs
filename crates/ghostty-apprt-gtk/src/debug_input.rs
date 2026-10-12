@@ -36,17 +36,11 @@
 //! with a few lowercase aliases (`enter`, `esc`, `up`, ...). Commands act on
 //! the active surface of the active window at the time they run.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::time::Duration;
+use std::{cell::RefCell, rc::Rc, time::Duration};
 
-use gtk::glib::translate::IntoGlib;
-use gtk::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, glib, glib::translate::IntoGlib, prelude::*};
 
-use crate::class::application::Application;
-use crate::class::surface::Surface;
-use crate::class::window::Window;
+use crate::class::{application::Application, surface::Surface, window::Window};
 
 /// One parsed command.
 #[derive(Debug, Clone, PartialEq)]

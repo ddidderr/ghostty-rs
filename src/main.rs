@@ -5,8 +5,7 @@
 //! `ghostty-cli`; otherwise the configuration is loaded by the GTK runtime
 //! and the terminal application is run with the real core.
 
-use std::process::ExitCode;
-use std::rc::Rc;
+use std::{process::ExitCode, rc::Rc};
 
 use ghostty_apprt::ipc;
 use ghostty_apprt_gtk::{adw_version, gtk_version};

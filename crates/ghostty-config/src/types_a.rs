@@ -2,13 +2,18 @@
 //! enums, working directory, colors, palette, repeatable strings, word
 //! chars, font variation / codepoint maps, font style, links.
 
-use crate::cli_args::{ArgError, ConfigField, parse_int_base0, trim_ws};
-use crate::clipboard_codepoint_map::{ClipboardCodepointMap, Entry as ClipboardEntry, Replacement};
-use crate::font_types::{CodepointMap, CodepointMapEntry, Descriptor, Variation, VariationId};
-use crate::formatter::EntryFormatter;
-use crate::{config_enum, config_packed};
-use ghostty_vt::color::{DEFAULT as DEFAULT_PALETTE, Palette as TermPalette, PaletteMask, Rgb};
 use std::fmt;
+
+use ghostty_vt::color::{DEFAULT as DEFAULT_PALETTE, Palette as TermPalette, PaletteMask, Rgb};
+
+use crate::{
+    cli_args::{ArgError, ConfigField, parse_int_base0, trim_ws},
+    clipboard_codepoint_map::{ClipboardCodepointMap, Entry as ClipboardEntry, Replacement},
+    config_enum,
+    config_packed,
+    font_types::{CodepointMap, CodepointMapEntry, Descriptor, Variation, VariationId},
+    formatter::EntryFormatter,
+};
 
 /// Write `name = value\n` for a string-ish value.
 fn write_str(f: &mut EntryFormatter<'_>, value: &str) -> fmt::Result {

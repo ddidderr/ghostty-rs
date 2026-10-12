@@ -1,13 +1,19 @@
 //! `+show-face` (ZIG/src/cli/show_face.zig).
 
-use ghostty_config::config::Config;
-use ghostty_config::diagnostics::Location;
-use ghostty_config::{config_enum, config_struct, diagnostics::DiagnosticList};
-use ghostty_font::collection::EntryError;
-use ghostty_font::collection::GetFaceError;
-use ghostty_font::face::DesiredSize;
-use ghostty_font::shared_grid_set::DerivedConfig;
-use ghostty_font::{self as font, SharedGrid, SharedGridSet};
+use ghostty_config::{
+    config::Config,
+    config_enum,
+    config_struct,
+    diagnostics::{DiagnosticList, Location},
+};
+use ghostty_font::{
+    self as font,
+    SharedGrid,
+    SharedGridSet,
+    collection::{EntryError, GetFaceError},
+    face::DesiredSize,
+    shared_grid_set::DerivedConfig,
+};
 
 use crate::error::Error;
 

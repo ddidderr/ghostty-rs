@@ -1,9 +1,7 @@
+use ghostty_vt::{color::Rgb, modes::Mode, sgr::Attribute as A};
+
 use super::*;
-use crate::page::ContentTag;
-use crate::point::Tag;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::modes::Mode;
-use ghostty_vt::sgr::Attribute as A;
+use crate::{page::ContentTag, point::Tag};
 
 fn cr_lf(t: &mut Terminal) {
     t.carriage_return();

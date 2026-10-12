@@ -1,8 +1,7 @@
 //! Page inspector (ZIG/src/inspector/widgets/page.zig).
 
 use dear_imgui_rs::{ChildFlags, TableColumnFlags, TableColumnWidth, TableFlags, Ui};
-use ghostty_terminal::hyperlink::HyperlinkId;
-use ghostty_terminal::page::Page;
+use ghostty_terminal::{hyperlink::HyperlinkId, page::Page};
 
 use super::{help_marker, style};
 use crate::units::to_kibi_bytes;

@@ -10,8 +10,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
-use crate::message::Message;
-use crate::wakeup::Wakeup;
+use crate::{message::Message, wakeup::Wakeup};
 
 /// Capacity of the queue. Hardcoded to a value that empirically has made
 /// sense for Ghostty usage (`BlockingQueue(termio.Message, 64)`).
@@ -128,8 +127,9 @@ impl Mailbox {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Arc;
+
+    use super::*;
 
     #[test]
     fn send_pop_order() {

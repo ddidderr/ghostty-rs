@@ -8,24 +8,33 @@
 //! answering pending clipboard reads) while polling for conditions.
 #![allow(dead_code, clippy::unwrap_used, clippy::expect_used)]
 
-use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
-
-use ghostty_apprt::action::{Action, Target};
-use ghostty_apprt::runtime_api::{
-    ClipboardError, CoreApp, InputEffect, RtApp, RtSurface, SurfaceId, Waker,
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
 };
-use ghostty_apprt::structs::{Clipboard, ClipboardRequest, ContentScale, CursorPos, SurfaceSize};
-use ghostty_config::command::Command;
-use ghostty_config::config::Config;
+
+use ghostty_apprt::{
+    action::{Action, Target},
+    runtime_api::{ClipboardError, CoreApp, InputEffect, RtApp, RtSurface, SurfaceId, Waker},
+    structs::{Clipboard, ClipboardRequest, ContentScale, CursorPos, SurfaceSize},
+};
+use ghostty_config::{command::Command, config::Config};
 use ghostty_core::{App, Surface};
 use ghostty_input::{
-    Key, KeyEvent, Mods, MouseButton, MouseButtonState, ScrollMods, key::Action as KeyAction,
+    Key,
+    KeyEvent,
+    Mods,
+    MouseButton,
+    MouseButtonState,
+    ScrollMods,
+    key::Action as KeyAction,
 };
 use ghostty_renderer::headless::Headless;
 

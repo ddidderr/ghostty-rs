@@ -1,10 +1,13 @@
 //! `FileFormatter` (part of `config/formatter.zig`): outputs the config in a
 //! file-like format, identical to Ghostty's `+show-config`.
 
-use crate::config::Config;
-use crate::key::Key;
-use crate::macros::{ConfigStruct, help_string};
 use std::fmt;
+
+use crate::{
+    config::Config,
+    key::Key,
+    macros::{ConfigStruct, help_string},
+};
 
 /// FileFormatter is a formatter implementation that outputs the
 /// config in a file-like format. This uses more generous whitespace,

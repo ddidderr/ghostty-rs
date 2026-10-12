@@ -11,8 +11,7 @@
 //! `GtkWidget` (any `crate::class::surface::Surface` is accepted) and the
 //! `config` property as `GObject` (a `crate::class::config::Config`).
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib;
 
 glib::wrapper! {
@@ -75,8 +74,9 @@ mod imp {
     impl SurfaceScrolledWindow {
         #[template_callback(function)]
         fn scrollbar_policy(config: Option<glib::Object>) -> gtk::PolicyType {
-            use crate::class::config::Config;
             use ghostty_config::types_b::Scrollbar;
+
+            use crate::class::config::Config;
 
             let Some(config) = config.and_then(|c| c.downcast::<Config>().ok()) else {
                 return gtk::PolicyType::Automatic;

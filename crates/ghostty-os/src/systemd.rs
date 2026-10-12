@@ -70,7 +70,13 @@ pub fn launched_by_systemd() -> bool {
 /// variable set and these functions essentially become a no-op.
 pub mod notify {
     use rustix::net::{
-        AddressFamily, SendFlags, SocketAddrUnix, SocketFlags, SocketType, connect, send,
+        AddressFamily,
+        SendFlags,
+        SocketAddrUnix,
+        SocketFlags,
+        SocketType,
+        connect,
+        send,
         socket_with,
     };
 
@@ -168,8 +174,9 @@ pub mod notify {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::net::UnixDatagram;
+
+    use super::*;
 
     #[test]
     fn not_launched_without_env() {

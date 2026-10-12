@@ -10,19 +10,29 @@
 
 use std::cell::{Cell, RefCell};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_datastruct::split_tree::{
-    Direction, Goto, Handle, Layout, Node, SplitError, SplitTree as DsSplitTree, SplitTreeView,
+    Direction,
+    Goto,
+    Handle,
+    Layout,
+    Node,
+    SplitError,
+    SplitTree as DsSplitTree,
+    SplitTreeView,
 };
-use gtk::gio;
-use gtk::glib::{self, clone, subclass::Signal};
+use gtk::{
+    gio,
+    glib::{self, clone, subclass::Signal},
+};
 use half::f16;
 
-use super::application::Application;
-use super::close_confirmation_dialog::{CloseConfirmationDialog, Target as CloseTarget};
-use super::surface::{Surface, SurfaceOverrides};
-use super::surface_scrolled_window::SurfaceScrolledWindow;
+use super::{
+    application::Application,
+    close_confirmation_dialog::{CloseConfirmationDialog, Target as CloseTarget},
+    surface::{Surface, SurfaceOverrides},
+    surface_scrolled_window::SurfaceScrolledWindow,
+};
 
 /// The split tree of surfaces (Zig: `Surface.Tree`).
 pub type Tree = DsSplitTree<Surface>;

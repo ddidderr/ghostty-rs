@@ -1,13 +1,15 @@
 //! Cell styles, color resolution, and VT/HTML serialization.
-use crate::page::{Cell, ContentTag};
-use ghostty_vt::{
-    color::{Palette, Rgb},
-    sgr::Underline,
-};
 use std::{
     fmt,
     hash::{Hash, Hasher},
 };
+
+use ghostty_vt::{
+    color::{Palette, Rgb},
+    sgr::Underline,
+};
+
+use crate::page::{Cell, ContentTag};
 /// Nonzero page-local style identifier.
 pub type Id = u16;
 /// The default style needs no set lookup.

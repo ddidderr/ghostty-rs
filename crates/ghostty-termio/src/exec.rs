@@ -15,35 +15,49 @@
 //!   `POLLOUT` is polled only while the queue is non-empty,
 //! * termios timer: a plain deadline.
 
-use std::collections::VecDeque;
-use std::io;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::Arc;
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    sync::Arc,
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::Receiver;
-use ghostty_config::command::Command as ConfigCommand;
-use ghostty_config::repeatable_string_map::RepeatableStringMap;
-use ghostty_config::types_b::{ShellIntegration, ShellIntegrationFeatures};
+use ghostty_apprt::surface::{ChildExited, Message as SurfaceMessage};
+use ghostty_config::{
+    command::Command as ConfigCommand,
+    repeatable_string_map::RepeatableStringMap,
+    types_b::{ShellIntegration, ShellIntegrationFeatures},
+};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_os::file::Rlimit;
 use ghostty_renderer::size::{GridSize, ScreenSize};
 use ghostty_terminal::terminal::Terminal;
-use rustix::event::{PollFd, PollFlags};
-use rustix::process::{Pid, PidfdFlags, Signal, WaitOptions};
-
-use crate::command::{
-    self, Command, Exit, PostForkError, RtPostForkInfo, RtPreExecInfo, linux_cgroup_post_fork,
-    linux_cgroup_pre_exec,
+use rustix::{
+    event::{PollFd, PollFlags},
+    process::{Pid, PidfdFlags, Signal, WaitOptions},
 };
-use crate::pty::{self, Mode, Pty, Winsize};
-use crate::shell_integration::{self, EnvMap, Shell};
-use crate::sinks::SurfaceMailbox;
-use crate::state::{SharedState, SharedStateExt};
-use crate::termio::Output;
-use crate::wakeup::Wakeup;
-use ghostty_apprt::surface::{ChildExited, Message as SurfaceMessage};
+
+use crate::{
+    command::{
+        self,
+        Command,
+        Exit,
+        PostForkError,
+        RtPostForkInfo,
+        RtPreExecInfo,
+        linux_cgroup_post_fork,
+        linux_cgroup_pre_exec,
+    },
+    pty::{self, Mode, Pty, Winsize},
+    shell_integration::{self, EnvMap, Shell},
+    sinks::SurfaceMailbox,
+    state::{SharedState, SharedStateExt},
+    termio::Output,
+    wakeup::Wakeup,
+};
 
 /// The termios poll rate in milliseconds.
 pub const TERMIOS_POLL_MS: u64 = 200;

@@ -4,16 +4,16 @@
 //! property activates the inspector on that surface's core surface and
 //! clearing it deactivates it again.
 
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::{cell::RefCell, rc::Rc};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_apprt::runtime_api::CoreSurface;
 use gtk::glib;
 
-use super::imgui_widget::{ImguiWidget, ImguiWidgetImpl};
-use super::surface::Surface;
+use super::{
+    imgui_widget::{ImguiWidget, ImguiWidgetImpl},
+    surface::Surface,
+};
 
 glib::wrapper! {
     pub struct InspectorWidget(ObjectSubclass<imp::InspectorWidget>)

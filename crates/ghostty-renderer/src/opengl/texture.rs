@@ -1,6 +1,14 @@
 //! Wrapper for handling textures (`opengl/Texture.zig`).
 use super::gl::{
-    self, Gl, InternalFormat, MagFilter, MinFilter, PixelFormat, RawTexture, TextureTarget, Wrap,
+    self,
+    Gl,
+    InternalFormat,
+    MagFilter,
+    MinFilter,
+    PixelFormat,
+    RawTexture,
+    TextureTarget,
+    Wrap,
 };
 
 /// Options for initializing a texture.

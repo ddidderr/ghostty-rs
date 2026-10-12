@@ -1,6 +1,7 @@
 //! `ghostty-bench +<action> [--option=value ...]` (port of `main_bench.zig`).
-use ghostty_bench::{args::Args, benches};
 use std::process::ExitCode;
+
+use ghostty_bench::{args::Args, benches};
 
 fn main() -> ExitCode {
     let argv: Vec<String> = std::env::args().skip(1).collect();

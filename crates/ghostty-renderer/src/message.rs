@@ -2,14 +2,15 @@
 use std::sync::Arc;
 
 use ghostty_config::config::Config;
-use ghostty_font::shared_grid_set::Key as SharedGridKey;
-use ghostty_font::{SharedGrid, SharedGridSet};
+use ghostty_font::{SharedGrid, SharedGridSet, shared_grid_set::Key as SharedGridKey};
 use ghostty_terminal::highlight::Flattened;
 
-use crate::generic::DerivedConfig as RendererDerivedConfig;
-use crate::link;
-use crate::size::Size;
-use crate::thread::DerivedConfig as ThreadDerivedConfig;
+use crate::{
+    generic::DerivedConfig as RendererDerivedConfig,
+    link,
+    size::Size,
+    thread::DerivedConfig as ThreadDerivedConfig,
+};
 
 /// The messages that can be sent to a renderer thread.
 pub enum Message {

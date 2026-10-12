@@ -13,8 +13,7 @@
 //! through `params()` / `intermediates()` accessors, so an `Action` owns its
 //! data and is independent of the parser's lifetime.
 
-use crate::osc;
-use crate::parse_table::TABLE;
+use crate::{osc, parse_table::TABLE};
 
 /// Maximum number of CSI parameters. This is a const in Ghostty so we
 /// match it.

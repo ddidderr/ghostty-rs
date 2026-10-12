@@ -2,13 +2,11 @@
 //! (`GhosttyCloseConfirmationDialog`). Property `target`; signals
 //! `close-request` and `cancel`.
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use std::{cell::Cell, sync::OnceLock};
+
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_os::i18n::tr;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
-use std::cell::Cell;
-use std::sync::OnceLock;
+use gtk::{glib, glib::subclass::Signal};
 
 use super::dialog::{Dialog, DialogImpl};
 
@@ -47,13 +45,21 @@ impl Target {
 }
 
 mod imp {
+    use gtk::{glib, glib::prelude::*, subclass::prelude::*};
+
     use super::{
-        AdwAlertDialogImpl, AdwDialogImpl, Cell, Dialog, DialogImpl, ObjectImpl, ObjectSubclass,
-        OnceLock, Signal, Target, WidgetImpl,
+        AdwAlertDialogImpl,
+        AdwDialogImpl,
+        Cell,
+        Dialog,
+        DialogImpl,
+        ObjectImpl,
+        ObjectSubclass,
+        OnceLock,
+        Signal,
+        Target,
+        WidgetImpl,
     };
-    use gtk::glib;
-    use gtk::glib::prelude::*;
-    use gtk::subclass::prelude::*;
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::CloseConfirmationDialog)]

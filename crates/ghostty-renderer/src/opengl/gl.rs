@@ -13,8 +13,7 @@
 //! * Pointer-carrying calls (`buffer_data`, `tex_image_2d`, ...) are only given
 //!   Rust slices, so lengths are always valid for the pointed memory.
 
-use std::ffi::c_void;
-use std::sync::Arc;
+use std::{ffi::c_void, sync::Arc};
 
 use glow::HasContext;
 
@@ -57,8 +56,12 @@ impl std::fmt::Debug for Gl {
 
 // Re-exported raw handle types.
 pub use glow::{
-    Buffer as RawBuffer, Framebuffer as RawFramebuffer, Program as RawProgram,
-    Renderbuffer as RawRenderbuffer, Sampler as RawSampler, Texture as RawTexture,
+    Buffer as RawBuffer,
+    Framebuffer as RawFramebuffer,
+    Program as RawProgram,
+    Renderbuffer as RawRenderbuffer,
+    Sampler as RawSampler,
+    Texture as RawTexture,
     VertexArray as RawVertexArray,
 };
 

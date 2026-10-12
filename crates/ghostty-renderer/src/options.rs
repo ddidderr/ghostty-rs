@@ -3,8 +3,7 @@ use std::sync::Arc;
 
 use ghostty_font::SharedGrid;
 
-use crate::generic::Host;
-use crate::size::Size;
+use crate::{generic::Host, size::Size};
 
 /// Options for constructing a renderer.
 ///

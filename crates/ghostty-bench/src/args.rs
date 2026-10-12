@@ -1,9 +1,11 @@
 //! Minimal `--key=value` option parsing (the subset of `cli/args.zig` used by
 //! the benchmark and synthetic CLIs).
-use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, Read};
-use std::str::FromStr;
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, Read},
+    str::FromStr,
+};
 
 /// Parsed `--key[=value]` arguments.
 #[derive(Debug, Default)]

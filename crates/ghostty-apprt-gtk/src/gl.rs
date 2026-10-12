@@ -7,8 +7,7 @@
 //! `glow::Context::from_loader_function` need. Call it only while the GLArea
 //! context is current.
 
-use std::ffi::c_void;
-use std::sync::OnceLock;
+use std::{ffi::c_void, sync::OnceLock};
 
 fn epoxy() -> Option<&'static libloading::Library> {
     static LIB: OnceLock<Option<libloading::Library>> = OnceLock::new();

@@ -3,9 +3,11 @@
 //! ZIG/src/apprt/gtk/build/{blueprint,gresource}.zig.
 
 #![allow(clippy::unwrap_used)]
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::{
+    fmt::Write as _,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 const PREFIX: &str = "/com/mitchellh/ghostty";
 const APP_ID: &str = "com.mitchellh.ghostty";

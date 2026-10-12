@@ -1,6 +1,8 @@
 use super::*;
-use crate::page::Wide;
-use crate::screen::{PromptKind, SemanticContentSet};
+use crate::{
+    page::Wide,
+    screen::{PromptKind, SemanticContentSet},
+};
 
 fn cell_at(s: &Screen, pt: Point) -> Cell {
     s.pages.get_cell(pt).unwrap()

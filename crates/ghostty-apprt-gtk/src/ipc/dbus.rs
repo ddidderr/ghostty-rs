@@ -1,9 +1,7 @@
 //! D-Bus helper for IPC (port of `apprt/gtk/ipc/DBus.zig`).
 
 use ghostty_apprt::ipc::{Error, Target};
-use gtk::gio;
-use gtk::glib;
-use gtk::prelude::*;
+use gtk::{gio, glib, prelude::*};
 
 /// A pending `org.gtk.Actions.Activate` call.
 pub struct DBus {

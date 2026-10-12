@@ -104,8 +104,9 @@ where
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use ghostty_config::cli_args::split_args;
+
+    use super::*;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Plain {

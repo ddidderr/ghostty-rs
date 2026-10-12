@@ -8,17 +8,19 @@
 // The EGL loader calls are `unsafe fn`s in khronos-egl (test-only usage).
 #![allow(unsafe_code, clippy::unwrap_used)]
 
-use std::ffi::c_void;
-use std::sync::Arc;
+use std::{ffi::c_void, sync::Arc};
 
-use ghostty_renderer::opengl::buffer;
-use ghostty_renderer::opengl::gl::{Gl, Primitive};
-use ghostty_renderer::opengl::render_pass::{Attachment, AttachmentTarget, Draw, Step};
-use ghostty_renderer::opengl::shaders::{
-    BgImage, BgImageFit, BgImageInfo, BgImagePosition, CellText, Image, Uniforms,
+use ghostty_renderer::{
+    opengl::{
+        AlphaBlending,
+        OpenGL,
+        buffer,
+        gl::{Gl, Primitive},
+        render_pass::{Attachment, AttachmentTarget, Draw, Step},
+        shaders::{BgImage, BgImageFit, BgImageInfo, BgImagePosition, CellText, Image, Uniforms},
+    },
+    shadertoy,
 };
-use ghostty_renderer::opengl::{AlphaBlending, OpenGL};
-use ghostty_renderer::shadertoy;
 use khronos_egl as egl;
 
 // EGL_PLATFORM_SURFACELESS_MESA, falling back to the default display.
@@ -393,22 +395,33 @@ fn headless_invalid_shader_reports_compile_error() {
 // Full renderer: Terminal -> RenderState -> generic renderer -> offscreen target
 
 mod full_renderer {
-    use super::*;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
-    use ghostty_config::config::Config;
-    use ghostty_config::types_a::Color as ConfigColor;
-    use ghostty_config::types_b::AlphaBlending as ConfigBlending;
-    use ghostty_font::face::DesiredSize;
-    use ghostty_font::shared_grid_set::{DerivedConfig as FontDerivedConfig, SharedGridSet};
-    use ghostty_renderer::generic::{DerivedConfig, Host, Renderer};
-    use ghostty_renderer::options::Options;
-    use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
-    use ghostty_renderer::state::State;
-    use ghostty_terminal::page_list::Scrollbar;
-    use ghostty_terminal::terminal::{Options as TermOptions, Terminal};
+    use ghostty_config::{
+        config::Config,
+        types_a::Color as ConfigColor,
+        types_b::AlphaBlending as ConfigBlending,
+    };
+    use ghostty_font::{
+        face::DesiredSize,
+        shared_grid_set::{DerivedConfig as FontDerivedConfig, SharedGridSet},
+    };
+    use ghostty_renderer::{
+        generic::{DerivedConfig, Host, Renderer},
+        options::Options,
+        size::{CellSize, Padding, ScreenSize, Size},
+        state::State,
+    };
+    use ghostty_terminal::{
+        page_list::Scrollbar,
+        terminal::{Options as TermOptions, Terminal},
+    };
     use ghostty_vt::color::DynamicRgb;
+
+    use super::*;
 
     #[derive(Default)]
     struct TestHost {
@@ -781,9 +794,9 @@ mod full_renderer {
 
     #[test]
     fn headless_renderer_thread_updates_and_requests_draws() {
-        use ghostty_renderer::message::Message;
-        use ghostty_renderer::thread::Thread;
         use std::time::{Duration, Instant};
+
+        use ghostty_renderer::{message::Message, thread::Thread};
 
         let Some(f) = Fixture::new("thread") else {
             return;

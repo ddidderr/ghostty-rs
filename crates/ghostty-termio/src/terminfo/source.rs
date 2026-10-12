@@ -6,8 +6,7 @@
 //!
 //! Port of `terminfo/Source.zig`.
 
-use std::collections::HashMap;
-use std::io;
+use std::{collections::HashMap, io};
 
 /// A terminfo source description.
 #[derive(Debug, Clone, Copy)]

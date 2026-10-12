@@ -1,9 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
-use super::set::{AppendChainError, EntryFormatter, Value};
-use super::*;
-use crate::key::{Key, KeyEvent};
-use crate::key_mods::Mods;
+use super::{
+    set::{AppendChainError, EntryFormatter, Value},
+    *,
+};
+use crate::{
+    key::{Key, KeyEvent},
+    key_mods::Mods,
+};
 
 fn uni(c: char) -> Trigger {
     Trigger {

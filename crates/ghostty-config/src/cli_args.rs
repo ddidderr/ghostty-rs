@@ -12,11 +12,13 @@
 //!   to a field and optionally provides diagnostics, compatibility handlers,
 //!   a manual-parse hook and a `--help` hook.
 
-use crate::comma_splitter::CommaSplitter;
-use crate::diagnostics::{Diagnostic, DiagnosticList, Location};
-use crate::formatter::EntryFormatter;
-use std::fmt;
-use std::io::BufRead;
+use std::{fmt, io::BufRead};
+
+use crate::{
+    comma_splitter::CommaSplitter,
+    diagnostics::{Diagnostic, DiagnosticList, Location},
+    formatter::EntryFormatter,
+};
 
 /// For trimming
 pub const WHITESPACE: &str = " \t";
@@ -779,9 +781,10 @@ impl<R: BufRead> ArgIter for LineIterator<R> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::io::Cursor;
+
     use super::*;
     use crate::{config_enum, config_packed, config_struct};
-    use std::io::Cursor;
 
     fn parse_str<T: CliTarget>(dst: &mut T, s: &str) -> Result<(), ArgError> {
         let mut it = VecIterator::from_str_args(s);

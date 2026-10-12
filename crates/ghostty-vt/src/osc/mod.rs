@@ -18,8 +18,7 @@
 pub mod encoding;
 pub mod parsers;
 
-pub use parsers::color;
-pub use parsers::semantic_prompt;
+pub use parsers::{color, semantic_prompt};
 
 use crate::kitty::color as kitty_color;
 

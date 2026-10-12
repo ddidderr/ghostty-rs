@@ -4,9 +4,11 @@
 //! All raw FFI is confined to this module.
 #![allow(unsafe_code)]
 
-use std::ffi::{CStr, CString, c_int};
-use std::ptr::{self, NonNull};
-use std::sync::Arc;
+use std::{
+    ffi::{CStr, CString, c_int},
+    ptr::{self, NonNull},
+    sync::Arc,
+};
 
 use fontconfig_sys as sys;
 use fontconfig_sys::constants as fc;

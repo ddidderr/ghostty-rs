@@ -1,9 +1,11 @@
 //! Blocking queue implementation aimed primarily for message passing
 //! between threads (`blocking_queue.zig`).
 
-use std::collections::VecDeque;
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::{
+    collections::VecDeque,
+    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    time::Duration,
+};
 
 /// The type we use for queue size types.
 pub type Size = u32;
@@ -179,9 +181,9 @@ impl<T, const CAPACITY: usize> Drop for DrainIterator<'_, T, CAPACITY> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Arc, thread};
+
     use super::*;
-    use std::sync::Arc;
-    use std::thread;
 
     #[test]
     fn basic_push_and_pop() {

@@ -6,11 +6,8 @@
 pub mod actions;
 pub mod slice;
 
+use gtk::{glib, glib::prelude::*, prelude::*};
 pub use slice::StringList;
-
-use gtk::glib;
-use gtk::glib::prelude::*;
-use gtk::prelude::*;
 
 /// Get the first ancestor of `widget` of type `T`.
 pub fn get_ancestor<T: IsA<gtk::Widget>>(widget: &impl IsA<gtk::Widget>) -> Option<T> {

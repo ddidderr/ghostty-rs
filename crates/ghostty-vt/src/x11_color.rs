@@ -1,8 +1,8 @@
 //! X11 color names (ZIG/src/terminal/x11_color.zig).
 
+use std::{collections::HashMap, sync::OnceLock};
+
 use crate::color::Rgb;
-use std::collections::HashMap;
-use std::sync::OnceLock;
 
 /// This is the rgb.txt file from the X11 project. This was last sourced
 /// from this location: https://gitlab.freedesktop.org/xorg/app/rgb

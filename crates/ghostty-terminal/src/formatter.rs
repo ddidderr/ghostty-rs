@@ -8,6 +8,14 @@
 //! into a small scratch buffer and measures it.
 #![allow(clippy::too_many_arguments)]
 
+use std::io::{self, Write};
+
+use ghostty_vt::{
+    charsets::{Charset, Slots},
+    color::{Palette, Rgb},
+    modes::ENTRIES,
+};
+
 use crate::{
     highlight::pin_page_iterator,
     hyperlink::HyperlinkId,
@@ -20,12 +28,6 @@ use crate::{
     style::{Color, Style},
     terminal::Terminal,
 };
-use ghostty_vt::{
-    charsets::{Charset, Slots},
-    color::{Palette, Rgb},
-    modes::ENTRIES,
-};
-use std::io::{self, Write};
 
 type Result<T> = io::Result<T>;
 

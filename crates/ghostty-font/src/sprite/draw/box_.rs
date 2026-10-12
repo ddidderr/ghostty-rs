@@ -15,8 +15,10 @@
 #![allow(clippy::needless_update)]
 
 use super::common::{Corner, DrawFn, Range, Thickness, hline, hline_middle, vline, vline_middle};
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, CapMode, Color, DrawError, Line, Path, Point, StrokeOptions};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Line, Path, Point, StrokeOptions},
+};
 
 pub const RANGES: &[Range] = &[Range {
     min: 0x2500,

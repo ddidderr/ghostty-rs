@@ -1,9 +1,8 @@
 //! Opening the config for editing (port of `config/edit.zig`).
 
+use std::{fs::OpenOptions, io, path::Path};
+
 use crate::file_load;
-use std::fs::OpenOptions;
-use std::io;
-use std::path::Path;
 
 /// The path to the configuration that should be opened for editing.
 ///

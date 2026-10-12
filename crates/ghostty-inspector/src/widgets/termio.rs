@@ -1,18 +1,24 @@
 //! VT event stream inspector (ZIG/src/inspector/widgets/termio.zig).
 
-use std::collections::VecDeque;
-use std::convert::Infallible;
-use std::fmt::Write as _;
+use std::{collections::VecDeque, convert::Infallible, fmt::Write as _};
 
 use dear_imgui_rs::{
-    FocusedFlags, Key, SelectableFlags, TableColumnFlags, TableColumnWidth, TableFlags, Ui,
+    FocusedFlags,
+    Key,
+    SelectableFlags,
+    TableColumnFlags,
+    TableColumnWidth,
+    TableFlags,
+    Ui,
     WindowFlags,
 };
 use ghostty_terminal::terminal::{ScrollingRegion, Terminal};
-use ghostty_vt::color::Palette;
-use ghostty_vt::osc::{self, Command as OscCommand};
-use ghostty_vt::parser::Action as ParserAction;
-use ghostty_vt::stream::{Action as StreamAction, Handler, Stream as VtStream};
+use ghostty_vt::{
+    color::Palette,
+    osc::{self, Command as OscCommand},
+    parser::Action as ParserAction,
+    stream::{Action as StreamAction, Handler, Stream as VtStream},
+};
 
 use super::screen::{CursorSnapshot, cursor_style, cursor_table};
 

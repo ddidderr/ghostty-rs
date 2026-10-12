@@ -2,12 +2,14 @@
 //! (ZIG/src/cli/ssh-cache/DiskCache.zig). The cache only stores metadata
 //! (hostname, terminfo value, etc.) and does not store any sensitive data.
 
-use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
-use std::net::Ipv6Addr;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::path::PathBuf;
+use std::{
+    collections::BTreeMap,
+    fs::{File, OpenOptions},
+    io::{Read, Write},
+    net::Ipv6Addr,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
+};
 
 use super::entry::{Entry, now_timestamp};
 

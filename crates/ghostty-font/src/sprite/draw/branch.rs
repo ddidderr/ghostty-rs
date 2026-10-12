@@ -14,10 +14,14 @@
 
 use std::f64::consts::PI;
 
-use super::box_;
-use super::common::{Corner, DrawFn, Edge, Range, Shade, Thickness, hline_middle, vline_middle};
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions};
+use super::{
+    box_,
+    common::{Corner, DrawFn, Edge, Range, Shade, Thickness, hline_middle, vline_middle},
+};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions},
+};
 
 pub const RANGES: &[Range] = &[Range {
     min: 0xf5d0,

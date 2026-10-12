@@ -29,7 +29,6 @@ pub mod sprite;
 
 pub use atlas::Atlas;
 pub use backend::{Backend, OPTIONS as options};
-
 pub use codepoint_map::CodepointMap;
 pub use codepoint_resolver::CodepointResolver;
 pub use collection::Collection;
@@ -39,7 +38,6 @@ pub use face::Face;
 pub use glyph::Glyph;
 pub use library::Library;
 pub use metrics::Metrics;
-
 pub use shared_grid::SharedGrid;
 pub use shared_grid_set::SharedGridSet;
 pub use sprite::{Face as SpriteFace, Sprite};

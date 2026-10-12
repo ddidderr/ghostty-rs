@@ -6,23 +6,34 @@
 //! GL context) and uploaded to the GPU on the thread that owns the context
 //! (`State::upload`, called from `draw_frame`).
 
-use std::collections::HashMap;
-use std::time::Instant;
+use std::{collections::HashMap, time::Instant};
 
-use ghostty_terminal::kitty::graphics_command::TransmissionFormat;
-use ghostty_terminal::kitty::graphics_storage::{ImageStorage, TerminalInfo};
-use ghostty_terminal::kitty::{Image as KittyImage, unicode};
-use ghostty_terminal::page_list::PageList;
-use ghostty_terminal::point::Tag;
-use ghostty_terminal::terminal::Terminal;
+use ghostty_terminal::{
+    kitty::{
+        Image as KittyImage,
+        graphics_command::TransmissionFormat,
+        graphics_storage::{ImageStorage, TerminalInfo},
+        unicode,
+    },
+    page_list::PageList,
+    point::Tag,
+    terminal::Terminal,
+};
 
-use crate::opengl::gl::{Gl, Primitive};
-use crate::opengl::pipeline::Pipeline;
-use crate::opengl::render_pass::{Draw, RenderPass, Step};
-use crate::opengl::shaders::Image as ImageVertex;
-use crate::opengl::{Buffer, Texture, buffer, texture};
-use crate::overlay::Overlay;
-use crate::size::CellSize;
+use crate::{
+    opengl::{
+        Buffer,
+        Texture,
+        buffer,
+        gl::{Gl, Primitive},
+        pipeline::Pipeline,
+        render_pass::{Draw, RenderPass, Step},
+        shaders::Image as ImageVertex,
+        texture,
+    },
+    overlay::Overlay,
+    size::CellSize,
+};
 
 /// The GPU objects needed to upload and draw images. Built per frame from
 /// the graphics API (the API itself is mutably borrowed by the frame while
@@ -1062,9 +1073,11 @@ mod tests {
 
     #[test]
     fn kitty_update_builds_sorted_viewport_placements() {
-        use ghostty_terminal::kitty::graphics_storage::{Location, Placement as KPlacement};
-        use ghostty_terminal::point::{Coordinate, Point};
-        use ghostty_terminal::terminal::Options;
+        use ghostty_terminal::{
+            kitty::graphics_storage::{Location, Placement as KPlacement},
+            point::{Coordinate, Point},
+            terminal::Options,
+        };
 
         let mut t = Terminal::new(Options::new(10, 10)).unwrap();
         t.width_px = 100;

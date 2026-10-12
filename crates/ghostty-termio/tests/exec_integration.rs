@@ -3,28 +3,43 @@
 //! `Termio` + `Thread` (IO thread) + the pty read thread, against a real
 //! `Terminal`.
 
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    thread::JoinHandle,
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, Sender, unbounded};
 use ghostty_apprt::surface::Message as SurfaceMessage;
-use ghostty_config::command::Command as ConfigCommand;
-use ghostty_config::config::Config;
-use ghostty_config::io::ReadableIO;
-use ghostty_config::types_b::{LinuxCgroup, ShellIntegration};
+use ghostty_config::{
+    command::Command as ConfigCommand,
+    config::Config,
+    io::ReadableIO,
+    types_b::{LinuxCgroup, ShellIntegration},
+};
 use ghostty_datastruct::blocking_queue::Timeout;
-use ghostty_renderer::message::Message as RendererMessage;
-use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
-use ghostty_termio::SharedStateExt;
-use ghostty_termio::backend::{self, Backend};
-use ghostty_termio::exec;
-use ghostty_termio::message::Message;
-use ghostty_termio::termio::DerivedConfig;
+use ghostty_renderer::{
+    message::Message as RendererMessage,
+    size::{CellSize, Padding, ScreenSize, Size},
+};
 use ghostty_termio::{
-    Mailbox, Options, RendererMailbox, SharedState, SurfaceMailbox, Termio, Thread, Wakeup,
+    Mailbox,
+    Options,
+    RendererMailbox,
+    SharedState,
+    SharedStateExt,
+    SurfaceMailbox,
+    Termio,
+    Thread,
+    Wakeup,
+    backend::{self, Backend},
+    exec,
+    message::Message,
+    termio::DerivedConfig,
 };
 
 struct SurfaceRec(Sender<SurfaceMessage>);

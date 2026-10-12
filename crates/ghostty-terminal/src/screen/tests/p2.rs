@@ -1,5 +1,6 @@
-use super::*;
 use ghostty_vt::{color::Rgb, sgr::Attribute as A};
+
+use super::*;
 
 fn bg155() -> A<'static> {
     A::DirectColorBg(Rgb { r: 155, g: 0, b: 0 })

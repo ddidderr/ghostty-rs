@@ -3,9 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use ghostty_input::Mods;
-use ghostty_terminal::point::Coordinate;
-use ghostty_terminal::size::CellCountInt;
-use ghostty_terminal::terminal::Terminal;
+use ghostty_terminal::{point::Coordinate, size::CellCountInt, terminal::Terminal};
 
 use crate::overlay::Feature as OverlayFeature;
 

@@ -1,14 +1,24 @@
 //! Linked terminal pages, byte-bounded history, and stable tracked coordinates.
-use crate::{
-    page::{
-        self, Adjustment, Capacity, Cell, ContentTag, Error, Page, Row, SemanticContent,
-        SemanticPrompt, Wide,
-    },
-    point::{Coordinate, Point, Tag},
-};
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicUsize, Ordering},
+};
+
+use crate::{
+    page::{
+        self,
+        Adjustment,
+        Capacity,
+        Cell,
+        ContentTag,
+        Error,
+        Page,
+        Row,
+        SemanticContent,
+        SemanticPrompt,
+        Wide,
+    },
+    point::{Coordinate, Point, Tag},
 };
 /// Slab index and generation; stale references never alias a reused node.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -7214,8 +7224,9 @@ mod tests {
     }
     #[test]
     fn page_list_resize_reflow_exceeds_style_memory_forcing_capacity_increase() {
-        use crate::style::{Color, Style};
         use ghostty_vt::color::Rgb;
+
+        use crate::style::{Color, Style};
         let mut s = two_page_fixture(page::STD_CAPACITY.styles - 1, 1, Some(0));
         assert_ne!(s.first, s.last);
         assert_eq!(s.node(s.first.unwrap()).unwrap().next, s.last);

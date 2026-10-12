@@ -3,10 +3,10 @@
 
 use std::rc::Rc;
 
+use ghostty_input::Mods;
 use gtk::gdk;
 
 use super::{Result, WindowHost};
-use ghostty_input::Mods;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct App;

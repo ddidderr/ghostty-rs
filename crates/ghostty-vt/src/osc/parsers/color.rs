@@ -1,8 +1,10 @@
 //! OSC color operations: 4, 5, 10-19, 104, 105, 110-119
 //! (ZIG/src/terminal/osc/parsers/color.zig).
 
-use crate::color::{Dynamic as DynamicColor, Rgb, Special as SpecialColor};
-use crate::osc::{Command, Parser, State, Terminator};
+use crate::{
+    color::{Dynamic as DynamicColor, Rgb, Special as SpecialColor},
+    osc::{Command, Parser, State, Terminator},
+};
 
 /// The possible operations we support for colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

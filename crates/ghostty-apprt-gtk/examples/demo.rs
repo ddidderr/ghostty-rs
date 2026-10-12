@@ -13,24 +13,40 @@
 
 #![allow(unsafe_code)] // GL calls through glow
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
-
-use ghostty_apprt::action::{self, Action, Target};
-use ghostty_apprt::runtime_api::{
-    AppMessage, CellSize, ClipboardError, CoreApp, CoreError, CoreSurface, DesiredFontSize,
-    InputEffect, KeyEvent, RtApp, RtSurface, SurfaceId,
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
 };
-use ghostty_apprt::structs::{
-    ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize,
+
+use ghostty_apprt::{
+    action::{self, Action, Target},
+    runtime_api::{
+        AppMessage,
+        CellSize,
+        ClipboardError,
+        CoreApp,
+        CoreError,
+        CoreSurface,
+        DesiredFontSize,
+        InputEffect,
+        KeyEvent,
+        RtApp,
+        RtSurface,
+        SurfaceId,
+    },
+    structs::{ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize},
 };
 use ghostty_apprt_gtk::app::App;
 use ghostty_config::config::Config;
-use ghostty_input::binding::set::Value as BindingValue;
-use ghostty_input::binding::{self, Action as Binding};
-use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
+use ghostty_input::{
+    Mods,
+    MouseButton,
+    MouseButtonState,
+    ScrollMods,
+    binding::{self, Action as Binding, set::Value as BindingValue},
+};
 use glow::HasContext;
 
 fn confirm() -> bool {

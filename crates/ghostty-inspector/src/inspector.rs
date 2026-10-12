@@ -3,8 +3,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use dear_imgui_rs::{ConfigFlags, Context, FontSource, StbTrueTypeFontData, Ui};
-use ghostty_renderer::overlay::Feature;
-use ghostty_renderer::state::InspectorHook;
+use ghostty_renderer::{overlay::Feature, state::InspectorHook};
 use ghostty_terminal::terminal::Terminal;
 
 use crate::widgets;
@@ -111,12 +110,13 @@ impl InspectorHook for Shared {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::widgets::surface::SurfaceInfo;
     use ghostty_input::{Action, Key, KeyEvent};
     use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
     use ghostty_terminal::terminal::Options;
     use ghostty_vt::stream::Stream;
+
+    use super::*;
+    use crate::widgets::surface::SurfaceInfo;
 
     fn surface_info() -> SurfaceInfo {
         SurfaceInfo {

@@ -1,5 +1,4 @@
-use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::{io, os::unix::fs::PermissionsExt};
 
 /// Equivalent of `std.fs.max_path_bytes` on Linux.
 const MAX_PATH_BYTES: usize = 4096;

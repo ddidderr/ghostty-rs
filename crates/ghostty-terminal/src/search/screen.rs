@@ -17,14 +17,18 @@
 //! that touches it (`new`, `deinit`, `feed`, `reload_active`, `select`,
 //! `search_all`); `tick`, `matches`, `selected_match` etc. do not need it.
 
-use super::active::ActiveSearch;
-use super::pagelist::PageListSearch;
-use super::sliding_window::{Direction, SlidingWindow};
-use crate::highlight::{Flattened, Tracked};
-use crate::page::Error;
-use crate::page_list::{NodeId, PageList, Pin, TrackedPin};
-use crate::screen::Screen;
-use crate::size::CellCountInt;
+use super::{
+    active::ActiveSearch,
+    pagelist::PageListSearch,
+    sliding_window::{Direction, SlidingWindow},
+};
+use crate::{
+    highlight::{Flattened, Tracked},
+    page::Error,
+    page_list::{NodeId, PageList, Pin, TrackedPin},
+    screen::Screen,
+    size::CellCountInt,
+};
 
 #[derive(Debug)]
 pub struct ScreenSearch {
@@ -856,10 +860,11 @@ impl ScreenSearch {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::*;
-    use super::*;
-    use crate::point::{Point, Tag};
-    use crate::terminal::Terminal;
+    use super::{super::test_util::*, *};
+    use crate::{
+        point::{Point, Tag},
+        terminal::Terminal,
+    };
 
     fn pts(t: &Terminal, h: &Flattened, tag: Tag) -> (Option<Point>, Option<Point>) {
         let sel = h.untracked();

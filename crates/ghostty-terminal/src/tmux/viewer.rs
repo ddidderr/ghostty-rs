@@ -62,17 +62,20 @@
 
 use std::collections::VecDeque;
 
-use ghostty_vt::modes::Mode;
-use ghostty_vt::tmux::control::Notification;
+use ghostty_vt::{modes::Mode, tmux::control::Notification};
 
-use super::layout::{self, Content, Layout};
-use super::output::{self, Variable};
-use crate::cursor::Style as CursorStyle;
-use crate::page;
-use crate::point::{Coordinate, Point};
-use crate::screen_set::Key as ScreenKey;
-use crate::size::CellCountInt;
-use crate::terminal::{Options as TerminalOptions, Terminal};
+use super::{
+    layout::{self, Content, Layout},
+    output::{self, Variable},
+};
+use crate::{
+    cursor::Style as CursorStyle,
+    page,
+    point::{Coordinate, Point},
+    screen_set::Key as ScreenKey,
+    size::CellCountInt,
+    terminal::{Options as TerminalOptions, Terminal},
+};
 
 /// The initial capacity of the command queue.
 const COMMAND_QUEUE_INITIAL: usize = 8;

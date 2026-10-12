@@ -8,28 +8,38 @@
 //! This structure is thread-safe when the operations are documented
 //! as thread-safe.
 
-use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::{Arc, Mutex, MutexGuard};
-
-use ghostty_config::config::Config;
-use ghostty_config::font_types::Variation;
-use ghostty_config::font_types::VariationId;
-use ghostty_config::types_a::{
-    FontStyle, FontSyntheticStyle, RepeatableCodepointMap, RepeatableFontVariation,
-    RepeatableString,
+use std::{
+    collections::HashMap,
+    hash::{DefaultHasher, Hash, Hasher},
+    sync::{Arc, Mutex, MutexGuard},
 };
-use ghostty_config::types_b::FreetypeLoadFlags;
 
-use crate::codepoint_map::CodepointMap;
-use crate::codepoint_resolver::{CodepointResolver, StyleStatus};
-use crate::collection::{self, AddOptions, Collection, LoadOptions, SizeAdjustment};
-use crate::discovery::{Descriptor, Discover, Fontconfig};
-use crate::face::{self, DesiredSize, FontData};
-use crate::library::{Library, LibraryError};
-use crate::metrics::{Key as MetricsKey, Modifier, ModifierSet};
-use crate::shared_grid::{self, SharedGrid};
-use crate::{Face, Style, embedded};
+use ghostty_config::{
+    config::Config,
+    font_types::{Variation, VariationId},
+    types_a::{
+        FontStyle,
+        FontSyntheticStyle,
+        RepeatableCodepointMap,
+        RepeatableFontVariation,
+        RepeatableString,
+    },
+    types_b::FreetypeLoadFlags,
+};
+
+use crate::{
+    Face,
+    Style,
+    codepoint_map::CodepointMap,
+    codepoint_resolver::{CodepointResolver, StyleStatus},
+    collection::{self, AddOptions, Collection, LoadOptions, SizeAdjustment},
+    discovery::{Descriptor, Discover, Fontconfig},
+    embedded,
+    face::{self, DesiredSize, FontData},
+    library::{Library, LibraryError},
+    metrics::{Key as MetricsKey, Modifier, ModifierSet},
+    shared_grid::{self, SharedGrid},
+};
 
 /// Errors from [`SharedGridSet::ref_`].
 #[derive(Debug, thiserror::Error)]

@@ -2,9 +2,7 @@
 
 use std::io::Write;
 
-use ghostty_config::config::Config;
-use ghostty_config::config_struct;
-use ghostty_config::file_formatter::FileFormatter;
+use ghostty_config::{config::Config, config_struct, file_formatter::FileFormatter};
 
 use crate::error::Error;
 

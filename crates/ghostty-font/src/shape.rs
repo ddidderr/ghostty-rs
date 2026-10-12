@@ -3,14 +3,16 @@
 //! The shaper implementation for the Linux backend is HarfBuzz
 //! ([`crate::shaper::harfbuzz::Shaper`]).
 
-pub use crate::shaper::cache::Cache;
-pub use crate::shaper::feature::{DEFAULT_FEATURES, Feature, FeatureList};
-pub use crate::shaper::run::{RunIterator, RunIteratorHook, RunOptions, TextRun};
-pub use crate::shaper::{harfbuzz, noop};
-
 /// Shaper implementation for our compile options (backend
 /// `fontconfig_freetype` => HarfBuzz).
 pub use crate::shaper::harfbuzz::Shaper;
+pub use crate::shaper::{
+    cache::Cache,
+    feature::{DEFAULT_FEATURES, Feature, FeatureList},
+    harfbuzz,
+    noop,
+    run::{RunIterator, RunIteratorHook, RunOptions, TextRun},
+};
 
 /// A cell is a single single within a terminal that should be rendered
 /// for a shaping call. Note all terminal cells may be present; only

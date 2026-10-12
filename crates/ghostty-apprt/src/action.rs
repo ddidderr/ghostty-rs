@@ -3,13 +3,13 @@
 //! C-ABI plumbing (`C`, `CValue`, `cval`, `ghostty.h` sync tests) is not
 //! ported; the enums keep their C integer discriminants via `as i32`.
 
-use crate::surface::{ChildExited, RendererHealth, Scrollbar};
-use ghostty_config::config::Config;
-use ghostty_config::types_b::Duration;
-use ghostty_input::binding::Trigger;
-use ghostty_vt::mouse_shape::MouseShape;
-use ghostty_vt::osc::ProgressReport;
 use std::sync::Arc;
+
+use ghostty_config::{config::Config, types_b::Duration};
+use ghostty_input::binding::Trigger;
+use ghostty_vt::{mouse_shape::MouseShape, osc::ProgressReport};
+
+use crate::surface::{ChildExited, RendererHealth, Scrollbar};
 
 /// The target for an action. This is generally the thing that had focus
 /// while the action was made but the concept of "focus" is not guaranteed

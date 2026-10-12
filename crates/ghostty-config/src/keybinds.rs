@@ -1,16 +1,34 @@
 //! Keybinds (port of `Config.Keybinds` from `config/Config.zig`).
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::formatter::EntryFormatter;
-use ghostty_input::binding::set::EntryFormatter as BindingEntryFormatter;
-use ghostty_input::binding::set::Value;
-use ghostty_input::binding::{
-    Action, AdjustSelection, CloseTabMode, CopyToClipboard, Flags, InspectorMode, Set,
-    SplitDirection, SplitFocusDirection, SplitResizeDirection, SplitResizeParameter, Trigger,
-    TriggerKey, WriteScreen,
-};
-use ghostty_input::{Key, Mods, ctrl_or_super};
 use std::fmt;
+
+use ghostty_input::{
+    Key,
+    Mods,
+    binding::{
+        Action,
+        AdjustSelection,
+        CloseTabMode,
+        CopyToClipboard,
+        Flags,
+        InspectorMode,
+        Set,
+        SplitDirection,
+        SplitFocusDirection,
+        SplitResizeDirection,
+        SplitResizeParameter,
+        Trigger,
+        TriggerKey,
+        WriteScreen,
+        set::{EntryFormatter as BindingEntryFormatter, Value},
+    },
+    ctrl_or_super,
+};
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    formatter::EntryFormatter,
+};
 
 /// The most recent binding target for `chain=` additions.
 ///

@@ -8,9 +8,7 @@
 #![cfg_attr(test, allow(clippy::expect_used))]
 
 use ghostty_cli::Action;
-use ghostty_config::cli_args::FieldKind;
-use ghostty_config::config::Config;
-use ghostty_config::macros::ConfigStruct;
+use ghostty_config::{cli_args::FieldKind, config::Config, macros::ConfigStruct};
 
 pub mod bash;
 pub mod fish;

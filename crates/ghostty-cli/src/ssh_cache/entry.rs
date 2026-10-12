@@ -2,8 +2,10 @@
 //! Our SSH entry cache stores which hosts we've sent our terminfo to so that
 //! we don't have to send it again. It doesn't store any sensitive information.
 
-use std::fmt::Write as _;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    fmt::Write as _,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 const S_PER_DAY: i64 = 86_400;
 

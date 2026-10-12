@@ -1,11 +1,13 @@
 //! Compact cells and rows, with bounded owned page storage.
+use std::collections::{HashMap, HashSet};
+
+use ghostty_vt::color::Rgb;
+
 use crate::{
     hyperlink::{self, Hyperlink, HyperlinkId},
     ref_counted_set::{AddError, Layout as SetLayout},
     style::{self, Style},
 };
-use ghostty_vt::color::Rgb;
-use std::collections::{HashMap, HashSet};
 /// Default grapheme allocation request, in bytes.
 pub const GRAPHEME_BYTES_DEFAULT: u32 = 1024;
 /// Default string allocation request, in bytes.

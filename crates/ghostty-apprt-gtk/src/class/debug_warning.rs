@@ -4,8 +4,7 @@
 use gtk::glib;
 
 mod imp {
-    use gtk::glib;
-    use gtk::subclass::prelude::*;
+    use gtk::{glib, subclass::prelude::*};
 
     #[derive(Default, gtk::CompositeTemplate)]
     #[template(resource = "/com/mitchellh/ghostty/ui/1.3/debug-warning.ui")]

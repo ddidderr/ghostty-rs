@@ -2,8 +2,7 @@
 //! `x.grapheme.computeGraphemeBreakNoControl` precomputed for every
 //! combination of state and break properties.
 
-use crate::props::GraphemeBreakNoControl as Gb;
-use crate::props_table::table;
+use crate::{props::GraphemeBreakNoControl as Gb, props_table::table};
 
 /// State carried between sequential [`grapheme_break`] calls
 /// (`uucode.grapheme.BreakState`).
@@ -312,8 +311,9 @@ pub fn grapheme_break_props(gb1: Gb, gb2: Gb, state: &mut BreakState) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
+
+    use super::*;
 
     #[test]
     fn grapheme_break_emoji_modifier() {

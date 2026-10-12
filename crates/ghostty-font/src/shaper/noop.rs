@@ -2,8 +2,10 @@
 //! Each individual codepoint is mapped directly to the detected text run
 //! font's glyph index.
 
-use crate::face::freetype::Face;
-use crate::shape::{self, Cell};
+use crate::{
+    face::freetype::Face,
+    shape::{self, Cell},
+};
 
 #[derive(Debug, Clone, Copy)]
 struct Codepoint {

@@ -1,7 +1,6 @@
 //! Typed access to `GtkSettings` (port of `apprt/gtk/gsettings.zig`).
 
-use gtk::glib;
-use gtk::prelude::*;
+use gtk::{glib, prelude::*};
 
 /// Settings keys we read (the GTK property names).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

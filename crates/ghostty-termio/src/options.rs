@@ -6,11 +6,13 @@ use std::sync::Arc;
 use ghostty_config::config::Config;
 use ghostty_renderer::size::Size;
 
-use crate::backend::Backend;
-use crate::mailbox::Mailbox;
-use crate::sinks::{RendererMailbox, SurfaceMailbox};
-use crate::termio::DerivedConfig;
-use crate::wakeup::Wakeup;
+use crate::{
+    backend::Backend,
+    mailbox::Mailbox,
+    sinks::{RendererMailbox, SurfaceMailbox},
+    termio::DerivedConfig,
+    wakeup::Wakeup,
+};
 
 /// See the module docs.
 pub struct Options<'a> {

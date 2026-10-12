@@ -1,8 +1,10 @@
 //! Shader pipelines and GPU data layouts for OpenGL (`opengl/shaders.zig`).
 use bytemuck::{Pod, Zeroable};
 
-use super::gl::{self, AttribType, Gl};
-use super::pipeline::{Attribute, Options as PipelineOptions, Pipeline, StepFunction, Vertex};
+use super::{
+    gl::{self, AttribType, Gl},
+    pipeline::{Attribute, Options as PipelineOptions, Pipeline, StepFunction, Vertex},
+};
 use crate::math::Mat;
 
 /// `shaders/glsl/common.glsl`, the only `#include`d file.
@@ -464,8 +466,9 @@ impl Vertex for BgImage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::mem::{offset_of, size_of};
+
+    use super::*;
 
     #[test]
     fn uniforms_std140_layout() {

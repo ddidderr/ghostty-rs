@@ -5,14 +5,15 @@
 //! `clipboard-contents` (GtkTextBuffer), `blur`. Signals `confirm(bool)` and
 //! `deny(bool)` (bool = "remember choice").
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use std::{
+    cell::{Cell, RefCell},
+    sync::OnceLock,
+};
+
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_apprt::structs::ClipboardRequest;
 use ghostty_os::i18n::tr;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
-use std::cell::{Cell, RefCell};
-use std::sync::OnceLock;
+use gtk::{glib, glib::subclass::Signal};
 
 use super::dialog::{Dialog, DialogImpl};
 
@@ -22,13 +23,25 @@ use super::dialog::{Dialog, DialogImpl};
 pub struct ClipboardRequestBoxed(pub ClipboardRequest);
 
 mod imp {
-    use super::{
-        AdwAlertDialogImpl, AdwDialogImpl, Cell, ClipboardRequest, ClipboardRequestBoxed, Dialog,
-        DialogImpl, ObjectImpl, ObjectSubclass, OnceLock, RefCell, Signal, WidgetImpl, tr,
-    };
     use adw::prelude::*;
-    use gtk::glib;
-    use gtk::subclass::prelude::*;
+    use gtk::{glib, subclass::prelude::*};
+
+    use super::{
+        AdwAlertDialogImpl,
+        AdwDialogImpl,
+        Cell,
+        ClipboardRequest,
+        ClipboardRequestBoxed,
+        Dialog,
+        DialogImpl,
+        ObjectImpl,
+        ObjectSubclass,
+        OnceLock,
+        RefCell,
+        Signal,
+        WidgetImpl,
+        tr,
+    };
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::ClipboardConfirmationDialog)]

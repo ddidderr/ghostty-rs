@@ -15,19 +15,28 @@
 
 use std::sync::OnceLock;
 
-use super::Sprite;
-use super::canvas::{Canvas, DrawError};
-use super::draw::common::{DrawFn, Range};
-use super::draw::{
-    block, box_, braille, branch, geometric_shapes, powerline, special,
-    symbols_for_legacy_computing, symbols_for_legacy_computing_supplement,
+use super::{
+    Sprite,
+    canvas::{Canvas, DrawError},
+    draw::{
+        block,
+        box_,
+        braille,
+        branch,
+        common::{DrawFn, Range},
+        geometric_shapes,
+        powerline,
+        special,
+        symbols_for_legacy_computing,
+        symbols_for_legacy_computing_supplement,
+    },
 };
-use crate::atlas::{self, Atlas};
-use crate::glyph::Glyph;
-use crate::metrics::Metrics;
-
-pub use crate::Presentation;
-pub use crate::face::RenderOptions;
+pub use crate::{Presentation, face::RenderOptions};
+use crate::{
+    atlas::{self, Atlas},
+    glyph::Glyph,
+    metrics::Metrics,
+};
 
 /// Errors from [`Face::render_glyph`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

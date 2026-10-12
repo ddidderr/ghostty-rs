@@ -9,15 +9,15 @@
 //! cheaply in gtk-rs without a lot of class struct boilerplate, so subclasses
 //! install the two hooks with [`ImguiWidget::set_hooks`] instead.
 
-use std::cell::{Cell, RefCell};
-use std::time::{Duration, Instant};
+use std::{
+    cell::{Cell, RefCell},
+    time::{Duration, Instant},
+};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use dear_imgui_glow::GlowRenderer;
 use ghostty_inspector::imgui::{Context, MouseButton, Ui};
-use gtk::glib::translate::IntoGlib;
-use gtk::{gdk, glib};
+use gtk::{gdk, glib, glib::translate::IntoGlib};
 
 use crate::key;
 

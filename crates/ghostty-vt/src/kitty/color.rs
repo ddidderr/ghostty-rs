@@ -1,8 +1,8 @@
 //! Kitty color protocol (ZIG/src/terminal/kitty/color.zig).
 
-use crate::color::Rgb;
-use crate::osc::Terminator;
 use std::fmt;
+
+use crate::{color::Rgb, osc::Terminator};
 
 /// OSC 21 payload.
 #[derive(Debug, Clone, PartialEq, Default)]

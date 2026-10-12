@@ -1,13 +1,25 @@
 //! Terminal information (ZIG/src/inspector/widgets/terminal.zig).
 
 use dear_imgui_rs::{
-    ColorEditFlags, Condition, ItemHoveredFlags, StyleVar, TableColumnFlags, TableColumnWidth,
-    TableFlags, TableRowFlags, Ui, WindowFlags,
+    ColorEditFlags,
+    Condition,
+    ItemHoveredFlags,
+    StyleVar,
+    TableColumnFlags,
+    TableColumnWidth,
+    TableFlags,
+    TableRowFlags,
+    Ui,
+    WindowFlags,
 };
-use ghostty_terminal::screen_set::Key as ScreenKey;
-use ghostty_terminal::terminal::{MouseShiftCapture, Terminal};
-use ghostty_vt::color::{DynamicRgb, Palette};
-use ghostty_vt::modes::ENTRIES as MODE_ENTRIES;
+use ghostty_terminal::{
+    screen_set::Key as ScreenKey,
+    terminal::{MouseShiftCapture, Terminal},
+};
+use ghostty_vt::{
+    color::{DynamicRgb, Palette},
+    modes::ENTRIES as MODE_ENTRIES,
+};
 
 use super::{DetachableHeader, help_marker, screen, style::rgb_f32};
 use crate::keys::tag_name;

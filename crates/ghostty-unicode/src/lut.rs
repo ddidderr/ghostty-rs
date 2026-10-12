@@ -14,8 +14,7 @@
     clippy::expect_used
 )]
 
-use std::collections::HashMap;
-use std::fmt::Write as _;
+use std::{collections::HashMap, fmt::Write as _};
 
 const BLOCK_SIZE: usize = 256;
 

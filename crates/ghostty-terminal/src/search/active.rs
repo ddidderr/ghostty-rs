@@ -9,8 +9,10 @@
 //! and handling the active area moving as new lines are added to the bottom.
 
 use super::sliding_window::{Direction, SlidingWindow};
-use crate::highlight::Flattened;
-use crate::page_list::{NodeId, PageList};
+use crate::{
+    highlight::Flattened,
+    page_list::{NodeId, PageList},
+};
 
 #[derive(Debug)]
 pub struct ActiveSearch {
@@ -103,8 +105,7 @@ impl ActiveSearch {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::*;
-    use super::*;
+    use super::{super::test_util::*, *};
     use crate::point::Tag;
 
     fn check(list: &PageList, h: &Flattened, s: (u16, u32), e: (u16, u32)) {

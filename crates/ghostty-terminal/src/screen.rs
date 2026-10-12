@@ -18,21 +18,6 @@
     clippy::doc_overindented_list_items,
     clippy::items_after_statements
 )]
-use crate::{
-    cursor::Style as CursorStyle,
-    formatter::{Content as FormatContent, Options as FormatOptions, ScreenFormatter},
-    hyperlink::{self, Hyperlink, HyperlinkId},
-    kitty::graphics_storage::ImageStorage,
-    page::{Cell, ContentTag, Page, Row, SemanticContent, SemanticPrompt as RowPrompt, Wide},
-    page_list::{
-        CellSubset, Chunk, Direction, IncreaseCapacity, NodeId, PageList, Pin,
-        Scroll as ListScroll, TrackedPin, Viewport,
-    },
-    point::{Coordinate, Point, Tag},
-    selection::{Bounds, Order, Selection},
-    size,
-    style::{self, Style},
-};
 use ghostty_vt::{
     ansi::ProtectedMode,
     charsets::{Charset, Slots},
@@ -41,11 +26,33 @@ use ghostty_vt::{
     sgr,
 };
 
-pub use crate::page::Error;
-
 /// The Unicode codepoint used by the Kitty graphics protocol for virtual
 /// placements (`kitty.graphics.unicode.placeholder`).
 use crate::kitty::graphics_unicode::PLACEHOLDER as KITTY_PLACEHOLDER;
+pub use crate::page::Error;
+use crate::{
+    cursor::Style as CursorStyle,
+    formatter::{Content as FormatContent, Options as FormatOptions, ScreenFormatter},
+    hyperlink::{self, Hyperlink, HyperlinkId},
+    kitty::graphics_storage::ImageStorage,
+    page::{Cell, ContentTag, Page, Row, SemanticContent, SemanticPrompt as RowPrompt, Wide},
+    page_list::{
+        CellSubset,
+        Chunk,
+        Direction,
+        IncreaseCapacity,
+        NodeId,
+        PageList,
+        Pin,
+        Scroll as ListScroll,
+        TrackedPin,
+        Viewport,
+    },
+    point::{Coordinate, Point, Tag},
+    selection::{Bounds, Order, Selection},
+    size,
+    style::{self, Style},
+};
 
 /// See Terminal.Dirty. This behaves the same way.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

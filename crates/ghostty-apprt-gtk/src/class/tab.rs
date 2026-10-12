@@ -5,17 +5,20 @@
 
 use std::cell::RefCell;
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_apprt::surface::NewSurfaceContext;
-use gtk::gio;
-use gtk::glib::{self, clone, subclass::Signal};
+use gtk::{
+    gio,
+    glib::{self, clone, subclass::Signal},
+};
 
-use super::application::Application;
-use super::config::Config;
-use super::split_tree::{SplitTree, SurfaceTree};
-use super::surface::{Surface, SurfaceOverrides};
-use super::title_dialog::{Target as TitleTarget, TitleDialog};
+use super::{
+    application::Application,
+    config::Config,
+    split_tree::{SplitTree, SurfaceTree},
+    surface::{Surface, SurfaceOverrides},
+    title_dialog::{Target as TitleTarget, TitleDialog},
+};
 
 glib::wrapper! {
     pub struct Tab(ObjectSubclass<imp::Tab>)

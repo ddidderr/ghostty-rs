@@ -2,7 +2,13 @@
 //!
 //! In this case, an OpenGL renderbuffer-backed framebuffer.
 use super::gl::{
-    self, Attachment, FramebufferTarget, Gl, InternalFormat, RawFramebuffer, RawRenderbuffer,
+    self,
+    Attachment,
+    FramebufferTarget,
+    Gl,
+    InternalFormat,
+    RawFramebuffer,
+    RawRenderbuffer,
 };
 
 /// Options for initializing a Target

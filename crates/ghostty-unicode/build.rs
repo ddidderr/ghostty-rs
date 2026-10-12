@@ -17,10 +17,7 @@ mod props;
 #[path = "build_support/ucd.rs"]
 mod ucd;
 
-use std::env;
-use std::fmt::Write as _;
-use std::fs;
-use std::path::PathBuf;
+use std::{env, fmt::Write as _, fs, path::PathBuf};
 
 fn main() {
     let manifest = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());

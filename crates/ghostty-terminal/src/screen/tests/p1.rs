@@ -1,5 +1,6 @@
-use super::*;
 use ghostty_vt::sgr::Attribute as A;
+
+use super::*;
 
 #[test]
 fn screen_read_and_write() {

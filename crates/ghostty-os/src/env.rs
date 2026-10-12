@@ -1,5 +1,7 @@
-use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::{
+    collections::HashMap,
+    ffi::{OsStr, OsString},
+};
 
 use crate::flatpak::is_flatpak;
 
@@ -214,8 +216,9 @@ pub fn getenv_not_empty(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::os::unix::ffi::OsStringExt;
+
+    use super::*;
 
     #[test]
     fn env_map_preserves_non_utf8() {

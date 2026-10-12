@@ -1,7 +1,7 @@
+use ghostty_vt::{color::Rgb, sgr::Attribute};
+
 use super::*;
 use crate::page::ContentTag;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute;
 
 fn prints(t: &mut Terminal, s: &str) {
     for c in s.chars() {

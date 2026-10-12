@@ -11,26 +11,38 @@
 //! app keeps weak references to them (the runtime owns the strong
 //! `Rc<dyn CoreSurface>`).
 
-use std::cell::{Cell, RefCell};
-use std::rc::{Rc, Weak};
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    cell::{Cell, RefCell},
+    rc::{Rc, Weak},
+    sync::Arc,
+    time::Instant,
+};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
-use ghostty_apprt::action::{Action as RtAction, QuitTimer, ReloadConfig, Target};
-use ghostty_apprt::runtime_api::{
-    AppMessage, CellSize as RtCellSize, CoreApp, CoreError, CoreSurface, DesiredFontSize, RtApp,
-    RtSurface, SurfaceId, Waker,
+use ghostty_apprt::{
+    action::{Action as RtAction, QuitTimer, ReloadConfig, Target},
+    runtime_api::{
+        AppMessage,
+        CellSize as RtCellSize,
+        CoreApp,
+        CoreError,
+        CoreSurface,
+        DesiredFontSize,
+        RtApp,
+        RtSurface,
+        SurfaceId,
+        Waker,
+    },
+    structs::ColorScheme,
+    surface::{AppMailbox, Message as SurfaceMessage},
 };
-use ghostty_apprt::structs::ColorScheme;
-use ghostty_apprt::surface::{AppMailbox, Message as SurfaceMessage};
-use ghostty_config::conditional;
-use ghostty_config::config::Config;
+use ghostty_config::{conditional, config::Config};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_font::SharedGridSet;
-use ghostty_input::KeyEvent;
-use ghostty_input::binding::set::Value as BindingValue;
-use ghostty_input::binding::{Action as BindingAction, Scope};
+use ghostty_input::{
+    KeyEvent,
+    binding::{Action as BindingAction, Scope, set::Value as BindingValue},
+};
 
 use crate::surface::Surface;
 

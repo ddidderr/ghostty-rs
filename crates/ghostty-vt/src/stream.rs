@@ -18,18 +18,20 @@
 
 #![allow(clippy::single_match_else, clippy::if_not_else)]
 
-use crate::ansi;
-use crate::charsets;
-use crate::csi;
-use crate::device_status;
-use crate::kitty;
-use crate::modes;
-use crate::mouse_shape::MouseShape;
-use crate::osc;
-use crate::parser::{self, Csi, Esc, MAX_PARAMS, Parser, State};
-use crate::sgr;
-use crate::simd;
-use crate::utf8_decoder::Utf8Decoder;
+use crate::{
+    ansi,
+    charsets,
+    csi,
+    device_status,
+    kitty,
+    modes,
+    mouse_shape::MouseShape,
+    osc,
+    parser::{self, Csi, Esc, MAX_PARAMS, Parser, State},
+    sgr,
+    simd,
+    utf8_decoder::Utf8Decoder,
+};
 
 macro_rules! define_actions {
     ($( $(#[$meta:meta])* $name:ident $( ( $ty:ty ) )? ),* $(,)?) => {
@@ -1658,8 +1660,9 @@ impl<H: Handler> Stream<H> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use std::convert::Infallible;
+
+    use super::*;
 
     /// Test handler that forwards every action to a closure.
     struct F<T, C: FnMut(&mut T, Action<'_>)> {

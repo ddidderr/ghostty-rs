@@ -237,8 +237,9 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use ghostty_config::cli_args::{VecIterator, parse};
+
+    use super::*;
 
     fn parse_str(s: &str) -> Options {
         let mut opts = Options::default();

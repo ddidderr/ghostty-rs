@@ -12,12 +12,6 @@
 //! output and doesn't need to respond (since it maybe isn't running the
 //! actual program), this is the stream type to use. For example, this is
 //! ideal for replay tooling, CI logs, PaaS builder output, etc.
-use crate::{
-    cursor::Style as CursorStyle,
-    terminal::{
-        DeccolmMode, Error, MouseEvents, MouseFormat, MouseShiftCapture, SwitchScreenMode, Terminal,
-    },
-};
 use ghostty_vt::{
     ansi::{CursorStyle as AnsiCursorStyle, ModifyKeyFormat, ProtectedMode},
     color::Dynamic as DynamicColor,
@@ -26,6 +20,19 @@ use ghostty_vt::{
     modes::Mode,
     osc::color::{self as osc_color, Request, Target},
     stream::{self, Action},
+};
+
+use crate::{
+    cursor::Style as CursorStyle,
+    terminal::{
+        DeccolmMode,
+        Error,
+        MouseEvents,
+        MouseFormat,
+        MouseShiftCapture,
+        SwitchScreenMode,
+        Terminal,
+    },
 };
 
 /// The stream type wrapping [`Handler`].
@@ -450,9 +457,10 @@ impl stream::Handler for Handler<'_> {
 
 #[cfg(test)]
 mod tests {
+    use ghostty_vt::osc::semantic_prompt::Redraw;
+
     use super::*;
     use crate::{page::SemanticContent, screen_set::Key as ScreenKey, terminal::Options};
-    use ghostty_vt::osc::semantic_prompt::Redraw;
 
     fn term(cols: u16, rows: u16) -> Terminal {
         Terminal::new(Options::new(cols, rows)).unwrap()

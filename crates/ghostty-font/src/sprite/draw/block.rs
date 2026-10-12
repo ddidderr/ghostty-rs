@@ -7,11 +7,27 @@
 //! Port of `sprite/draw/block.zig`.
 
 use super::common::{
-    Alignment, DrawFn, FIVE_EIGHTHS, Fraction, HALF, HAlign, ONE_EIGHTH, ONE_QUARTER, Quads, Range,
-    SEVEN_EIGHTHS, Shade, THREE_EIGHTHS, THREE_QUARTERS, VAlign, fill,
+    Alignment,
+    DrawFn,
+    FIVE_EIGHTHS,
+    Fraction,
+    HALF,
+    HAlign,
+    ONE_EIGHTH,
+    ONE_QUARTER,
+    Quads,
+    Range,
+    SEVEN_EIGHTHS,
+    Shade,
+    THREE_EIGHTHS,
+    THREE_QUARTERS,
+    VAlign,
+    fill,
 };
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, Color, DrawError, Rect};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, Color, DrawError, Rect},
+};
 
 pub const RANGES: &[Range] = &[Range {
     min: 0x2580,

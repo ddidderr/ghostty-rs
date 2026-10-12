@@ -1,10 +1,15 @@
 //! Path config values (port of `config/path.zig`).
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::diagnostics::{Diagnostic, DiagnosticList};
-use crate::formatter::EntryFormatter;
-use std::fmt;
-use std::path::{Component, Path as StdPath, PathBuf};
+use std::{
+    fmt,
+    path::{Component, Path as StdPath, PathBuf},
+};
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    diagnostics::{Diagnostic, DiagnosticList},
+    formatter::EntryFormatter,
+};
 
 /// Path is like a string that represents a path value. The difference is that
 /// when loading the configuration the value for this will be automatically

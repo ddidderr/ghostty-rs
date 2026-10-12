@@ -5,17 +5,16 @@
 //! comments.
 #![allow(unsafe_code)]
 
-use std::ffi::{c_int, c_long, c_uchar, c_uint, c_ulong, c_void};
-use std::rc::Rc;
+use std::{
+    ffi::{c_int, c_long, c_uchar, c_uint, c_ulong, c_void},
+    rc::Rc,
+};
 
-use gdk4_x11::x11::xlib;
-use gdk4_x11::{X11Display, X11Surface};
-use gtk::gdk;
-use gtk::glib;
-use gtk::prelude::*;
+use gdk4_x11::{X11Display, X11Surface, x11::xlib};
+use ghostty_input::Mods;
+use gtk::{gdk, glib, prelude::*};
 
 use super::{Error, Result, WindowHost};
-use ghostty_input::Mods;
 
 // XKB bits we need that the `x11` crate doesn't expose (XKBlib.h / XKB.h).
 const XKB_MAJOR_VERSION: c_int = 1;

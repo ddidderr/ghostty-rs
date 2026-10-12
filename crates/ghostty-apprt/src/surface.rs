@@ -1,14 +1,15 @@
 //! Port of `surface.zig`: messages sent from the core to a surface's apprt.
 
-use crate::structs::Clipboard;
-use ghostty_config::config::Config;
-use ghostty_config::types_a::WorkingDirectory;
-use ghostty_datastruct::MessageData;
-use ghostty_datastruct::blocking_queue::Timeout;
-use ghostty_vt::mouse_shape::MouseShape;
-use ghostty_vt::osc::ProgressReport;
-use ghostty_vt::osc::color::ColoredTarget;
 use std::sync::Arc;
+
+use ghostty_config::{config::Config, types_a::WorkingDirectory};
+use ghostty_datastruct::{MessageData, blocking_queue::Timeout};
+use ghostty_vt::{
+    mouse_shape::MouseShape,
+    osc::{ProgressReport, color::ColoredTarget},
+};
+
+use crate::structs::Clipboard;
 
 /// Represents a write request. Magic number comes from the max size
 /// we want this union to be.
@@ -233,8 +234,9 @@ pub fn new_config(config: &Config, context: NewSurfaceContext, prev_pwd: Option<
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::cell::RefCell;
+
+    use super::*;
 
     struct Rec(RefCell<Vec<(u32, bool)>>);
     impl AppMailbox<u32> for Rec {

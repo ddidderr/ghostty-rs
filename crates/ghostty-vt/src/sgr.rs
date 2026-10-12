@@ -4,8 +4,10 @@
 //! C-ABI helpers of the Zig version (`Attribute.C`, `cval`, `lib.Enum`
 //! `Tag`) are intentionally not ported.
 
-use crate::color::{Name, Rgb};
-use crate::parser::{MAX_PARAMS, SepList};
+use crate::{
+    color::{Name, Rgb},
+    parser::{MAX_PARAMS, SepList},
+};
 
 /// Attribute type for SGR
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,8 +415,9 @@ impl<'a> Iterator for Parser<'a> {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
-    use super::*;
     use Attribute as A;
+
+    use super::*;
 
     fn rgb(r: u8, g: u8, b: u8) -> Rgb {
         Rgb { r, g, b }

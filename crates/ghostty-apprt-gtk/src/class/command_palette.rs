@@ -5,22 +5,13 @@
 //! keeps itself alive (a self-reference) from `new()` until its dialog is
 //! closed, like the Zig `refSink`/`unref` dance.
 
-use std::cell::RefCell;
-use std::cmp::Ordering;
-use std::sync::OnceLock;
+use std::{cell::RefCell, cmp::Ordering, sync::OnceLock};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
-use ghostty_input::binding::Action as BindingAction;
-use ghostty_input::command::Command as InputCommand;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
-use gtk::{CompositeTemplate, TemplateChild, gio};
+use adw::{prelude::*, subclass::prelude::*};
+use ghostty_input::{binding::Action as BindingAction, command::Command as InputCommand};
+use gtk::{CompositeTemplate, TemplateChild, gio, glib, glib::subclass::Signal};
 
-use super::application::Application;
-use super::config::Config;
-use super::surface::Surface;
-use super::window::Window;
+use super::{application::Application, config::Config, surface::Surface, window::Window};
 
 /// Boxed wrapper so a binding action can travel through the `trigger`
 /// signal (Zig passes `*const input.Binding.Action`).
@@ -32,11 +23,18 @@ pub struct BoxedAction(pub BindingAction);
 // Command (list item)
 
 mod command_imp {
-    use super::{
-        BindingAction, Config, InputCommand, RefCell, Surface, ghostty_command_title_for_jump, glib,
-    };
     use adw::prelude::*;
     use gtk::glib::subclass::prelude::*;
+
+    use super::{
+        BindingAction,
+        Config,
+        InputCommand,
+        RefCell,
+        Surface,
+        ghostty_command_title_for_jump,
+        glib,
+    };
 
     pub enum CommandData {
         Regular {
@@ -276,14 +274,23 @@ fn is_action_supported_on_gtk(action: &BindingAction) -> bool {
 // CommandPalette
 
 mod imp {
+    use adw::{prelude::*, subclass::prelude::*};
+    use gtk::{gio, glib};
+
     use super::{
-        Application, BoxedAction, Command, CompositeTemplate, Config, OnceLock, Ordering, RefCell,
-        Signal, TemplateChild, compare_commands, is_action_supported_on_gtk,
+        Application,
+        BoxedAction,
+        Command,
+        CompositeTemplate,
+        Config,
+        OnceLock,
+        Ordering,
+        RefCell,
+        Signal,
+        TemplateChild,
+        compare_commands,
+        is_action_supported_on_gtk,
     };
-    use adw::prelude::*;
-    use adw::subclass::prelude::*;
-    use gtk::gio;
-    use gtk::glib;
 
     #[derive(Default, glib::Properties, CompositeTemplate)]
     #[properties(wrapper_type = super::CommandPalette)]

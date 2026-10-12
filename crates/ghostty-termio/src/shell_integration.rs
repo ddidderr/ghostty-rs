@@ -42,8 +42,7 @@ impl Shell {
     }
 }
 
-pub use ghostty_config::command::Command;
-pub use ghostty_config::types_b::ShellIntegrationFeatures;
+pub use ghostty_config::{command::Command, types_b::ShellIntegrationFeatures};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

@@ -2,8 +2,10 @@
 //! into a stream. The hook/put/unhook functions are meant to be called from
 //! the stream's dcsHook, dcsPut, and dcsUnhook functions, respectively.
 
-use crate::parser::Dcs;
-use crate::tmux::control::{Notification, Parser as TmuxParser};
+use crate::{
+    parser::Dcs,
+    tmux::control::{Notification, Parser as TmuxParser},
+};
 
 /// DCS command handler.
 #[derive(Debug)]

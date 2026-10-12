@@ -7,8 +7,7 @@
 //! Deviation: Zig's `ext.StringList` boxed type is replaced by `GStrv`
 //! (`Vec<String>`) for the `tables` and `sequence` properties.
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use gtk::glib;
 
 glib::wrapper! {

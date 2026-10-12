@@ -1,5 +1,7 @@
-use std::io;
-use std::process::{Command, Stdio};
+use std::{
+    io,
+    process::{Command, Stdio},
+};
 
 /// Kind of URL being opened (`apprt.action.OpenUrl.Kind`). On Linux the
 /// kind is ignored by [`open`] (it only matters for macOS `open -t`).

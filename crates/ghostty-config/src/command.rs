@@ -1,8 +1,11 @@
 //! A command to execute (port of `config/command.zig`).
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::formatter::EntryFormatter;
 use std::fmt;
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    formatter::EntryFormatter,
+};
 
 /// A command to execute (argv0 and args).
 ///

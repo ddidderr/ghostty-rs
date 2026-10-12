@@ -1,12 +1,16 @@
 //! `+list-colors` (ZIG/src/cli/list_colors.zig).
 
-use std::cmp::Ordering;
-use std::io::{IsTerminal, Write};
+use std::{
+    cmp::Ordering,
+    io::{IsTerminal, Write},
+};
 
 use ghostty_config::config_struct;
 
-use crate::error::Error;
-use crate::tui::{self, Color, PrettySession, Style};
+use crate::{
+    error::Error,
+    tui::{self, Color, PrettySession, Style},
+};
 
 config_struct! {
     pub struct Options {

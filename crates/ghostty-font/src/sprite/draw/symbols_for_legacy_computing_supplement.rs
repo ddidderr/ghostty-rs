@@ -5,11 +5,15 @@
 
 use std::sync::OnceLock;
 
-use super::box_::{self, Lines, Style};
-use super::common::{Alignment, Corner, DrawFn, Fraction, Range, fill};
-use super::symbols_for_legacy_computing as sflc;
-use crate::metrics::Metrics;
-use crate::sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions};
+use super::{
+    box_::{self, Lines, Style},
+    common::{Alignment, Corner, DrawFn, Fraction, Range, fill},
+    symbols_for_legacy_computing as sflc,
+};
+use crate::{
+    metrics::Metrics,
+    sprite::canvas::{Canvas, CapMode, Color, DrawError, Path, StrokeOptions},
+};
 
 pub const RANGES: &[Range] = &[
     Range {

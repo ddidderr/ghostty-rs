@@ -1,7 +1,9 @@
 //! Row heuristics for the renderer (`renderer/row.zig`).
 
-use ghostty_terminal::page::{Cell, ContentTag, Row, SemanticPrompt};
-use ghostty_terminal::style::Style;
+use ghostty_terminal::{
+    page::{Cell, ContentTag, Row, SemanticPrompt},
+    style::Style,
+};
 use ghostty_vt::color::{Palette, Rgb};
 
 /// Returns true if the row of this pin should never have its background
@@ -82,8 +84,9 @@ fn style_at(cell: Cell, styles: &[Style], x: usize) -> Style {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_vt::color;
+
+    use super::*;
 
     const BG: Rgb = Rgb { r: 1, g: 2, b: 3 };
 

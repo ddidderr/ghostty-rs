@@ -4,5 +4,8 @@
 //! vt cannot depend on os); this module re-exports it.
 
 pub use ghostty_vt::string_encoding::{
-    Error, printf_q_decode, url_percent_decode, url_percent_encode,
+    Error,
+    printf_q_decode,
+    url_percent_decode,
+    url_percent_encode,
 };

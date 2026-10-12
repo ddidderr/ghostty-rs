@@ -69,8 +69,10 @@ fn parse_int(buf: &[u8], signed: bool) -> Result<u32, Error> {
 /// Decode base64 payload data. The reference implementation uses simdutf,
 /// which ignores ASCII whitespace and tolerates missing padding.
 pub fn decode_base64(input: &[u8]) -> Result<Vec<u8>, Error> {
-    use base64::Engine;
-    use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+    use base64::{
+        Engine,
+        engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+    };
     const ENGINE: GeneralPurpose = GeneralPurpose::new(
         &base64::alphabet::STANDARD,
         GeneralPurposeConfig::new()

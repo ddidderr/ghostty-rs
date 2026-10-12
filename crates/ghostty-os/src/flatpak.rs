@@ -1,10 +1,15 @@
-use std::collections::HashMap;
-use std::os::fd::{AsFd, OwnedFd};
-use std::sync::{Arc, Condvar, Mutex};
+use std::{
+    collections::HashMap,
+    os::fd::{AsFd, OwnedFd},
+    sync::{Arc, Condvar, Mutex},
+};
 
-use zbus::blocking::{Connection, MessageIterator};
-use zbus::zvariant::Fd;
-use zbus::{MatchRule, message::Type as MessageType};
+use zbus::{
+    MatchRule,
+    blocking::{Connection, MessageIterator},
+    message::Type as MessageType,
+    zvariant::Fd,
+};
 
 const BUS_NAME: &str = "org.freedesktop.Flatpak";
 const OBJECT_PATH: &str = "/org/freedesktop/Flatpak/Development";

@@ -15,15 +15,23 @@
 //!
 //! See `docs/rewrite/notes/ghostty-apprt-gtk.md` for the full spec.
 
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
-use crate::action::{Action, Target};
-use crate::structs::{
-    Clipboard, ClipboardRequest, ColorScheme, ContentScale, CursorPos, ImePos, SurfaceSize,
-};
 use ghostty_config::config::Config;
 use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
+
+use crate::{
+    action::{Action, Target},
+    structs::{
+        Clipboard,
+        ClipboardRequest,
+        ColorScheme,
+        ContentScale,
+        CursorPos,
+        ImePos,
+        SurfaceSize,
+    },
+};
 
 /// Identifier for a core surface (Zig: `*CoreSurface` pointer). Allocated by
 /// this crate for each GTK surface; core stores it in its `Target::Surface`.

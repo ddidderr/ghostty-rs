@@ -18,22 +18,25 @@
 //! deadlines (selection scroll, resize coalescing, synchronized-output reset,
 //! termios polling). See [`Thread::thread_main`].
 
-use std::io;
-use std::time::{Duration, Instant};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use ghostty_apprt::surface::Message as SurfaceMessage;
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::size::Size;
-use ghostty_vt::csi;
-use ghostty_vt::modes::Mode;
+use ghostty_vt::{csi, modes::Mode};
 use rustix::event::{PollFd, PollFlags};
 
-use crate::backend::ThreadData as BackendThreadData;
-use crate::exec;
-use crate::message::Message;
-use crate::state::SharedStateExt;
-use crate::termio::{Error, Termio, ThreadData};
-use crate::wakeup::Wakeup;
+use crate::{
+    backend::ThreadData as BackendThreadData,
+    exec,
+    message::Message,
+    state::SharedStateExt,
+    termio::{Error, Termio, ThreadData},
+    wakeup::Wakeup,
+};
 
 /// The number of milliseconds to coalesce certain messages like resize for.
 /// Not all message types are coalesced.

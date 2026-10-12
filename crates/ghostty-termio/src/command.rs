@@ -14,7 +14,7 @@
 
 use std::{
     ffi::{CString, NulError, c_char},
-    os::fd::OwnedFd,
+    os::{fd::OwnedFd, unix::ffi::OsStrExt},
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
@@ -24,7 +24,6 @@ use rustix::{
     process::{self, WaitOptions},
     stdio,
 };
-use std::os::unix::ffi::OsStrExt;
 
 /// Function executed /in the child process/ after the fork, but before
 /// exec'ing the command. If the function returns `Some(code)`, the child
@@ -609,10 +608,9 @@ mod tests {
     use std::{
         fs::File,
         io::{Read, Seek, SeekFrom},
+        os::fd::AsRawFd,
         sync::Arc,
     };
-
-    use std::os::fd::AsRawFd;
 
     use ghostty_os::TempDir;
 

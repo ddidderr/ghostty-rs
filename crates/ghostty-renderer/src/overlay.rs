@@ -10,11 +10,15 @@
 //! then get the resulting image with [`Overlay::pending_image`] to upload to
 //! the GPU. This works in concert with [`crate::image::State`].
 
-use ghostty_terminal::page::{SemanticContent, SemanticPrompt};
-use ghostty_terminal::render::RenderState;
+use ghostty_terminal::{
+    page::{SemanticContent, SemanticPrompt},
+    render::RenderState,
+};
 
-use crate::image::{Pending, PixelFormat};
-use crate::size::{CellSize, Size};
+use crate::{
+    image::{Pending, PixelFormat},
+    size::{CellSize, Size},
+};
 
 /// The colors we use for overlays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -394,9 +398,10 @@ fn checked_i32(v: usize) -> Result<i32, Overflow> {
 
 #[cfg(test)]
 mod tests {
+    use ghostty_terminal::terminal::{Options, Terminal};
+
     use super::*;
     use crate::size::{Padding, ScreenSize};
-    use ghostty_terminal::terminal::{Options, Terminal};
 
     fn size(w: u32, h: u32) -> Size {
         Size {

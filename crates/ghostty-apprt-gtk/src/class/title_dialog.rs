@@ -1,13 +1,14 @@
 //! Port of apprt/gtk/class/title_dialog.zig (`GhosttyTitleDialog`).
 //! Properties `target`, `initial-value`; signal `set(title: string)`.
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use std::{
+    cell::{Cell, RefCell},
+    sync::OnceLock,
+};
+
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_os::i18n::tr;
-use gtk::glib;
-use gtk::glib::subclass::Signal;
-use std::cell::{Cell, RefCell};
-use std::sync::OnceLock;
+use gtk::{glib, glib::subclass::Signal};
 
 /// `GhosttyTitleDialogTarget`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, glib::Enum)]
@@ -29,13 +30,20 @@ impl Target {
 }
 
 mod imp {
+    use gtk::{glib, glib::prelude::*, subclass::prelude::*};
+
     use super::{
-        AdwAlertDialogImpl, AdwDialogImpl, Cell, ObjectImpl, ObjectSubclass, OnceLock, RefCell,
-        Signal, Target, WidgetImpl,
+        AdwAlertDialogImpl,
+        AdwDialogImpl,
+        Cell,
+        ObjectImpl,
+        ObjectSubclass,
+        OnceLock,
+        RefCell,
+        Signal,
+        Target,
+        WidgetImpl,
     };
-    use gtk::glib;
-    use gtk::glib::prelude::*;
-    use gtk::subclass::prelude::*;
 
     #[derive(Default, glib::Properties, gtk::CompositeTemplate)]
     #[properties(wrapper_type = super::TitleDialog)]

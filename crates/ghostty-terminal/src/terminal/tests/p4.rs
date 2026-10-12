@@ -1,6 +1,6 @@
+use ghostty_vt::{color::Rgb, sgr::Attribute as A};
+
 use super::*;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute as A;
 
 const RED: Rgb = Rgb {
     r: 0xFF,

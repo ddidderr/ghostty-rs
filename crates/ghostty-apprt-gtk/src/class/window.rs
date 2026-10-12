@@ -13,34 +13,51 @@
 //! [`Surface`] object (Zig took the `*CoreSurface` and used
 //! `rt_surface.gobj()`); the core surface is looked up via `Surface::core()`.
 
-use std::cell::{Cell, RefCell};
-use std::rc::Rc;
-use std::time::Duration;
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    time::Duration,
+};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
+use adw::{prelude::*, subclass::prelude::*};
 use ghostty_apprt::surface::NewSurfaceContext;
-use ghostty_config::command::Command as ConfigCommand;
-use ghostty_config::types_a::WindowSubtitle;
-use ghostty_config::types_b::{
-    GtkTabsLocation, GtkTitlebarStyle, GtkToolbarStyle, WindowDecoration, WindowNewTabPosition,
-    WindowShowTabBar, WindowTheme,
+use ghostty_config::{
+    command::Command as ConfigCommand,
+    types_a::WindowSubtitle,
+    types_b::{
+        GtkTabsLocation,
+        GtkTitlebarStyle,
+        GtkToolbarStyle,
+        WindowDecoration,
+        WindowNewTabPosition,
+        WindowShowTabBar,
+        WindowTheme,
+    },
 };
 use ghostty_input::binding::{Action as BindingAction, CloseTabMode};
 use ghostty_os::i18n::tr;
-use gtk::glib::{self, clone};
-use gtk::{CompositeTemplate, TemplateChild, gio};
+use gtk::{
+    CompositeTemplate,
+    TemplateChild,
+    gio,
+    glib::{self, clone},
+};
 
-use super::application::Application;
-use super::close_confirmation_dialog::{CloseConfirmationDialog, Target as CloseTarget};
-use super::command_palette::CommandPalette;
-use super::config::Config;
-use super::debug_warning::DebugWarning;
-use super::split_tree::{SplitTree, SurfaceTree, Tree};
-use super::surface::{Surface, SurfaceOverrides};
-use super::tab::Tab;
-use crate::winproto::{self, WindowHost};
-use crate::{adw_version, gtk_version};
+use super::{
+    application::Application,
+    close_confirmation_dialog::{CloseConfirmationDialog, Target as CloseTarget},
+    command_palette::CommandPalette,
+    config::Config,
+    debug_warning::DebugWarning,
+    split_tree::{SplitTree, SurfaceTree, Tree},
+    surface::{Surface, SurfaceOverrides},
+    tab::Tab,
+};
+use crate::{
+    adw_version,
+    gtk_version,
+    winproto::{self, WindowHost},
+};
 
 /// Which tab to select (Zig: `Window.SelectTab`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,15 +125,30 @@ impl WindowHost for Host {
 }
 
 mod imp {
+    use std::marker::PhantomData;
+
+    use adw::{prelude::*, subclass::prelude::*};
+
     use super::{
-        Cell, CommandPalette, CompositeTemplate, Config, DebugWarning, NewSurfaceContext, RefCell,
-        SplitTree, Surface, Tab, TabOverrides, TemplateChild, TitlebarStyle, Window as WindowObj,
-        WindowDecoration, glib, gtk_version,
+        Cell,
+        CommandPalette,
+        CompositeTemplate,
+        Config,
+        DebugWarning,
+        NewSurfaceContext,
+        RefCell,
+        SplitTree,
+        Surface,
+        Tab,
+        TabOverrides,
+        TemplateChild,
+        TitlebarStyle,
+        Window as WindowObj,
+        WindowDecoration,
+        glib,
+        gtk_version,
     };
     use crate::winproto;
-    use adw::prelude::*;
-    use adw::subclass::prelude::*;
-    use std::marker::PhantomData;
 
     #[derive(glib::Properties, CompositeTemplate)]
     #[properties(wrapper_type = WindowObj)]

@@ -5,9 +5,11 @@
 //! thread, any number of times; the waiter calls [`Wakeup::drain`] after
 //! `poll` reports the fd readable.
 
-use std::io;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
-use std::sync::Arc;
+use std::{
+    io,
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
+    sync::Arc,
+};
 
 use rustix::event::{EventfdFlags, eventfd};
 
@@ -74,8 +76,9 @@ impl Wakeup {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use rustix::event::{PollFd, PollFlags, poll};
+
+    use super::*;
 
     fn readable(w: &Wakeup) -> bool {
         let mut fds = [PollFd::from_borrowed_fd(w.as_fd(), PollFlags::IN)];

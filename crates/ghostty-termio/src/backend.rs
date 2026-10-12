@@ -6,10 +6,12 @@ use std::sync::Arc;
 use ghostty_renderer::size::{GridSize, ScreenSize};
 use ghostty_terminal::terminal::Terminal;
 
-use crate::exec::{self, Exec};
-use crate::sinks::SurfaceMailbox;
-use crate::state::SharedState;
-use crate::termio::Output;
+use crate::{
+    exec::{self, Exec},
+    sinks::SurfaceMailbox,
+    state::SharedState,
+    termio::Output,
+};
 
 /// The kinds of backends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -11,20 +11,24 @@
 //! time. A config change drops them anyway (`update_config` calls
 //! [`Surface::end_key_sequence`] and [`Surface::deactivate_all_key_tables`]).
 
-use ghostty_apprt::action::{Action as RtAction, KeySequence, KeyTable};
-use ghostty_apprt::runtime_api::{CoreError, InputEffect};
-use ghostty_input::binding::set::Value;
-use ghostty_input::binding::{Action as BindingAction, Flags, Scope, Set, Trigger, TriggerKey};
-use ghostty_input::key_encode;
-use ghostty_input::{Action as KeyAction, Key, KeyEvent, Mods};
+use ghostty_apprt::{
+    action::{Action as RtAction, KeySequence, KeyTable},
+    runtime_api::{CoreError, InputEffect},
+};
+use ghostty_input::{
+    Action as KeyAction,
+    Key,
+    KeyEvent,
+    Mods,
+    binding::{Action as BindingAction, Flags, Scope, Set, Trigger, TriggerKey, set::Value},
+    key_encode,
+};
 use ghostty_inspector as inspector;
 use ghostty_terminal::terminal::{MouseEvents, ScrollViewport, Terminal};
 use ghostty_termio::message::Message as IoMessage;
-use ghostty_vt::modes::Mode;
-use ghostty_vt::mouse_shape::MouseShape;
+use ghostty_vt::{modes::Mode, mouse_shape::MouseShape};
 
-use super::Surface;
-use super::config::DerivedConfig;
+use super::{Surface, config::DerivedConfig};
 
 /// The maximum number of key tables that can be active at any given time.
 /// `activate_key_table` calls after this are ignored.
@@ -1017,10 +1021,10 @@ impl Surface {
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
-    use super::*;
-    use ghostty_config::cli_args::ConfigField;
-    use ghostty_config::config::Config;
+    use ghostty_config::{cli_args::ConfigField, config::Config};
     use ghostty_terminal::terminal::Options;
+
+    use super::*;
 
     fn cfg_with(binds: &[&str]) -> DerivedConfig {
         let mut c = Config::default();

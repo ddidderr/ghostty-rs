@@ -1,8 +1,7 @@
+use ghostty_vt::{charsets::Slots, color::Rgb, sgr::Attribute};
+
 use super::*;
 use crate::page::{ContentTag, Wide};
-use ghostty_vt::charsets::Slots;
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute;
 
 /// Zig `for ("...") |c| try t.print(c)`.
 fn pr(t: &mut Terminal, s: &str) {

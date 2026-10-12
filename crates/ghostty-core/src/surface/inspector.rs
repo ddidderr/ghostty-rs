@@ -5,11 +5,8 @@
 use std::sync::Arc;
 
 use ghostty_apprt::runtime_api::CoreError;
-use ghostty_inspector::Shared as Inspector;
-use ghostty_inspector::imgui::Ui;
-use ghostty_inspector::widgets::surface::SurfaceInfo;
-use ghostty_renderer::message::Message as RendererMessage;
-use ghostty_renderer::state::InspectorHook;
+use ghostty_inspector::{Shared as Inspector, imgui::Ui, widgets::surface::SurfaceInfo};
+use ghostty_renderer::{message::Message as RendererMessage, state::InspectorHook};
 use ghostty_termio::message::Message as IoMessage;
 
 use super::Surface;

@@ -10,13 +10,18 @@
 
 use std::collections::HashMap;
 
-use crate::collection::{
-    AddOptions, Collection, Entry, GetFaceError, Index, PresentationMode, Special,
+use crate::{
+    Atlas,
+    CodepointMap,
+    Glyph,
+    Presentation,
+    SpriteFace,
+    Style,
+    collection::{AddOptions, Collection, Entry, GetFaceError, Index, PresentationMode, Special},
+    discovery::Discover,
+    face::{RenderOptions, freetype::RenderError as FaceRenderError},
+    sprite,
 };
-use crate::discovery::Discover;
-use crate::face::{RenderOptions, freetype::RenderError as FaceRenderError};
-use crate::sprite;
-use crate::{Atlas, CodepointMap, Glyph, Presentation, SpriteFace, Style};
 
 /// Packed array of booleans to indicate if a style is enabled or not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -449,9 +454,13 @@ impl CodepointResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collection::{LoadOptions, SizeAdjustment};
-    use crate::face::{DesiredSize, Options};
-    use crate::{Face, Library, embedded};
+    use crate::{
+        Face,
+        Library,
+        collection::{LoadOptions, SizeAdjustment},
+        embedded,
+        face::{DesiredSize, Options},
+    };
 
     fn add(c: &mut Collection, lib: &Library, data: &'static [u8], style: Style, pts: f32) {
         let size = if pts == 12.0 {

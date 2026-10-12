@@ -16,23 +16,31 @@ pub mod shaders;
 pub mod target;
 pub mod texture;
 
-use std::ffi::c_void;
-use std::sync::Arc;
+use std::{ffi::c_void, sync::Arc};
 
 use ghostty_font::atlas::{Atlas, Format as AtlasFormat};
 
-pub use self::buffer::Buffer;
-pub use self::frame::Frame;
-pub use self::gl::Gl;
 use self::gl::{
-    BufferTarget, BufferUsage, FramebufferTarget, InternalFormat, MagFilter, MinFilter,
-    PixelFormat, TextureTarget, Wrap,
+    BufferTarget,
+    BufferUsage,
+    FramebufferTarget,
+    InternalFormat,
+    MagFilter,
+    MinFilter,
+    PixelFormat,
+    TextureTarget,
+    Wrap,
 };
-pub use self::pipeline::Pipeline;
-pub use self::render_pass::RenderPass;
-pub use self::sampler::Sampler;
-pub use self::target::Target;
-pub use self::texture::Texture;
+pub use self::{
+    buffer::Buffer,
+    frame::Frame,
+    gl::Gl,
+    pipeline::Pipeline,
+    render_pass::RenderPass,
+    sampler::Sampler,
+    target::Target,
+    texture::Texture,
+};
 use crate::shadertoy;
 
 pub type GraphicsApi = OpenGL;

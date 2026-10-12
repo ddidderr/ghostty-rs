@@ -21,9 +21,11 @@ use std::collections::{BTreeMap, HashMap};
 use ghostty_vt::kitty::graphics_command::Delete;
 
 use super::graphics_image::{Image, LoadingImage, Rect};
-use crate::page_list::{Overflow, PageList, TrackedPin};
-use crate::point::{Coordinate, Point};
-use crate::size::CellCountInt;
+use crate::{
+    page_list::{Overflow, PageList, TrackedPin},
+    point::{Coordinate, Point},
+    size::CellCountInt,
+};
 
 /// The subset of terminal state that the storage needs to read.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

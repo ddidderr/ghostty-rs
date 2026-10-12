@@ -3,8 +3,17 @@
 use std::sync::OnceLock;
 
 use crate::binding::{
-    Action, CloseTabMode, CopyToClipboard, GotoWindow, InspectorMode, NavigateSearch,
-    SplitDirection, SplitFocusDirection, WriteScreen, WriteScreenAction, WriteScreenFormat,
+    Action,
+    CloseTabMode,
+    CopyToClipboard,
+    GotoWindow,
+    InspectorMode,
+    NavigateSearch,
+    SplitDirection,
+    SplitFocusDirection,
+    WriteScreen,
+    WriteScreenAction,
+    WriteScreenFormat,
 };
 
 /// A command is a named binding action that can be executed from

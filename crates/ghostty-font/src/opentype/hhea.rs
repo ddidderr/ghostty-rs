@@ -70,8 +70,7 @@ impl Hhea {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::embedded;
-    use crate::opentype::sfnt::Sfnt;
+    use crate::{embedded, opentype::sfnt::Sfnt};
 
     #[test]
     fn hhea() {

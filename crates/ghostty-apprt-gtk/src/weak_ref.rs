@@ -2,8 +2,7 @@
 //! already provides `glib::WeakRef<T>`; this wrapper keeps the Zig API
 //! (`set`/`get`/`empty`).
 
-use gtk::glib;
-use gtk::glib::prelude::*;
+use gtk::{glib, glib::prelude::*};
 
 /// A weak reference to a GObject of type `T`.
 #[derive(Debug, Default)]

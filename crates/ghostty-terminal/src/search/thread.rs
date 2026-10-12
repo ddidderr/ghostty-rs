@@ -13,19 +13,25 @@
 //! based refresh timer. The terminal and its mutex are combined into an
 //! `Arc<Mutex<Terminal>>`.
 
-use std::ops::DerefMut;
-use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::{
+    ops::DerefMut,
+    sync::{Arc, Mutex, PoisonError},
+    time::{Duration, Instant},
+};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError};
 
-use super::screen::{ScreenSearch, Select, TickError};
-use super::viewport::ViewportSearch;
-use crate::highlight::{Flattened, Untracked};
-use crate::page_list::{Chunk, Direction as ListDirection};
-use crate::point::{Coordinate, Point};
-use crate::screen_set::Key as ScreenKey;
-use crate::terminal::Terminal;
+use super::{
+    screen::{ScreenSearch, Select, TickError},
+    viewport::ViewportSearch,
+};
+use crate::{
+    highlight::{Flattened, Untracked},
+    page_list::{Chunk, Direction as ListDirection},
+    point::{Coordinate, Point},
+    screen_set::Key as ScreenKey,
+    terminal::Terminal,
+};
 
 // TODO: Some stuff that could be improved:
 // - pause the refresh timer when the terminal isn't focused
@@ -770,10 +776,10 @@ impl Search {
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_util::*;
-    use super::*;
-    use crate::point::Tag;
     use std::sync::mpsc;
+
+    use super::{super::test_util::*, *};
+    use crate::point::Tag;
 
     #[derive(Default)]
     struct TestUserData {

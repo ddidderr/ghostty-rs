@@ -1,5 +1,4 @@
-use std::io;
-use std::os::fd::OwnedFd;
+use std::{io, os::fd::OwnedFd};
 
 /// pipe() for POSIX. Sets CLOEXEC on the file descriptors.
 /// Returns `(read, write)`.
@@ -9,8 +8,9 @@ pub fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::io::{Read, Write};
+
+    use super::*;
 
     #[test]
     fn pipe_roundtrip_cloexec() {

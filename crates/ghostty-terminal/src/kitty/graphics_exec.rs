@@ -13,9 +13,9 @@
 
 use ghostty_vt::kitty::graphics_command::{Command, Control, Display, Quiet, Response};
 
-use super::graphics_image::{Error as ImageError, LoadingImage};
-use super::graphics_storage::{
-    Error as StorageError, ImageStorage, Location, Placement, TerminalInfo,
+use super::{
+    graphics_image::{Error as ImageError, LoadingImage},
+    graphics_storage::{Error as StorageError, ImageStorage, Location, Placement, TerminalInfo},
 };
 use crate::page_list::{PageList, Pin};
 
@@ -466,9 +466,10 @@ fn encode_error(r: &mut Response, err: ImageError) {
 
 #[cfg(test)]
 mod tests {
+    use ghostty_vt::kitty::graphics_command::{Parser, TransmissionFormat};
+
     use super::*;
     use crate::terminal::{Options, Terminal};
-    use ghostty_vt::kitty::graphics_command::{Parser, TransmissionFormat};
 
     fn run(h: &mut Terminal, s: &str) -> Option<Response> {
         let cmd = Parser::parse_string(s.as_bytes()).unwrap();

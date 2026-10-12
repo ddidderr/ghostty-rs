@@ -18,32 +18,41 @@
     clippy::should_implement_trait
 )]
 
-use std::cell::{Cell, OnceCell, Ref, RefCell, RefMut};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::{
+    cell::{Cell, OnceCell, Ref, RefCell, RefMut},
+    rc::Rc,
+    sync::Arc,
+};
 
-use adw::prelude::*;
-use adw::subclass::prelude::*;
-use ghostty_apprt::action::{self, Action, Target};
-use ghostty_apprt::structs::ColorScheme;
-use ghostty_config::cli_args::ConfigField;
-use ghostty_config::command::Command;
-use ghostty_config::config::Config as CoreConfig;
-use ghostty_config::types_b::{GtkSingleInstance, WindowTheme};
+use adw::{prelude::*, subclass::prelude::*};
+use ghostty_apprt::{
+    action::{self, Action, Target},
+    runtime_api::{AppMessage, CoreApp, RtApp, SurfaceId},
+    structs::ColorScheme,
+};
+use ghostty_config::{
+    cli_args::ConfigField,
+    command::Command,
+    config::Config as CoreConfig,
+    types_b::{GtkSingleInstance, WindowTheme},
+};
 use ghostty_input::binding::Action as BindingAction;
 use gtk::{gdk, gio, glib};
 
-use crate::class::close_confirmation_dialog::{self, CloseConfirmationDialog};
-use crate::class::config::Config;
-use crate::class::config_errors_dialog::ConfigErrorsDialog;
-use crate::class::global_shortcuts::GlobalShortcuts;
-use crate::class::split_tree::SplitTree;
-use crate::class::surface::{Size, Surface};
-use crate::class::tab::Tab;
-use crate::class::window::{SelectTab, TabOverrides, Window};
-use crate::css::CssProviders;
-use crate::winproto;
-use ghostty_apprt::runtime_api::{AppMessage, CoreApp, RtApp, SurfaceId};
+use crate::{
+    class::{
+        close_confirmation_dialog::{self, CloseConfirmationDialog},
+        config::Config,
+        config_errors_dialog::ConfigErrorsDialog,
+        global_shortcuts::GlobalShortcuts,
+        split_tree::SplitTree,
+        surface::{Size, Surface},
+        tab::Tab,
+        window::{SelectTab, TabOverrides, Window},
+    },
+    css::CssProviders,
+    winproto,
+};
 
 /// Errors from [`Application::run_loop`].
 #[derive(Debug, thiserror::Error)]
@@ -268,13 +277,25 @@ impl RtApp for AppRt {
 }
 
 mod imp {
-    use super::{
-        AppMessage, Cell, Config, ConfigErrorsDialog, CoreApp, CssProviders, GlobalShortcuts,
-        OnceCell, QuitTimer, Rc, RefCell, RtApp, glib, winproto,
-    };
-    use adw::prelude::*;
-    use adw::subclass::prelude::*;
+    use adw::{prelude::*, subclass::prelude::*};
     use gtk::gio;
+
+    use super::{
+        AppMessage,
+        Cell,
+        Config,
+        ConfigErrorsDialog,
+        CoreApp,
+        CssProviders,
+        GlobalShortcuts,
+        OnceCell,
+        QuitTimer,
+        Rc,
+        RefCell,
+        RtApp,
+        glib,
+        winproto,
+    };
 
     #[derive(Default)]
     pub struct Application {
@@ -826,7 +847,10 @@ impl Application {
 
     fn sync_action_accelerators(&self) {
         use ghostty_input::binding::action::{
-            CloseTabMode, CopyToClipboard, InspectorMode, SplitDirection,
+            CloseTabMode,
+            CopyToClipboard,
+            InspectorMode,
+            SplitDirection,
         };
         let a = |name: &str, action: BindingAction| self.sync_action_accelerator(name, &action);
         a("app.quit", BindingAction::Quit);

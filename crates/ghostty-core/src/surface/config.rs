@@ -6,14 +6,12 @@
 //! it so the fields keep their Zig names (`cfg.copy_on_select`, ...). The
 //! few values that are *computed* in Zig live as fields of this struct.
 
-use std::ops::Deref;
-use std::sync::Arc;
+use std::{ops::Deref, sync::Arc};
 
 use ghostty_config::config::Config;
 use ghostty_input::link::{Action as LinkAction, Highlight};
-use onig::Regex;
-
 use ghostty_renderer::size::Padding;
+use onig::Regex;
 
 /// A link with its compiled regex (Zig: `DerivedConfig.Link`).
 pub struct Link {

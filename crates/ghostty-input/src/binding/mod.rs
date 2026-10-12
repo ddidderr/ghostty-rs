@@ -4,19 +4,38 @@
 pub mod action;
 pub mod set;
 
-use std::collections::hash_map::DefaultHasher;
-use std::fmt;
-use std::hash::{Hash, Hasher};
+use std::{
+    collections::hash_map::DefaultHasher,
+    fmt,
+    hash::{Hash, Hasher},
+};
 
 pub use action::{
-    Action, ActionKey, AdjustSelection, CloseTabMode, CopyToClipboard, CrashThread, CursorKey,
-    GotoWindow, InspectorMode, NavigateSearch, Scope, SplitDirection, SplitFocusDirection,
-    SplitResizeDirection, SplitResizeParameter, WriteScreen, WriteScreenAction, WriteScreenFormat,
+    Action,
+    ActionKey,
+    AdjustSelection,
+    CloseTabMode,
+    CopyToClipboard,
+    CrashThread,
+    CursorKey,
+    GotoWindow,
+    InspectorMode,
+    NavigateSearch,
+    Scope,
+    SplitDirection,
+    SplitFocusDirection,
+    SplitResizeDirection,
+    SplitResizeParameter,
+    WriteScreen,
+    WriteScreenAction,
+    WriteScreenFormat,
 };
 pub use set::Set;
 
-use crate::key;
-use crate::key_mods::{self, Mods};
+use crate::{
+    key,
+    key_mods::{self, Mods},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum Error {

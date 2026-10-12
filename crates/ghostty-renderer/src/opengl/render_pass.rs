@@ -1,11 +1,11 @@
 //! Wrapper for handling render passes (`opengl/RenderPass.zig`).
-use super::gl::{
-    Attachment as GlAttachment, BufferTarget, FramebufferTarget, Gl, Primitive, RawBuffer,
+use super::{
+    gl::{Attachment as GlAttachment, BufferTarget, FramebufferTarget, Gl, Primitive, RawBuffer},
+    pipeline::Pipeline,
+    sampler::Sampler,
+    target::Target,
+    texture::Texture,
 };
-use super::pipeline::Pipeline;
-use super::sampler::Sampler;
-use super::target::Target;
-use super::texture::Texture;
 
 /// What a color attachment renders into.
 pub enum AttachmentTarget<'a> {

@@ -2,13 +2,12 @@
 
 use std::fmt::Write as _;
 
-use ghostty_input::binding::{Trigger, TriggerKey};
-use ghostty_input::key::{Action, Key as K};
-use ghostty_input::key_mods::{ModSide, Mods};
-use gtk::gdk;
-use gtk::gdk::prelude::DeviceExt;
-use gtk::glib::translate::IntoGlib;
-use gtk::prelude::*;
+use ghostty_input::{
+    binding::{Trigger, TriggerKey},
+    key::{Action, Key as K},
+    key_mods::{ModSide, Mods},
+};
+use gtk::{gdk, gdk::prelude::DeviceExt, glib::translate::IntoGlib, prelude::*};
 
 /// Name of a keyval (`gdk.keyvalName`).
 fn keyval_name(keyval: u32) -> Option<String> {

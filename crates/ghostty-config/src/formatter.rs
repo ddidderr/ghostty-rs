@@ -1,8 +1,9 @@
 //! Config formatting (port of `config/formatter.zig`). Output matches
 //! Ghostty's `+show-config`.
 
-use crate::cli_args::ConfigField;
 use std::fmt;
+
+use crate::cli_args::ConfigField;
 
 /// A single entry formatter for the given field name and writer.
 pub struct EntryFormatter<'a> {

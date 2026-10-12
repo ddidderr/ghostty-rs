@@ -5,8 +5,7 @@
 //! +vim-ftdetect|+vim-ftplugin|+vim-compiler|+terminfo|+mdgen-ghostty-1|
 //! +mdgen-ghostty-5`
 
-use std::io::Write;
-use std::process::ExitCode;
+use std::{io::Write, process::ExitCode};
 
 use ghostty_build_data::Mode;
 

@@ -84,9 +84,10 @@ pub fn style(state: &RenderState, opts: StyleOptions) -> Option<Style> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_terminal::terminal::{Options, ScrollViewport, Terminal};
     use ghostty_vt::modes::Mode;
+
+    use super::*;
 
     fn o(preedit: bool, focused: bool, blink_visible: bool) -> StyleOptions {
         StyleOptions {

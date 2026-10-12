@@ -14,8 +14,10 @@
 //!     that regions written INTO the atlas do not have to be square, only
 //!     the full atlas texture itself.
 
-use std::io::Write;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    io::Write,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 /// The format of the texture data being written into the Atlas. This must be
 /// uniform for all textures in the Atlas. If you have some textures with

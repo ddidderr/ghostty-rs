@@ -2,42 +2,78 @@
 //! `Search`, `searchCallback`, `dumpText`, `performBindingAction`,
 //! `closingAction`, `writeScreenFile`).
 
-use std::io::Write as _;
-use std::sync::Arc;
-use std::thread::JoinHandle;
+use std::{io::Write as _, sync::Arc, thread::JoinHandle};
 
-use ghostty_apprt::action::{
-    Action as RtAction, CloseTabMode as RtCloseTabMode, FloatWindow, Fullscreen,
-    GotoSplit as RtGotoSplit, GotoTab, GotoWindow as RtGotoWindow, Inspector as RtInspector,
-    KeyTable, MoveTab, OpenUrl, OpenUrlKind, PromptTitle, Readonly, ReloadConfig,
-    ResizeSplit as RtResizeSplit, ResizeSplitDirection, SecureInput, SetTitle,
-    SplitDirection as RtSplit, StartSearch, Target,
+use ghostty_apprt::{
+    action::{
+        Action as RtAction,
+        CloseTabMode as RtCloseTabMode,
+        FloatWindow,
+        Fullscreen,
+        GotoSplit as RtGotoSplit,
+        GotoTab,
+        GotoWindow as RtGotoWindow,
+        Inspector as RtInspector,
+        KeyTable,
+        MoveTab,
+        OpenUrl,
+        OpenUrlKind,
+        PromptTitle,
+        Readonly,
+        ReloadConfig,
+        ResizeSplit as RtResizeSplit,
+        ResizeSplitDirection,
+        SecureInput,
+        SetTitle,
+        SplitDirection as RtSplit,
+        StartSearch,
+        Target,
+    },
+    runtime_api::{CoreError, RtApp, SurfaceId},
+    structs::{Clipboard, ClipboardRequest},
+    surface::Message as SurfaceMessage,
 };
-use ghostty_apprt::runtime_api::{CoreError, RtApp, SurfaceId};
-use ghostty_apprt::structs::{Clipboard, ClipboardRequest};
-use ghostty_apprt::surface::Message as SurfaceMessage;
 use ghostty_config::types_a::NonNativeFullscreen;
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_input::binding::{
-    Action, AdjustSelection, CloseTabMode, CrashThread, InspectorMode, NavigateSearch, Scope,
-    SplitDirection, SplitFocusDirection, SplitResizeDirection, WriteScreen, WriteScreenAction,
+    Action,
+    AdjustSelection,
+    CloseTabMode,
+    CrashThread,
+    InspectorMode,
+    NavigateSearch,
+    Scope,
+    SplitDirection,
+    SplitFocusDirection,
+    SplitResizeDirection,
+    WriteScreen,
+    WriteScreenAction,
     WriteScreenFormat,
 };
-use ghostty_renderer::message::Message as RendererMessage;
-use ghostty_renderer::state::SharedState;
-use ghostty_renderer::thread::Handle as RendererHandle;
-use ghostty_terminal::formatter::{self, Content, Format, ScreenFormatter};
-use ghostty_terminal::point::Tag;
-use ghostty_terminal::screen::Scroll;
-use ghostty_terminal::search::screen::Select;
-use ghostty_terminal::search::thread::{
-    Event, Message as SearchMessage, Options as SearchOptions, TerminalLock, TerminalRef,
-    Thread as SearchThread,
+use ghostty_renderer::{
+    message::Message as RendererMessage,
+    state::SharedState,
+    thread::Handle as RendererHandle,
 };
-use ghostty_terminal::selection::{Adjustment, Order, Selection};
-use ghostty_terminal::terminal::{ScrollViewport, Terminal};
-use ghostty_termio::message::Message as IoMessage;
-use ghostty_termio::{SharedStateExt, TerminalGuard};
+use ghostty_terminal::{
+    formatter::{self, Content, Format, ScreenFormatter},
+    point::Tag,
+    screen::Scroll,
+    search::{
+        screen::Select,
+        thread::{
+            Event,
+            Message as SearchMessage,
+            Options as SearchOptions,
+            TerminalLock,
+            TerminalRef,
+            Thread as SearchThread,
+        },
+    },
+    selection::{Adjustment, Order, Selection},
+    terminal::{ScrollViewport, Terminal},
+};
+use ghostty_termio::{SharedStateExt, TerminalGuard, message::Message as IoMessage};
 
 use super::Surface;
 use crate::app::Mailbox as AppMailbox;
@@ -1172,8 +1208,9 @@ impl Surface {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ghostty_terminal::terminal::Options;
+
+    use super::*;
 
     fn term(cols: u16, rows: u16) -> Terminal {
         Terminal::new(Options::new(cols, rows)).unwrap()

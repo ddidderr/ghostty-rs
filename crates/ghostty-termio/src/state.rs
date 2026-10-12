@@ -5,8 +5,10 @@
 //! [`SharedState`]). This module only provides a convenience for termio:
 //! locking the state and borrowing just the [`Terminal`].
 
-use std::ops::{Deref, DerefMut};
-use std::sync::{MutexGuard, PoisonError};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{MutexGuard, PoisonError},
+};
 
 pub use ghostty_renderer::state::{SharedState, State};
 use ghostty_terminal::terminal::Terminal;

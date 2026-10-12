@@ -1,5 +1,3 @@
-use super::*;
-use crate::page::{ContentTag, SemanticContent, SemanticPrompt as RowPrompt};
 use ghostty_vt::{
     ansi::ProtectedMode,
     color::Rgb,
@@ -7,6 +5,9 @@ use ghostty_vt::{
     osc::semantic_prompt::{Action as PA, Command},
     sgr::{Attribute as A, Underline},
 };
+
+use super::*;
+use crate::page::{ContentTag, SemanticContent, SemanticPrompt as RowPrompt};
 
 fn pr(t: &mut Terminal, s: &str) {
     for c in s.chars() {

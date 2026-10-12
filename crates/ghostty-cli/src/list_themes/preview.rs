@@ -13,22 +13,32 @@
 //!     termina cannot parse); it starts as light
 //!     like the Zig code does, but `COLORFGBG` is used as a hint if set.
 
-use std::cell::RefCell;
-use std::fmt::Write as _;
-use std::io::Write;
+use std::{cell::RefCell, fmt::Write as _, io::Write};
 
-use ghostty_config::config::Config;
-use ghostty_config::types_a::TerminalColor;
-use ratatui::Frame;
-use ratatui::buffer::Buffer;
-use ratatui::crossterm::event::{
-    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+use ghostty_config::{config::Config, types_a::TerminalColor};
+use ratatui::{
+    Frame,
+    buffer::Buffer,
+    crossterm::event::{
+        Event,
+        KeyCode,
+        KeyEvent,
+        KeyEventKind,
+        KeyModifiers,
+        MouseButton,
+        MouseEvent,
+        MouseEventKind,
+    },
+    layout::{Position, Rect},
+    style::{Color, Modifier, Style},
 };
-use ratatui::layout::{Position, Rect};
-use ratatui::style::{Color, Modifier, Style};
 
 use super::{
-    ColorScheme, SMALL_LIST_THRESHOLD, ThemeListElement, absolute_path, should_include_theme,
+    ColorScheme,
+    SMALL_LIST_THRESHOLD,
+    ThemeListElement,
+    absolute_path,
+    should_include_theme,
 };
 use crate::error::Error;
 
@@ -1667,10 +1677,12 @@ pub fn preview(themes: Vec<ThemeListElement>, theme_filter: ColorScheme) -> Resu
 }
 
 fn run_loop(app: &mut Preview) -> Result<(), Error> {
-    use ratatui::Terminal as RatTerminal;
-    use ratatui::backend::CrosstermBackend;
-    use termina::escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode};
-    use termina::{PlatformTerminal, Terminal as _};
+    use ratatui::{Terminal as RatTerminal, backend::CrosstermBackend};
+    use termina::{
+        PlatformTerminal,
+        Terminal as _,
+        escape::csi::{Csi, DecPrivateMode, DecPrivateModeCode, Mode},
+    };
 
     let mut tty = PlatformTerminal::new()?;
     tty.enter_raw_mode()?;
@@ -1753,8 +1765,9 @@ fn draw_frame(app: &mut Preview, f: &mut Frame<'_>) -> Option<Position> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::*;
     use ghostty_config::theme::Location;
+
+    use super::*;
 
     fn make_themes(dir: &std::path::Path, names: &[(&str, &str)]) -> Vec<ThemeListElement> {
         names

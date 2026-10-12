@@ -17,42 +17,59 @@
 //! first (or run with `LD_PRELOAD=libgtk4-layer-shell.so`). Without it,
 //! `layer_shell::is_supported()` is false and the quick terminal is disabled.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
-
-use gdk4_wayland::WaylandDisplay;
-use gdk4_wayland::prelude::*;
-use gtk::gdk;
-use gtk::glib;
-use gtk::prelude::*;
-use gtk4_layer_shell::{self as layer_shell, LayerShell};
-use wayland_client::globals::{GlobalListContents, registry_queue_init};
-use wayland_client::protocol::wl_registry::WlRegistry;
-use wayland_client::protocol::wl_surface::WlSurface;
-use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
-use wayland_protocols::xdg::activation::v1::client::xdg_activation_token_v1::{
-    self, XdgActivationTokenV1,
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{
+        Arc,
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
-use wayland_protocols::xdg::activation::v1::client::xdg_activation_v1::XdgActivationV1;
-use wayland_protocols_plasma::blur::client::org_kde_kwin_blur::OrgKdeKwinBlur;
-use wayland_protocols_plasma::blur::client::org_kde_kwin_blur_manager::OrgKdeKwinBlurManager;
-use wayland_protocols_plasma::server_decoration::client::org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration;
-use wayland_protocols_plasma::server_decoration::client::org_kde_kwin_server_decoration_manager::{
-    self, OrgKdeKwinServerDecorationManager,
-};
-use wayland_protocols_plasma::slide::client::org_kde_kwin_slide::OrgKdeKwinSlide;
-use wayland_protocols_plasma::slide::client::org_kde_kwin_slide_manager::OrgKdeKwinSlideManager;
 
-use super::{Error, Result, WindowHost};
-use ghostty_config::config::Config;
-use ghostty_config::types_b::{
-    QuickTerminalDimensions, QuickTerminalKeyboardInteractivity, QuickTerminalLayer,
-    QuickTerminalPosition, WindowDecoration,
+use gdk4_wayland::{WaylandDisplay, prelude::*};
+use ghostty_config::{
+    config::Config,
+    types_b::{
+        QuickTerminalDimensions,
+        QuickTerminalKeyboardInteractivity,
+        QuickTerminalLayer,
+        QuickTerminalPosition,
+        WindowDecoration,
+    },
 };
 use ghostty_input::Mods;
+use gtk::{gdk, glib, prelude::*};
+use gtk4_layer_shell::{self as layer_shell, LayerShell};
+use wayland_client::{
+    Connection,
+    Dispatch,
+    EventQueue,
+    Proxy,
+    QueueHandle,
+    globals::{GlobalListContents, registry_queue_init},
+    protocol::{wl_registry::WlRegistry, wl_surface::WlSurface},
+};
+use wayland_protocols::xdg::activation::v1::client::{
+    xdg_activation_token_v1::{self, XdgActivationTokenV1},
+    xdg_activation_v1::XdgActivationV1,
+};
+use wayland_protocols_plasma::{
+    blur::client::{
+        org_kde_kwin_blur::OrgKdeKwinBlur,
+        org_kde_kwin_blur_manager::OrgKdeKwinBlurManager,
+    },
+    server_decoration::client::{
+        org_kde_kwin_server_decoration::OrgKdeKwinServerDecoration,
+        org_kde_kwin_server_decoration_manager::{self, OrgKdeKwinServerDecorationManager},
+    },
+    slide::client::{
+        org_kde_kwin_slide::OrgKdeKwinSlide,
+        org_kde_kwin_slide_manager::OrgKdeKwinSlideManager,
+    },
+};
+
+use super::{Error, Result, WindowHost};
 
 /// `org_kde_kwin_server_decoration_manager.mode` values.
 const DECO_NONE: u32 = 0;

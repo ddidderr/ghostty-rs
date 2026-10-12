@@ -6,8 +6,10 @@ use std::fmt::Write as _;
 
 mod common;
 use common::*;
-use ghostty_apprt::action::{Action, GotoSplit, SplitDirection};
-use ghostty_apprt::structs::Clipboard;
+use ghostty_apprt::{
+    action::{Action, GotoSplit, SplitDirection},
+    structs::Clipboard,
+};
 use ghostty_input::Key;
 
 #[test]

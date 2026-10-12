@@ -1,7 +1,7 @@
+use ghostty_vt::{color::Rgb, sgr::Attribute};
+
 use super::*;
 use crate::page::{Cell, Wide};
-use ghostty_vt::color::Rgb;
-use ghostty_vt::sgr::Attribute;
 
 fn c(t: &Terminal, x: u16, y: u32) -> Cell {
     cell_at(t, pt_screen(x, y))

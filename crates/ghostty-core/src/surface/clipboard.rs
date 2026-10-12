@@ -2,27 +2,30 @@
 //! `copySelectionToClipboards`, clipboard requests, paste, OSC 52 and
 //! desktop notifications).
 
-use std::hash::{Hash, Hasher};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::{
+    hash::{Hash, Hasher},
+    rc::Rc,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD;
-use ghostty_apprt::action::{Action as RtAction, DesktopNotification};
-use ghostty_apprt::runtime_api::ClipboardError;
-use ghostty_apprt::structs::{Clipboard, ClipboardRequest};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+use ghostty_apprt::{
+    action::{Action as RtAction, DesktopNotification},
+    runtime_api::ClipboardError,
+    structs::{Clipboard, ClipboardRequest},
+};
 use ghostty_config::types_b::ClipboardAccess;
-use ghostty_input::binding::CopyToClipboard;
-use ghostty_input::paste;
-use ghostty_terminal::formatter::{self, Format, ScreenFormatter};
-use ghostty_terminal::selection::Selection;
-use ghostty_terminal::terminal::Terminal;
+use ghostty_input::{binding::CopyToClipboard, paste};
+use ghostty_terminal::{
+    formatter::{self, Format, ScreenFormatter},
+    selection::Selection,
+    terminal::Terminal,
+};
 use ghostty_termio::message::Message as IoMessage;
 use ghostty_vt::modes::Mode;
 
-use super::Surface;
-use super::config::DerivedConfig;
+use super::{Surface, config::DerivedConfig};
 
 /// `input.paste.Options.fromTerminal`.
 #[must_use]

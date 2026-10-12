@@ -5,11 +5,9 @@
 //! the root binary before this is initialized, so what remains is: logging,
 //! signal setup, rlimits and the resources directory.
 
-use std::io::Write as _;
-use std::sync::OnceLock;
+use std::{io::Write as _, sync::OnceLock};
 
-use ghostty_os::file::Rlimit;
-use ghostty_os::resourcesdir::ResourcesDir;
+use ghostty_os::{file::Rlimit, resourcesdir::ResourcesDir};
 
 /// Where logging should go (Zig: `GlobalState.Logging`, a packed struct
 /// parsed from `GHOSTTY_LOG`).

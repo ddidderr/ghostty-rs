@@ -2,14 +2,18 @@
 //! Kitty graphics protocol unicode placeholder, virtual placement feature
 //! (`ZIG/src/terminal/kitty/graphics_unicode.zig`).
 
-use super::graphics_image::Image;
-use super::graphics_render::Placement as RenderPlacement;
-use super::graphics_storage::{ImageStorage, Location, PlacementKey};
-use crate::page::Cell;
-use crate::page_list::{CellSubset, Direction, PageList, Pin, RowIterator};
-use crate::point::Tag;
-use crate::size::CellCountInt;
-use crate::style::Color;
+use super::{
+    graphics_image::Image,
+    graphics_render::Placement as RenderPlacement,
+    graphics_storage::{ImageStorage, Location, PlacementKey},
+};
+use crate::{
+    page::Cell,
+    page_list::{CellSubset, Direction, PageList, Pin, RowIterator},
+    point::Tag,
+    size::CellCountInt,
+    style::Color,
+};
 
 /// Codepoint for the unicode placeholder character.
 pub const PLACEHOLDER: u32 = 0x10EEEE;
@@ -638,11 +642,13 @@ const DIACRITICS: &[u32] = &[
 
 #[cfg(test)]
 mod tests {
+    use ghostty_vt::{modes::Mode, sgr::Attribute};
+
     use super::*;
-    use crate::kitty::graphics_storage::Placement as StoragePlacement;
-    use crate::terminal::{Options, Terminal};
-    use ghostty_vt::modes::Mode;
-    use ghostty_vt::sgr::Attribute;
+    use crate::{
+        kitty::graphics_storage::Placement as StoragePlacement,
+        terminal::{Options, Terminal},
+    };
 
     fn term(cols: u16, rows: u16) -> Terminal {
         let mut t = Terminal::new(Options::new(cols, rows)).unwrap();

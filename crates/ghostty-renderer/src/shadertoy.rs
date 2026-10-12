@@ -8,14 +8,16 @@
 //! `docs/rewrite/notes/ghostty-renderer-R1.md` for the (small) source
 //! adaptations needed for naga's Vulkan-flavoured GLSL frontend.
 
-use crate::shadertoy_sampler;
-use std::io::Read;
-use std::path::Path;
+use std::{io::Read, path::Path};
 
 use bytemuck::{Pod, Zeroable};
-use naga::back::glsl as glsl_out;
-use naga::front::glsl as glsl_in;
-use naga::valid::{Capabilities, ModuleInfo, ValidationFlags, Validator};
+use naga::{
+    back::glsl as glsl_out,
+    front::glsl as glsl_in,
+    valid::{Capabilities, ModuleInfo, ValidationFlags, Validator},
+};
+
+use crate::shadertoy_sampler;
 
 /// The shadertoy prefix (declares the uniforms and the `main` entry point).
 pub const PREFIX: &str = include_str!("../shaders/shadertoy_prefix.glsl");
@@ -349,8 +351,9 @@ pub mod test_shaders {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use core::mem::{offset_of, size_of};
+
+    use super::*;
 
     #[test]
     fn spirv() {

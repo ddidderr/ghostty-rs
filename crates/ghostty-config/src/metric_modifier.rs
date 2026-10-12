@@ -3,9 +3,12 @@
 //! The font crate depends on this crate (not the other way around), so the
 //! modifier type used by the `adjust-*` config options lives here.
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::formatter::EntryFormatter;
 use std::fmt;
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    formatter::EntryFormatter,
+};
 
 /// A modifier to apply to a metrics value. The modifier value represents
 /// a delta, so percent is a percentage to change, not a percentage of.

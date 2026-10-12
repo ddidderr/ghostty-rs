@@ -1,8 +1,10 @@
 //! OSC 21, the Kitty Color Protocol (ZIG/src/terminal/osc/parsers/kitty_color.zig).
 
-use crate::color::Rgb;
-use crate::kitty::color::{Kind, OSC, Request};
-use crate::osc::{Command, Parser, State, Terminator};
+use crate::{
+    color::Rgb,
+    kitty::color::{Kind, OSC, Request},
+    osc::{Command, Parser, State, Terminator},
+};
 
 /// Parse OSC 21, the Kitty Color Protocol.
 pub fn parse(parser: &mut Parser, terminator_ch: Option<u8>) -> Option<Command> {

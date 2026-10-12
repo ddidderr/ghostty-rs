@@ -2,9 +2,12 @@
 //! string map. This isn't called "StringMap" because I find that sometimes
 //! leads to confusion that it _accepts_ a map such as JSON dict.
 
-use crate::cli_args::{ArgError, ConfigField};
-use crate::formatter::EntryFormatter;
 use std::fmt;
+
+use crate::{
+    cli_args::{ArgError, ConfigField},
+    formatter::EntryFormatter,
+};
 
 /// std.ascii.whitespace
 fn is_ascii_ws(c: char) -> bool {

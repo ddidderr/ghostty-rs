@@ -1,12 +1,20 @@
 //! PageList inspector (ZIG/src/inspector/widgets/pagelist.zig).
 
 use dear_imgui_rs::{
-    ComboBoxHeight, ComboBoxOptions, ItemHoveredFlags, MouseButton, StyleColor, TableFlags,
-    TreeNodeFlags, Ui,
+    ComboBoxHeight,
+    ComboBoxOptions,
+    ItemHoveredFlags,
+    MouseButton,
+    StyleColor,
+    TableFlags,
+    TreeNodeFlags,
+    Ui,
 };
-use ghostty_terminal::page_list::{PageList, Scroll, Scrollbar};
-use ghostty_terminal::point::{Coordinate, Point, Tag};
-use ghostty_terminal::style::DEFAULT_ID;
+use ghostty_terminal::{
+    page_list::{PageList, Scroll, Scrollbar},
+    point::{Coordinate, Point, Tag},
+    style::DEFAULT_ID,
+};
 
 use super::{help_marker, page, style};
 use crate::units::to_kibi_bytes;
