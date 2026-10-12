@@ -49,6 +49,16 @@ pub fn run(b: &mut dyn Benchmark, mode: RunMode) -> Result<RunResult> {
 
 fn run_steps(b: &mut dyn Benchmark, mode: RunMode) -> Result<RunResult> {
     let mut result = RunResult::default();
+
+    // On Darwin, emit an Instruments signpost interval around the run so the
+    // results are easy to find in Instruments (ends when dropped).
+    #[cfg(target_vendor = "apple")]
+    let _signpost = crate::signpost::Interval::begin(
+        c"com.mitchellh.ghostty",
+        c"ghostty",
+        (&raw const *b).cast::<()>() as usize,
+    );
+
     let start = Instant::now();
     loop {
         b.step()?;

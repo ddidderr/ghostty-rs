@@ -371,7 +371,118 @@ pub fn msl_from_compiled(compiled: &Compiled) -> Result<String, Error> {
 
     let (msl, _info) = msl_out::write_string(&module, &compiled.info, &options, &pipeline)
         .map_err(|e| fail(&e))?;
-    Ok(msl)
+    Ok(fix_uniform_array_strides(&module, msl))
+}
+
+/// A uniform-block member that is an array of scalars. std140 gives it a
+/// 16-byte element stride (what we upload and what spirv-cross emits padded
+/// types for), but naga's MSL writer ignores the array `stride` and emits a
+/// tightly packed `float[N]`.
+struct StridedArray {
+    member: String,
+    /// naga's MSL name of the array wrapper struct (`type_<handle index>`).
+    type_name: String,
+    /// MSL scalar element type.
+    scalar: &'static str,
+    len: u32,
+    /// Lanes of the padded element (stride / scalar size).
+    lanes: u32,
+}
+
+fn strided_uniform_arrays(module: &naga::Module) -> Vec<StridedArray> {
+    let mut out = Vec::new();
+    for (_, gv) in module.global_variables.iter() {
+        if gv.space != naga::AddressSpace::Uniform {
+            continue;
+        }
+        let naga::TypeInner::Struct { members, .. } = &module.types[gv.ty].inner else {
+            continue;
+        };
+        for m in members {
+            let naga::TypeInner::Array {
+                base,
+                size: naga::ArraySize::Constant(n),
+                stride,
+            } = &module.types[m.ty].inner
+            else {
+                continue;
+            };
+            let naga::TypeInner::Scalar(sc) = &module.types[*base].inner else {
+                continue;
+            };
+            let scalar = match (sc.kind, sc.width) {
+                (naga::ScalarKind::Float, 4) => "float",
+                (naga::ScalarKind::Sint, 4) => "int",
+                (naga::ScalarKind::Uint, 4) => "uint",
+                _ => continue,
+            };
+            let size = u32::from(sc.width);
+            if *stride <= size {
+                continue;
+            }
+            let (Some(name), true) = (m.name.clone(), stride % size == 0) else {
+                continue;
+            };
+            out.push(StridedArray {
+                member: name,
+                type_name: format!("type_{}", m.ty.index()),
+                scalar,
+                len: n.get(),
+                lanes: stride / size,
+            });
+        }
+    }
+    out
+}
+
+/// Make the MSL uniform block match the std140 layout we upload: scalar
+/// arrays become arrays of `vecN` (stride 16 for std140) and element reads
+/// take `.x`. The writer ignores array strides, so this is done on the text.
+fn fix_uniform_array_strides(module: &naga::Module, mut msl: String) -> String {
+    for a in strided_uniform_arrays(module) {
+        let wrapper = format!("{}_std140", a.type_name);
+        // 1. The block member uses the padded wrapper.
+        let decl = format!("    {} {};", a.type_name, a.member);
+        if !msl.contains(&decl) {
+            continue;
+        }
+        msl = msl.replace(&decl, &format!("    {wrapper} {};", a.member));
+        // 2. Define the wrapper before the struct that uses it.
+        let def = format!(
+            "struct {wrapper} {{\n    metal::vec<{}, {}> inner[{}];\n}};\n",
+            a.scalar, a.lanes, a.len
+        );
+        if let Some(at) = msl.find(&format!("\n    {wrapper} {};", a.member))
+            && let Some(start) = msl[..at].rfind("\nstruct ")
+        {
+            msl.insert_str(start + 1, &def);
+        }
+        // 3. Element reads: `<expr>.member.inner[idx]` -> `... [idx].x`.
+        let needle = format!(".{}.inner[", a.member);
+        let mut from = 0;
+        while let Some(rel) = msl[from..].find(&needle) {
+            let open = from + rel + needle.len() - 1;
+            let mut depth = 0usize;
+            let mut close = None;
+            for (k, ch) in msl[open..].char_indices() {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(open + k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { break };
+            msl.insert_str(close + 1, ".x");
+            from = close + 3;
+        }
+    }
+    msl
 }
 
 /// Convert a compiled shader to GLSL 430 core (`glslFromSpv`).
@@ -627,5 +738,125 @@ mod tests {
         assert_eq!(offset_of!(Uniforms, selection_background_color), 4464);
         assert_eq!(offset_of!(Uniforms, selection_foreground_color), 4480);
         assert_eq!(size_of::<Uniforms>(), 4496);
+    }
+
+    /// (size, align) of an MSL type as emitted by naga for the shadertoy
+    /// uniform block, resolving the wrapper structs defined in `msl`.
+    fn msl_size_align(msl: &str, ty: &str) -> (usize, usize) {
+        match ty {
+            "float" | "int" | "uint" => (4, 4),
+            "metal::packed_float3" => (12, 4),
+            "metal::float2" => (8, 8),
+            "metal::float3" | "metal::float4" => (16, 16),
+            _ => {
+                if let Some(rest) = ty.strip_prefix("metal::vec<") {
+                    let (scalar, n) = rest.trim_end_matches('>').split_once(", ").unwrap();
+                    let n: usize = n.parse().unwrap();
+                    assert!(matches!(scalar, "float" | "int" | "uint"));
+                    let n = if n == 3 { 4 } else { n };
+                    return (4 * n, 4 * n);
+                }
+                // A wrapper struct `struct <ty> { <elem> inner[N]; };`.
+                let head = format!("struct {ty} {{\n    ");
+                let at = msl.find(&head).unwrap_or_else(|| panic!("no struct {ty}"));
+                let body = &msl[at + head.len()..];
+                let line = &body[..body.find(';').unwrap()];
+                let (elem, count) = line.rsplit_once(" inner[").unwrap();
+                let count: usize = count.trim_end_matches(']').parse().unwrap();
+                let (es, ea) = msl_size_align(msl, elem);
+                (es * count, ea)
+            }
+        }
+    }
+
+    /// The `(offset, name)` of each member of `struct Globals` in `msl`,
+    /// skipping `char _padN[k]` fillers, plus the struct size.
+    fn msl_globals_layout(msl: &str) -> (Vec<(usize, String)>, usize) {
+        let at = msl.find("struct Globals {\n").unwrap();
+        let body = &msl[at + "struct Globals {\n".len()..];
+        let body = &body[..body.find("\n};").unwrap()];
+        let mut off = 0usize;
+        let mut max_align = 1;
+        let mut members = Vec::new();
+        for line in body.lines() {
+            let line = line.trim().trim_end_matches(';');
+            let (ty, name) = line.rsplit_once(' ').unwrap();
+            if ty == "char" {
+                let n: usize = name
+                    .split('[')
+                    .nth(1)
+                    .unwrap()
+                    .trim_end_matches(']')
+                    .parse()
+                    .unwrap();
+                off += n;
+                continue;
+            }
+            let (size, align) = msl_size_align(msl, ty);
+            off = off.next_multiple_of(align);
+            max_align = max_align.max(align);
+            members.push((off, name.to_owned()));
+            off += size;
+        }
+        (members, off.next_multiple_of(max_align))
+    }
+
+    #[test]
+    fn msl_uniform_block_matches_std140_upload_layout() {
+        use std::mem::offset_of as o;
+        // A shader that reads the scalar array so the accessor path is used.
+        let user = "void mainImage(out vec4 c, in vec2 p) { \
+            int i = int(p.x) & 3; c = vec4(iChannelTime[i], iChannelTime[2], iTime, iSampleRate); }";
+        let compiled = compile_shadertoy(user, None).unwrap();
+        let msl = msl_from_compiled(&compiled).unwrap();
+        let (members, size) = msl_globals_layout(&msl);
+
+        let expect = [
+            ("iResolution", o!(Uniforms, resolution)),
+            ("iTime", o!(Uniforms, time)),
+            ("iTimeDelta", o!(Uniforms, time_delta)),
+            ("iFrameRate", o!(Uniforms, frame_rate)),
+            ("iFrame", o!(Uniforms, frame)),
+            ("iChannelTime", o!(Uniforms, channel_time)),
+            ("iChannelResolution", o!(Uniforms, channel_resolution)),
+            ("iMouse", o!(Uniforms, mouse)),
+            ("iDate", o!(Uniforms, date)),
+            ("iSampleRate", o!(Uniforms, sample_rate)),
+            ("iCurrentCursor", o!(Uniforms, current_cursor)),
+            ("iPreviousCursor", o!(Uniforms, previous_cursor)),
+            ("iCurrentCursorColor", o!(Uniforms, current_cursor_color)),
+            ("iPreviousCursorColor", o!(Uniforms, previous_cursor_color)),
+            ("iCurrentCursorStyle", o!(Uniforms, current_cursor_style)),
+            ("iPreviousCursorStyle", o!(Uniforms, previous_cursor_style)),
+            ("iCursorVisible", o!(Uniforms, cursor_visible)),
+            ("iTimeCursorChange", o!(Uniforms, cursor_change_time)),
+            ("iTimeFocus", o!(Uniforms, time_focus)),
+            ("iFocus", o!(Uniforms, focus)),
+            ("iPalette", o!(Uniforms, palette)),
+            ("iBackgroundColor", o!(Uniforms, background_color)),
+            ("iForegroundColor", o!(Uniforms, foreground_color)),
+            ("iCursorColor", o!(Uniforms, cursor_color)),
+            ("iCursorText", o!(Uniforms, cursor_text)),
+            // Upstream quirk: the Zig struct (and so ours) has the selection
+            // colors swapped relative to the GLSL block; both are vec3 so the
+            // offsets agree.
+            (
+                "iSelectionForegroundColor",
+                o!(Uniforms, selection_background_color),
+            ),
+            (
+                "iSelectionBackgroundColor",
+                o!(Uniforms, selection_foreground_color),
+            ),
+        ];
+        assert_eq!(members.len(), expect.len(), "{msl}");
+        for ((off, name), (ename, eoff)) in members.iter().zip(expect) {
+            assert_eq!(name, ename);
+            assert_eq!(*off, eoff, "MSL offset of {name}\n{msl}");
+        }
+        assert_eq!(size, std::mem::size_of::<Uniforms>());
+        // Reads of the padded array take the first lane.
+        assert!(msl.contains(".iChannelTime.inner["), "{msl}");
+        assert!(msl.contains("].x"), "{msl}");
     }
 }

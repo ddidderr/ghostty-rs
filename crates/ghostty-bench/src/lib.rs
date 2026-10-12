@@ -10,5 +10,7 @@
 pub mod args;
 pub mod benches;
 pub mod benchmark;
+#[cfg(target_vendor = "apple")]
+pub mod signpost;
 mod simd_width;
 pub mod synthetic;

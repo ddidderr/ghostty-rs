@@ -22,3 +22,4 @@ pub mod style;
 pub mod tabstops;
 pub mod terminal;
 pub mod tmux;
+pub mod tripwire;

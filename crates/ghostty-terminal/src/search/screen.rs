@@ -30,6 +30,14 @@ use crate::{
     size::CellCountInt,
 };
 
+/// Failure points of [`ScreenSearch::reload_active`] (Zig: `reloadActive_tw`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReloadActivePoint {
+    HistoryAppendNew,
+    HistoryAppendExisting,
+}
+crate::tripwire_module!(reload_active_tw, ReloadActivePoint, Error);
+
 #[derive(Debug)]
 pub struct ScreenSearch {
     /// Identity of the screen being searched (its address). Only used to
@@ -568,6 +576,7 @@ impl ScreenSearch {
             if hl.chunks[0].node == history_node {
                 continue;
             }
+            reload_active_tw::check(ReloadActivePoint::HistoryAppendNew)?;
             results.push(hl);
         }
 
@@ -584,6 +593,7 @@ impl ScreenSearch {
         // Matches! Reverse our list then append all the remaining
         // history items that didn't start on our original node.
         results.reverse();
+        reload_active_tw::check(ReloadActivePoint::HistoryAppendExisting)?;
         results.append(&mut self.history_results);
         self.history_results = results;
 
@@ -1083,6 +1093,75 @@ mod tests {
             (0, 1),
             (3, 1),
         );
+        search.deinit(t.screen_mut());
+    }
+
+    /// Shared setup of the two `reload_active partial history cleanup` tests:
+    /// several "Fizz" matches in history, then more that move into history on
+    /// the next reload.
+    fn reload_failure_setup() -> (Terminal, ScreenSearch) {
+        let mut t = terminal_scrollback(10, 2, usize::MAX);
+        feed(&mut t, b"Fizz\r\nFizz\r\n");
+        while total_pages(&t) < 3 {
+            feed(&mut t, b"\r\n");
+        }
+        for _ in 0..t.screen().pages.rows {
+            feed(&mut t, b"\r\n");
+        }
+        feed(&mut t, b"Fizz.");
+
+        // Complete initial search
+        let mut search = ScreenSearch::new(t.screen_mut(), b"Fizz").unwrap();
+        search.search_all(t.screen_mut()).unwrap();
+
+        // Trigger reload by adding more content that changes the
+        // active/history boundary.
+        feed(&mut t, b"\r\nFizz\r\nFizz\r\n");
+        while total_pages(&t) < 4 {
+            feed(&mut t, b"\r\n");
+        }
+        for _ in 0..t.screen().pages.rows {
+            feed(&mut t, b"\r\n");
+        }
+        (t, search)
+    }
+
+    #[test]
+    fn reload_active_partial_history_cleanup_on_append_slice_error() {
+        use crate::tripwire::ResetMode;
+        let (mut t, mut search) = reload_failure_setup();
+        let before = search.history_results.len();
+
+        // Fail at the final append (after the loop completes). Nothing may be
+        // half-applied to the existing history results.
+        reload_active_tw::error_always(
+            ReloadActivePoint::HistoryAppendExisting,
+            Error::OutOfMemory,
+        );
+        // reload_active is called by select(), which triggers the error path.
+        assert_eq!(
+            Err(Error::OutOfMemory),
+            search.select(t.screen_mut(), Select::Next)
+        );
+        reload_active_tw::end(ResetMode::Reset).unwrap();
+        assert_eq!(before, search.history_results.len());
+        search.deinit(t.screen_mut());
+    }
+
+    #[test]
+    fn reload_active_partial_history_cleanup_on_loop_append_error() {
+        use crate::tripwire::ResetMode;
+        let (mut t, mut search) = reload_failure_setup();
+        let before = search.history_results.len();
+
+        // Fail after the first loop append succeeded.
+        reload_active_tw::error_after(ReloadActivePoint::HistoryAppendNew, Error::OutOfMemory, 1);
+        assert_eq!(
+            Err(Error::OutOfMemory),
+            search.select(t.screen_mut(), Select::Next)
+        );
+        reload_active_tw::end(ResetMode::Reset).unwrap();
+        assert_eq!(before, search.history_results.len());
         search.deinit(t.screen_mut());
     }
 

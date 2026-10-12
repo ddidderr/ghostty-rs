@@ -9,7 +9,7 @@ use std::{
 use ghostty_vt::osc::{Command, Parser};
 
 use crate::{
-    alloc::{Alloc, Allocator},
+    alloc::{Alloc, Allocator, CBlock, CByteStorage},
     result::GhosttyResult,
 };
 
@@ -28,9 +28,11 @@ pub struct OscParser {
 /// string payloads, as Zig's sentinel slices are) and stays valid until the
 /// next `ghostty_osc_end`/`ghostty_osc_reset`/`ghostty_osc_free`.
 pub struct OscCommand {
-    command: Command,
-    /// NUL-terminated window title (only for `ChangeWindowTitle`).
-    title_z: Vec<u8>,
+    /// `GhosttyOscCommandType` of the last command.
+    key: c_int,
+    /// NUL-terminated window title (only for `ChangeWindowTitle`), allocated
+    /// with the caller's allocator.
+    title_z: Option<CBlock>,
 }
 
 /// C: `GhosttyOscCommandData`
@@ -62,12 +64,18 @@ pub unsafe extern "C" fn ghostty_osc_new(
     let alloc = unsafe { Alloc::from_c(allocator) };
     // C-built parsers have an allocator (Zig: `.init(alloc)`), so commands
     // that need unbounded buffers (OSC 52, ...) are accepted.
+    // The parser's payload buffer (Zig's inline fixed buffer / allocating
+    // writer) lives in memory from the same allocator; if either allocation
+    // fails the caller gets OUT_OF_MEMORY.
+    let Some(storage) = CByteStorage::new(alloc, Parser::MAX_BUF) else {
+        return GhosttyResult::OutOfMemory;
+    };
     let Some(p) = alloc.create(OscParser {
         alloc,
-        parser: Parser::init(true),
+        parser: Parser::with_storage(Box::new(storage)),
         command: OscCommand {
-            command: Command::Invalid,
-            title_z: Vec::new(),
+            key: 0,
+            title_z: None,
         },
     }) else {
         return GhosttyResult::OutOfMemory;
@@ -124,12 +132,16 @@ pub unsafe extern "C" fn ghostty_osc_end(
         return std::ptr::null_mut();
     };
     let cmd = p.parser.end(Some(terminator)).unwrap_or(Command::Invalid);
-    p.command.title_z.clear();
+    p.command.title_z = None;
+    p.command.key = cmd.key() as c_int;
     if let Command::ChangeWindowTitle(t) = &cmd {
-        p.command.title_z.extend_from_slice(t);
-        p.command.title_z.push(0);
+        match CBlock::from_bytes_z(p.alloc, t) {
+            Some(b) => p.command.title_z = Some(b),
+            // The title cannot be materialized with the caller's allocator:
+            // report an invalid command rather than a dangling title.
+            None => p.command.key = Command::Invalid.key() as c_int,
+        }
     }
-    p.command.command = cmd;
     &raw mut p.command
 }
 
@@ -141,7 +153,7 @@ pub unsafe extern "C" fn ghostty_osc_end(
 pub unsafe extern "C" fn ghostty_osc_command_type(command: *mut OscCommand) -> c_int {
     // SAFETY: caller guarantees validity (or null).
     match unsafe { command.as_ref() } {
-        Some(c) => c.command.key() as c_int,
+        Some(c) => c.key,
         None => 0, // invalid
     }
 }
@@ -165,12 +177,11 @@ pub unsafe extern "C" fn ghostty_osc_command_data(
     };
     match data {
         OscCommandData::Invalid => false,
-        OscCommandData::ChangeWindowTitleStr => match &command.command {
-            Command::ChangeWindowTitle(_) if !out.is_null() => {
+        OscCommandData::ChangeWindowTitleStr => match &command.title_z {
+            Some(title) if !out.is_null() => {
                 // SAFETY: caller guarantees `out` is a `const char **`.
                 unsafe {
-                    out.cast::<*const u8>()
-                        .write_unaligned(command.title_z.as_ptr());
+                    out.cast::<*const u8>().write_unaligned(title.as_ptr());
                 }
                 true
             }

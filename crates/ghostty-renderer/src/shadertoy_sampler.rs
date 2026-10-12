@@ -18,9 +18,12 @@
 //!
 //! Limitations (documented, reported as compile errors by naga): a sampler
 //! argument must be a plain identifier (no ternaries or struct members),
-//! samplers cannot be stored in local variables/arrays/struct fields, and
-//! overloads of one function name must agree on which parameters are
-//! samplers.
+//! samplers cannot be stored in local variables/arrays/struct fields.
+//!
+//! Overloads are keyed by their full signature (the per-parameter sampler
+//! layout), not by name. At a call site the overload is chosen by arity and by
+//! which arguments are samplers (`iChannelN` or a sampler parameter of the
+//! enclosing function), which is what GLSL overload resolution would see.
 
 use std::collections::HashMap;
 
@@ -171,10 +174,11 @@ struct Def {
     samplers: Vec<Option<String>>,
 }
 
-struct FnInfo {
-    /// Per parameter: the sampler name, if the parameter is a `sampler2D`.
-    samplers: Vec<Option<String>>,
-}
+/// Overload signature: per parameter, whether it is a `sampler2D`.
+type SamplerLayout = Vec<bool>;
+
+/// The combined samplers the host provides.
+const GLOBAL_SAMPLERS: [&str; 4] = ["iChannel0", "iChannel1", "iChannel2", "iChannel3"];
 
 /// Rewrite the user's ShaderToy source. Returns the source unchanged if it
 /// needs no adaptation other than `texture2D(` -> `texture(`.
@@ -188,7 +192,7 @@ pub fn rewrite(src: &str) -> String {
         .collect();
 
     // Pass 1: find top-level functions with sampler2D parameters.
-    let mut funcs: HashMap<&str, FnInfo> = HashMap::new();
+    let mut funcs: HashMap<&str, Vec<SamplerLayout>> = HashMap::new();
     let mut defs: Vec<Def> = Vec::new();
     let mut k = 0;
     let mut brace = 0i32;
@@ -211,7 +215,6 @@ pub fn rewrite(src: &str) -> String {
                 if next == Some("{") || next == Some(";") {
                     let params = split_args(&toks, &sig, k + 3, close);
                     let mut samplers = Vec::new();
-                    let mut any = false;
                     for &(a, b) in &params {
                         let has = (a..b).any(|q| toks[sig[q]].text == "sampler2D");
                         if has {
@@ -220,7 +223,6 @@ pub fn rewrite(src: &str) -> String {
                                 .map(|q| &toks[sig[q]])
                                 .find(|t| t.kind == Kind::Ident && t.text != "sampler2D")
                                 .map(|t| t.text.to_owned());
-                            any |= name.is_some();
                             samplers.push(name);
                         } else {
                             samplers.push(None);
@@ -231,12 +233,12 @@ pub fn rewrite(src: &str) -> String {
                     } else {
                         None
                     };
-                    if any {
-                        funcs
-                            .entry(toks[sig[name_k]].text)
-                            .or_insert_with(|| FnInfo {
-                                samplers: samplers.clone(),
-                            });
+                    // Every overload is recorded (also the ones without
+                    // samplers) so call sites can tell them apart.
+                    let layout: SamplerLayout = samplers.iter().map(Option::is_some).collect();
+                    let list = funcs.entry(toks[sig[name_k]].text).or_default();
+                    if !list.contains(&layout) {
+                        list.push(layout);
                     }
                     defs.push(Def {
                         name_k,
@@ -293,18 +295,32 @@ pub fn rewrite(src: &str) -> String {
         if def_names.contains(&k) {
             continue;
         }
-        let Some(info) = funcs.get(t.text) else {
+        let Some(layouts) = funcs.get(t.text) else {
             continue;
         };
         let Some(close) = matching(&toks, &sig, k + 1) else {
             continue;
         };
         let args = split_args(&toks, &sig, k + 2, close);
-        for (ai, &(a, b)) in args.iter().enumerate() {
-            if info.samplers.get(ai).is_some_and(Option::is_some)
-                && b == a + 1
+        // Sampler parameters of the function this call is in.
+        let enclosing: Vec<&str> = defs
+            .iter()
+            .filter(|d| d.body.is_some_and(|(o, c)| o < k && k < c))
+            .flat_map(|d| d.samplers.iter().flatten().map(String::as_str))
+            .collect();
+        let is_sampler_arg = |&(a, b): &(usize, usize)| {
+            b == a + 1
                 && toks[sig[a]].kind == Kind::Ident
-            {
+                && (GLOBAL_SAMPLERS.contains(&toks[sig[a]].text)
+                    || enclosing.contains(&toks[sig[a]].text))
+        };
+        let actual: SamplerLayout = args.iter().map(is_sampler_arg).collect();
+        // Pick the overload with this arity and sampler positions.
+        if !layouts.contains(&actual) {
+            continue;
+        }
+        for (ai, &(a, _)) in args.iter().enumerate() {
+            if actual[ai] {
                 let n = toks[sig[a]].text;
                 repl.insert(sig[a], format!("{n}_tex, {n}_smp"));
             }
@@ -334,6 +350,35 @@ mod tests {
         assert!(out.contains("vec4 fetch(texture2D tex_tex, sampler tex_smp, vec2 uv)"));
         assert!(out.contains("texture(sampler2D(tex_tex, tex_smp), uv)"));
         assert!(out.contains("fetch(iChannel0_tex, iChannel0_smp, p)"));
+    }
+
+    #[test]
+    fn overloads_are_keyed_by_signature() {
+        let out = rewrite(
+            "vec4 f(sampler2D s, vec2 uv) { return texture(s, uv); }\n\
+             vec4 f(vec2 uv, sampler2D s) { return texture(s, uv); }\n\
+             vec4 f(vec2 uv, float x) { return vec4(uv, x, 1.0); }\n\
+             void mainImage(out vec4 c, in vec2 p) {\n\
+               c = f(iChannel0, p) + f(p, iChannel1) + f(p, 1.0);\n\
+             }",
+        );
+        assert!(out.contains("vec4 f(texture2D s_tex, sampler s_smp, vec2 uv)"));
+        assert!(out.contains("vec4 f(vec2 uv, texture2D s_tex, sampler s_smp)"));
+        assert!(out.contains("vec4 f(vec2 uv, float x)"));
+        assert!(out.contains("f(iChannel0_tex, iChannel0_smp, p)"));
+        assert!(out.contains("f(p, iChannel1_tex, iChannel1_smp)"));
+        assert!(out.contains("f(p, 1.0)"));
+    }
+
+    #[test]
+    fn overloads_through_sampler_parameters() {
+        let out = rewrite(
+            "float g(sampler2D t) { return texture(t, vec2(0.0)).x; }\n\
+             float g(float t) { return t; }\n\
+             float h(sampler2D u, float v) { return g(u) + g(v); }\n",
+        );
+        assert!(out.contains("g(u_tex, u_smp)"));
+        assert!(out.contains("+ g(v)"));
     }
 
     #[test]

@@ -351,6 +351,114 @@ enum Writer {
     Allocating,
 }
 
+/// The payload storage ran out of memory (the allocator refused to grow).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StorageFull;
+
+/// Allocator abstraction for the parser's payload buffer (Zig: the
+/// `Allocator` the parser was initialized with). The default storage is a
+/// `Vec<u8>` on the global allocator; the C API supplies storage that is
+/// allocated through the caller's `GhosttyAllocator`, so allocation limits and
+/// failures of that allocator govern the parser's memory like they do in Zig.
+///
+/// A failed `try_extend`/`try_reserve` invalidates the OSC being parsed
+/// (Zig: the writer's `error.WriteFailed` sets the state to invalid; a failed
+/// initial allocating-writer allocation falls back to the fixed buffer).
+pub trait ByteStorage: std::fmt::Debug + Send {
+    /// The bytes accumulated so far.
+    fn bytes(&self) -> &[u8];
+    /// Make room for `additional` more bytes.
+    fn try_reserve(&mut self, additional: usize) -> Result<(), StorageFull>;
+    /// Append bytes; on error nothing is appended.
+    fn try_extend(&mut self, bytes: &[u8]) -> Result<(), StorageFull>;
+    /// Drop the contents and release any memory acquired by growth (Zig
+    /// `reset` deinits the allocating writer).
+    fn reset(&mut self);
+    /// For `Parser: Clone`.
+    fn clone_box(&self) -> Box<dyn ByteStorage>;
+}
+
+impl ByteStorage for Vec<u8> {
+    fn bytes(&self) -> &[u8] {
+        self
+    }
+    fn try_reserve(&mut self, additional: usize) -> Result<(), StorageFull> {
+        Vec::try_reserve(self, additional).map_err(|_| StorageFull)
+    }
+    fn try_extend(&mut self, bytes: &[u8]) -> Result<(), StorageFull> {
+        Vec::try_reserve(self, bytes.len()).map_err(|_| StorageFull)?;
+        self.extend_from_slice(bytes);
+        Ok(())
+    }
+    fn reset(&mut self) {
+        self.clear();
+    }
+    fn clone_box(&self) -> Box<dyn ByteStorage> {
+        Box::new(self.clone())
+    }
+}
+
+impl Clone for Box<dyn ByteStorage> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+/// Payload buffer: a plain `Vec` (fast path) or custom allocator-backed
+/// storage.
+#[derive(Debug, Clone)]
+enum Buffer {
+    Vec(Vec<u8>),
+    Custom(Box<dyn ByteStorage>),
+}
+
+impl Buffer {
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Buffer::Vec(v) => v,
+            Buffer::Custom(c) => c.bytes(),
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.bytes().len()
+    }
+
+    #[inline]
+    fn try_extend(&mut self, b: &[u8]) -> Result<(), StorageFull> {
+        match self {
+            Buffer::Vec(v) => {
+                v.extend_from_slice(b);
+                Ok(())
+            }
+            Buffer::Custom(c) => c.try_extend(b),
+        }
+    }
+
+    fn try_reserve(&mut self, n: usize) -> Result<(), StorageFull> {
+        match self {
+            Buffer::Vec(v) => {
+                v.reserve(n);
+                Ok(())
+            }
+            Buffer::Custom(c) => c.try_reserve(n),
+        }
+    }
+
+    fn reset(&mut self) {
+        match self {
+            Buffer::Vec(v) => v.clear(),
+            Buffer::Custom(c) => c.reset(),
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.bytes().to_vec()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Parser {
     /// Whether an allocator is available, i.e. whether data longer than
@@ -363,7 +471,7 @@ pub struct Parser {
     pub state: State,
 
     /// Buffer for temporary storage of OSC data
-    buffer: Vec<u8>,
+    buffer: Buffer,
     writer: Writer,
 }
 
@@ -381,7 +489,18 @@ impl Parser {
         Parser {
             alloc,
             state: State::Start,
-            buffer: Vec::new(),
+            buffer: Buffer::Vec(Vec::new()),
+            writer: Writer::None,
+        }
+    }
+
+    /// Like [`Parser::init`] with an allocator-backed payload buffer
+    /// (`alloc` is true: an allocator is available).
+    pub fn with_storage(storage: Box<dyn ByteStorage>) -> Parser {
+        Parser {
+            alloc: true,
+            state: State::Start,
+            buffer: Buffer::Custom(storage),
             writer: Writer::None,
         }
     }
@@ -389,7 +508,7 @@ impl Parser {
     /// Reset the parser state.
     pub fn reset(&mut self) {
         self.state = State::Start;
-        self.buffer.clear();
+        self.buffer.reset();
         self.writer = Writer::None;
     }
 
@@ -420,6 +539,12 @@ impl Parser {
             self.write_to_fixed();
             return;
         }
+        // Zig: `Writer.Allocating.initCapacity(alloc, 2048) catch` falls back
+        // to the fixed buffer.
+        if self.buffer.try_reserve(Self::MAX_BUF).is_err() {
+            self.write_to_fixed();
+            return;
+        }
         self.writer = Writer::Allocating;
     }
 
@@ -438,7 +563,7 @@ impl Parser {
             self.state = State::Invalid;
             return None;
         }
-        Some(self.buffer.clone())
+        Some(self.buffer.to_vec())
     }
 
     /// Zig `writer.writeByte(0)` capacity check: when the fixed buffer is
@@ -460,12 +585,21 @@ impl Parser {
             self.state = State::Invalid;
             return None;
         }
-        Some(self.buffer.clone())
+        Some(self.buffer.to_vec())
     }
 
     /// Whether any payload writer has been set up (Zig `parser.writer != null`).
     pub fn has_writer(&self) -> bool {
         self.writer != Writer::None
+    }
+
+    /// Append to the buffer; an allocation failure invalidates the parser
+    /// (Zig: `error.WriteFailed` -> `.invalid`).
+    #[inline]
+    fn push_or_invalid(&mut self, bytes: &[u8]) {
+        if self.buffer.try_extend(bytes).is_err() {
+            self.state = State::Invalid;
+        }
     }
 
     #[inline]
@@ -477,10 +611,10 @@ impl Parser {
                     // Overflow: discard any further input.
                     self.state = State::Invalid;
                 } else {
-                    self.buffer.push(c);
+                    self.push_or_invalid(&[c]);
                 }
             }
-            Writer::Allocating => self.buffer.push(c),
+            Writer::Allocating => self.push_or_invalid(&[c]),
         }
     }
 
@@ -519,16 +653,16 @@ impl Parser {
                     bytes = rest;
                 }
                 Writer::Allocating => {
-                    self.buffer.extend_from_slice(bytes);
+                    self.push_or_invalid(bytes);
                     return;
                 }
                 Writer::Fixed => {
                     let room = Self::MAX_BUF.saturating_sub(self.buffer.len());
                     if bytes.len() <= room {
-                        self.buffer.extend_from_slice(bytes);
+                        self.push_or_invalid(bytes);
                     } else {
                         // Overflow: keep what fits, discard the rest.
-                        self.buffer.extend_from_slice(&bytes[..room]);
+                        self.push_or_invalid(&bytes[..room]);
                         self.state = State::Invalid;
                     }
                     return;
@@ -795,6 +929,56 @@ impl Parser {
 mod next_slice_tests {
     use super::*;
 
+    /// Storage that holds at most `cap` bytes (an allocator with a limit).
+    #[derive(Debug, Clone)]
+    struct Limited {
+        data: Vec<u8>,
+        cap: usize,
+    }
+    impl ByteStorage for Limited {
+        fn bytes(&self) -> &[u8] {
+            &self.data
+        }
+        fn try_reserve(&mut self, additional: usize) -> Result<(), StorageFull> {
+            if self.data.len() + additional > self.cap {
+                return Err(StorageFull);
+            }
+            Ok(())
+        }
+        fn try_extend(&mut self, bytes: &[u8]) -> Result<(), StorageFull> {
+            self.try_reserve(bytes.len())?;
+            self.data.extend_from_slice(bytes);
+            Ok(())
+        }
+        fn reset(&mut self) {
+            self.data.clear();
+        }
+        fn clone_box(&self) -> Box<dyn ByteStorage> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn storage_failure_invalidates_osc() {
+        let mut p = Parser::with_storage(Box::new(Limited {
+            data: Vec::new(),
+            cap: 8,
+        }));
+        for b in b"0;abcdefghijkl" {
+            p.next(*b);
+        }
+        assert_eq!(p.state, State::Invalid);
+        assert!(p.end(Some(0x07)).is_none());
+
+        // Within the limit it parses as usual.
+        p.reset();
+        for b in b"0;abc" {
+            p.next(*b);
+        }
+        let cmd = p.end(Some(0x07)).expect("command");
+        assert!(matches!(cmd, Command::ChangeWindowTitle(t) if t == b"abc"));
+    }
+
     #[test]
     fn next_slice_matches_next() {
         for alloc in [false, true] {
@@ -811,7 +995,7 @@ mod next_slice_tests {
                     b.next_slice(&input[..mid]);
                     b.next_slice(&input[mid..]);
                     assert_eq!(a.state, b.state);
-                    assert_eq!(a.buffer, b.buffer);
+                    assert_eq!(a.buffer.bytes(), b.buffer.bytes());
                     assert_eq!(a.writer, b.writer);
                 }
             }

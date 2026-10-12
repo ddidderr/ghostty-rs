@@ -11,6 +11,8 @@
 pub mod context;
 pub mod dir;
 pub mod envelope;
+#[cfg(target_os = "linux")]
+mod minidump;
 pub mod sentry;
 #[cfg(unix)]
 mod signal;

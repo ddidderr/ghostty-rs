@@ -353,6 +353,42 @@ impl LoadingImage {
         Ok(())
     }
 
+    /// The file name `debug_dump` writes (Zig `@tagName` spellings).
+    #[cfg(debug_assertions)]
+    #[must_use]
+    pub fn debug_dump_filename(&self) -> String {
+        let format = match self.image.format {
+            TransmissionFormat::Rgb => "rgb",
+            TransmissionFormat::Rgba => "rgba",
+            TransmissionFormat::Png => "png",
+            TransmissionFormat::GrayAlpha => "gray_alpha",
+            TransmissionFormat::Gray => "gray",
+        };
+        let compression = match self.image.compression {
+            TransmissionCompression::None => "none",
+            TransmissionCompression::ZlibDeflate => "zlib_deflate",
+        };
+        format!(
+            "image-{format}-{compression}-{}x{}-{}.data",
+            self.image.width, self.image.height, self.image.id
+        )
+    }
+
+    /// Debug function to write the data to a file in `dir`. This is useful
+    /// for capturing some test data for unit tests. Only exists in debug
+    /// builds (Zig: `@compileError("debugDump in non-debug")`).
+    #[cfg(debug_assertions)]
+    pub fn debug_dump_to(&self, dir: &std::path::Path) -> std::io::Result<()> {
+        std::fs::write(dir.join(self.debug_dump_filename()), &self.data)
+    }
+
+    /// Same as [`Self::debug_dump_to`] using the current working directory,
+    /// like Zig's `debugDump`.
+    #[cfg(debug_assertions)]
+    pub fn debug_dump(&self) -> std::io::Result<()> {
+        self.debug_dump_to(std::path::Path::new("."))
+    }
+
     /// Adds a chunk of data to the image. Use this if the image
     /// is coming in chunks (the "m" parameter in the protocol).
     pub fn add_data(&mut self, data: &[u8]) -> Result<(), Error> {
@@ -622,6 +658,37 @@ mod tests {
     use ghostty_vt::kitty::graphics_command::{Control, Transmission};
 
     use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn loading_image_debug_dump_writes_data() {
+        let mut li = LoadingImage {
+            image: Image {
+                id: 7,
+                width: 3,
+                height: 2,
+                format: TransmissionFormat::GrayAlpha,
+                compression: TransmissionCompression::ZlibDeflate,
+                ..Image::default()
+            },
+            data: vec![1, 2, 3, 4],
+            display: None,
+            quiet: Quiet::default(),
+        };
+        assert_eq!(
+            "image-gray_alpha-zlib_deflate-3x2-7.data",
+            li.debug_dump_filename()
+        );
+        let dir = std::env::temp_dir().join(format!("ghostty-dump-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        li.debug_dump_to(&dir).unwrap();
+        let got = std::fs::read(dir.join(li.debug_dump_filename())).unwrap();
+        assert_eq!(vec![1, 2, 3, 4], got);
+        li.image.format = TransmissionFormat::Png;
+        li.image.compression = TransmissionCompression::None;
+        assert_eq!("image-png-none-3x2-7.data", li.debug_dump_filename());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     const RGB_NONE_20X15: &[u8] =
         include_bytes!("testdata/image-rgb-none-20x15-2147483647-raw.data");

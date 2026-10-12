@@ -133,7 +133,7 @@ fn mkdir_p(path: &mut [u8], len: usize) {
 
 /// Write a crash report for `sig`. Returns without doing anything if the
 /// crash handler isn't active or another crash is being written.
-fn write_signal_report(name: &str, desc: &str) {
+fn write_signal_report(name: &str, desc: &str, info: *mut libc::siginfo_t, uc: *mut libc::c_void) {
     let Some(st) = sentry::state() else { return };
     if BUSY.swap(true, Ordering::Acquire) {
         return;
@@ -191,6 +191,30 @@ fn write_signal_report(name: &str, desc: &str) {
 
     // The directory must exist for writing to work.
     mkdir_p(&mut sc.path, st.dir.len());
+
+    // Preferred: an envelope with a minidump of the whole process, written by
+    // a forked helper that ptraces us (Linux only; see `minidump`).
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: `info`/`uc` are the pointers the kernel gave the handler.
+        let cc = unsafe { crate::minidump::crash_context(info, uc) };
+        let cap = crate::minidump::Capture {
+            path: &sc.path[..=o],
+            head: &sc.head[..head_len],
+            event: &sc.event[..ev_len],
+        };
+        if crate::minidump::capture(&cap, cc) {
+            write_all(
+                2,
+                b"warning(sentry): crash report with minidump written to disk path=",
+            );
+            write_all(2, &sc.path[..o]);
+            write_all(2, b"\n");
+            return;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = (info, uc);
     // SAFETY: path is NUL terminated.
     let fd = unsafe {
         libc::open(
@@ -212,9 +236,9 @@ fn write_signal_report(name: &str, desc: &str) {
     }
 }
 
-extern "C" fn handler(sig: libc::c_int, _info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+extern "C" fn handler(sig: libc::c_int, info: *mut libc::siginfo_t, ctx: *mut libc::c_void) {
     if let Some((_, name, desc)) = SIGNALS.iter().find(|(s, ..)| *s == sig) {
-        write_signal_report(name, desc);
+        write_signal_report(name, desc, info, ctx);
     }
     // Restore the default action and re-raise so the process dies with the
     // original signal (core dump, exit status) as if we were never here.

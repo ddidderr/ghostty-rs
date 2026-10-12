@@ -59,6 +59,13 @@ pub struct Tabstops {
     dynamic_stops: Vec<Unit>,
 }
 
+/// Failure points of [`Tabstops::resize`] (Zig: `resize_tw`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResizePoint {
+    DynamicAlloc,
+}
+crate::tripwire_module!(resize_tw, ResizePoint, TryReserveError);
+
 impl Default for Tabstops {
     fn default() -> Self {
         Self {
@@ -141,6 +148,7 @@ impl Tabstops {
         }
 
         // Allocate first so that failure leaves our state untouched.
+        resize_tw::check(ResizePoint::DynamicAlloc)?;
         let mut new: Vec<Unit> = Vec::new();
         new.try_reserve_exact(size)?;
         new.resize(size, 0);
@@ -175,6 +183,7 @@ impl Tabstops {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tripwire::ResetMode;
 
     #[test]
     fn tabstops_basic() {
@@ -238,7 +247,21 @@ mod tests {
         assert_eq!(9, count);
     }
 
-    // "Tabstops: resize alloc failure preserves state" is skipped: it uses
-    // Zig tripwire allocation failure injection. The Rust resize allocates
-    // before mutating, so a failure leaves `cols` unchanged by construction.
+    #[test]
+    fn tabstops_resize_alloc_failure_preserves_state() {
+        // If resize() fails during allocation, the original cols value is
+        // preserved (not corrupted).
+        let mut t = Tabstops::new(80, 8).unwrap();
+        let original_cols = t.cols;
+
+        // Trigger allocation failure when resizing beyond prealloc
+        let oom = Vec::<u8>::new().try_reserve(usize::MAX).unwrap_err();
+        resize_tw::error_always(ResizePoint::DynamicAlloc, oom.clone());
+        let result = t.resize(PREALLOC_COLUMNS * 2);
+        assert_eq!(Err(oom), result);
+        resize_tw::end(ResetMode::Reset).unwrap();
+
+        // cols should be unchanged after failed resize
+        assert_eq!(original_cols, t.cols);
+    }
 }

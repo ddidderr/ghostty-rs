@@ -196,6 +196,29 @@ pub struct PageList {
     pin_serial: u64,
     pause_checks: usize,
 }
+/// Failure points of [`PageList::init`] (Zig: `init_tw`). The Zig
+/// `init_memory_pool` point has no counterpart: Rust has no up-front memory
+/// pool, the slabs start empty and grow with the fallible reserves below.
+/// `viewport_pin` and `viewport_pin_track` are two allocations in Zig (pool
+/// create + set insert) that are one reserve in `track_pin` here; both points
+/// are checked before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitPoint {
+    InitPages,
+    ViewportPin,
+    ViewportPinTrack,
+}
+crate::tripwire_module!(init_tw, InitPoint, Error);
+
+/// Failure points of the page creation done by `init` (Zig: `initPages_tw`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InitPagesPoint {
+    Node,
+    BufStd,
+    BufNonStd,
+}
+crate::tripwire_module!(init_pages_tw, InitPagesPoint, Error);
+
 fn std_size() -> usize {
     Page::layout(page::STD_CAPACITY).total_size
 }
@@ -242,12 +265,15 @@ impl PageList {
             pin_serial: 0,
             pause_checks: 0,
         };
+        init_tw::check(InitPoint::InitPages)?;
         while s.total_rows < usize::from(rows) {
             s.grow()?;
         }
         let pin = s
             .get_top_left(Tag::Screen)
             .ok_or(Error::InvalidCoordinate)?;
+        init_tw::check(InitPoint::ViewportPin)?;
+        init_tw::check(InitPoint::ViewportPinTrack)?;
         s.viewport_pin = Some(s.track_pin(pin)?);
         Ok(s)
     }
@@ -269,6 +295,7 @@ impl PageList {
         if Page::layout(cap).total_size > u32::MAX as usize {
             return Err(Error::OutOfSpace);
         }
+        init_pages_tw::check(InitPagesPoint::Node)?;
         self.nodes.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
         let mut data = if let Some(mut p) = self.clean_pool.pop().filter(|p| p.capacity == cap) {
             p.size = page::Size {
@@ -281,6 +308,11 @@ impl PageList {
             p.reinit()?;
             p
         } else {
+            if Page::layout(cap).total_size <= std_size() {
+                init_pages_tw::check(InitPagesPoint::BufStd)?;
+            } else {
+                init_pages_tw::check(InitPagesPoint::BufNonStd)?;
+            }
             Page::init(cap)?
         };
         data.size.rows = 0;
@@ -2970,6 +3002,55 @@ mod tests {
         assert_scrollbar(&s, 0);
         // Keep a mutable binding to mirror construction/destruction ownership.
         s.clear_dirty();
+    }
+    #[test]
+    fn page_list_init_error() {
+        use crate::tripwire::ResetMode;
+        // Test every failure point in `init` and ensure we exit early
+        // without panicking or leaving the tripwire armed.
+        for tag in [
+            InitPoint::InitPages,
+            InitPoint::ViewportPin,
+            InitPoint::ViewportPinTrack,
+        ] {
+            init_tw::error_always(tag, Error::OutOfMemory);
+            assert_eq!(
+                Err(Error::OutOfMemory),
+                PageList::init(80, 24, None).map(drop)
+            );
+            init_tw::end(ResetMode::Reset).unwrap();
+        }
+
+        // init creates pages transitively, so check each failure there too.
+        let big = page::STD_CAPACITY.max_cols().unwrap() + 1;
+        for tag in [
+            InitPagesPoint::Node,
+            InitPagesPoint::BufStd,
+            InitPagesPoint::BufNonStd,
+        ] {
+            init_pages_tw::error_always(tag, Error::OutOfMemory);
+            let cols = if tag == InitPagesPoint::BufStd {
+                80
+            } else {
+                big
+            };
+            assert_eq!(
+                Err(Error::OutOfMemory),
+                PageList::init(cols, 24, None).map(drop)
+            );
+            init_pages_tw::end(ResetMode::Reset).unwrap();
+        }
+
+        // Non-standard pages: fail on the second one.
+        init_pages_tw::error_after(InitPagesPoint::BufNonStd, Error::OutOfMemory, 1);
+        assert_eq!(
+            Err(Error::OutOfMemory),
+            PageList::init(big, page::STD_CAPACITY.rows + 1, None).map(drop)
+        );
+        init_pages_tw::end(ResetMode::Reset).unwrap();
+
+        // And with nothing armed init still works.
+        PageList::init(80, 24, None).unwrap();
     }
     #[test]
     fn page_list_init_rows_across_two_pages() {
