@@ -1246,6 +1246,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostty-bench"
+version = "0.1.0"
+dependencies = [
+ "ghostty-terminal",
+ "ghostty-unicode",
+ "ghostty-vt",
+ "log",
+]
+
+[[package]]
 name = "ghostty-cli"
 version = "0.1.0"
 dependencies = [
@@ -1255,6 +1265,7 @@ dependencies = [
  "ghostty-font",
  "ghostty-input",
  "ghostty-os",
+ "ghostty-vt",
  "log",
  "ratatui",
  "tempfile",
@@ -1269,6 +1280,7 @@ dependencies = [
  "const_format",
  "ghostty-input",
  "ghostty-os",
+ "ghostty-terminal",
  "ghostty-vt",
  "log",
  "onig",
@@ -1339,6 +1351,7 @@ name = "ghostty-os"
 version = "0.1.0"
 dependencies = [
  "gettext-rs",
+ "ghostty-vt",
  "log",
  "nix 0.31.3",
  "rustix",

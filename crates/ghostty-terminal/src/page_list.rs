@@ -547,6 +547,19 @@ impl PageList {
         }
         Ok(())
     }
+    /// Mutable access to a tracked pin's location for hot paths that only
+    /// change `x` within the same row (cursor movement while printing).
+    /// Unlike [`PageList::set_tracked_pin`] this performs no node validation
+    /// and does not invalidate the cached viewport offset, so it must not be
+    /// used to move the pin to another row or node.
+    #[inline]
+    pub fn tracked_pin_x_mut(&mut self, h: TrackedPin) -> Option<&mut Pin> {
+        self.pins
+            .get_mut(h.index)
+            .filter(|s| s.generation == h.generation)?
+            .pin
+            .as_mut()
+    }
     /// Release a tracked handle. The internal viewport handle remains owned.
     pub fn untrack_pin(&mut self, h: TrackedPin) {
         if self.viewport_pin == Some(h) {

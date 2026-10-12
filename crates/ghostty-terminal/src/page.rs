@@ -515,6 +515,27 @@ impl From<AddError> for Error {
         }
     }
 }
+/// Hasher for cell-index keys: indices are already well distributed, so a
+/// single multiply replaces SipHash on the print path.
+#[derive(Debug, Default, Clone, Copy)]
+struct IndexHasher(u64);
+impl std::hash::Hasher for IndexHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(5) ^ u64::from(b)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+    #[inline]
+    fn write_usize(&mut self, n: usize) {
+        self.0 = (n as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    }
+}
+type IndexMap<V> = HashMap<usize, V, std::hash::BuildHasherDefault<IndexHasher>>;
 #[derive(Debug, Clone, Copy)]
 struct Allocation {
     start: usize,
@@ -522,43 +543,91 @@ struct Allocation {
 }
 #[derive(Debug, Clone)]
 struct ChunkAlloc {
-    used: Vec<bool>,
+    /// Bitmap of used chunks (bit set = used), 64 chunks per word.
+    used: Vec<u64>,
+    /// Total number of chunks.
+    chunks: usize,
+    /// Every word below this index is completely used.
+    first_free_word: usize,
     chunk: usize,
 }
 impl ChunkAlloc {
     fn new(layout: AllocLayout, chunk: usize) -> Result<Self, Error> {
         let mut used = Vec::new();
-        let count = layout.bitmap_count * 64;
-        used.try_reserve_exact(count)
+        used.try_reserve_exact(layout.bitmap_count)
             .map_err(|_| Error::OutOfMemory)?;
-        used.resize(count, false);
-        Ok(Self { used, chunk })
+        used.resize(layout.bitmap_count, 0);
+        Ok(Self {
+            used,
+            chunks: layout.bitmap_count * 64,
+            first_free_word: 0,
+            chunk,
+        })
     }
+    /// First-fit allocation of `bytes` (rounded up to whole chunks): the
+    /// lowest-addressed run of free chunks is used.
     fn alloc(&mut self, bytes: usize) -> Option<Allocation> {
         let n = bytes.div_ceil(self.chunk);
         if n == 0 {
             return Some(Allocation { start: 0, len: 0 });
         }
-        let mut run = 0;
-        for i in 0..self.used.len() {
-            if self.used[i] {
+        while self.first_free_word < self.used.len() && self.used[self.first_free_word] == u64::MAX
+        {
+            self.first_free_word += 1;
+        }
+        let mut run = 0usize;
+        let mut run_start = 0usize;
+        for w in self.first_free_word..self.used.len() {
+            let word = self.used[w];
+            if word == u64::MAX {
                 run = 0;
-            } else {
-                run += 1;
+                continue;
             }
-            if run == n {
-                let start = i + 1 - n;
-                self.used[start..=i].fill(true);
-                return Some(Allocation { start, len: n });
+            if word == 0 {
+                if run == 0 {
+                    run_start = w * 64;
+                }
+                run += 64;
+                if run >= n {
+                    return Some(self.take(run_start, n));
+                }
+                continue;
+            }
+            if n == 1 {
+                let b = word.trailing_ones() as usize;
+                return Some(self.take(w * 64 + b, 1));
+            }
+            for b in 0..64 {
+                if word >> b & 1 == 1 {
+                    run = 0;
+                } else {
+                    if run == 0 {
+                        run_start = w * 64 + b;
+                    }
+                    run += 1;
+                    if run == n {
+                        return Some(self.take(run_start, n));
+                    }
+                }
             }
         }
         None
     }
+    fn take(&mut self, start: usize, len: usize) -> Allocation {
+        for i in start..start + len {
+            self.used[i / 64] |= 1 << (i % 64);
+        }
+        Allocation { start, len }
+    }
     fn free(&mut self, a: Allocation) {
-        self.used[a.start..a.start + a.len].fill(false);
+        for i in a.start..a.start + a.len {
+            self.used[i / 64] &= !(1 << (i % 64));
+        }
+        self.first_free_word = self.first_free_word.min(a.start / 64);
     }
     fn reset(&mut self) {
-        self.used.fill(false);
+        self.used.fill(0);
+        self.first_free_word = 0;
     }
 }
 /// Page-owned rows, cells, and bounded auxiliary storage.
@@ -579,9 +648,9 @@ pub struct Page {
     /// Shared hyperlink values.
     pub hyperlink_set: hyperlink::Set,
     // Graphemes share a page arena; copying a cell never allocates a Vec.
-    grapheme_map: HashMap<usize, std::ops::Range<usize>>,
+    grapheme_map: IndexMap<std::ops::Range<usize>>,
     grapheme_data: Vec<u32>,
-    grapheme_allocations: HashMap<usize, Allocation>,
+    grapheme_allocations: IndexMap<Allocation>,
     grapheme_alloc: ChunkAlloc,
     hyperlink_map: hyperlink::Map,
     string_alloc: ChunkAlloc,
@@ -683,16 +752,16 @@ impl Page {
         cells.resize(count, Cell::default());
         let grapheme_alloc = ChunkAlloc::new(l.grapheme_alloc_layout, 16)?;
         let mut grapheme_data = Vec::new();
-        let codepoints = grapheme_alloc.used.len() * 4;
+        let codepoints = grapheme_alloc.chunks * 4;
         grapheme_data
             .try_reserve_exact(codepoints)
             .map_err(|_| Error::OutOfMemory)?;
         grapheme_data.resize(codepoints, 0);
-        let mut grapheme_map = HashMap::new();
+        let mut grapheme_map = IndexMap::default();
         grapheme_map
             .try_reserve(l.grapheme_map_layout.capacity)
             .map_err(|_| Error::OutOfMemory)?;
-        let mut grapheme_allocations = HashMap::new();
+        let mut grapheme_allocations = IndexMap::default();
         grapheme_allocations
             .try_reserve(l.grapheme_map_layout.capacity)
             .map_err(|_| Error::OutOfMemory)?;
@@ -1074,7 +1143,9 @@ impl Page {
         }
         let old = self.rows[y];
         let full = start == 0 && end == usize::from(self.size.cols) && !protect;
+        // Only needed when the row stays (possibly) styled, i.e. a partial clear.
         let styled = old.styled()
+            && !full
             && self
                 .get_cells(y)
                 .is_some_and(|cells| cells.iter().any(|c| c.has_styling()));
@@ -1087,6 +1158,15 @@ impl Page {
             self.rows[y].set_kitty_virtual_placeholder(false);
         }
         let base = self.rows[y].cells();
+
+        // Fast path: the row flags are a superset of what its cells carry, so
+        // with none of them set there is nothing to release per cell.
+        if !protect && !old.styled() && !old.grapheme() && !old.hyperlink() {
+            self.cells[base + start..base + end].fill(Cell::default());
+            self.rows[y].set_dirty(true);
+            return Ok(());
+        }
+
         for i in base + start..base + end {
             let c = self.cells[i];
             if protect && c.protected() {
@@ -1104,10 +1184,18 @@ impl Page {
             self.cells[i] = Cell::default();
         }
         if old.grapheme() {
-            self.update_row_grapheme_flag(y);
+            if full {
+                self.rows[y].set_grapheme(false);
+            } else {
+                self.update_row_grapheme_flag(y);
+            }
         }
         if old.hyperlink() {
-            self.update_row_hyperlink_flag(y);
+            if full {
+                self.rows[y].set_hyperlink(false);
+            } else {
+                self.update_row_hyperlink_flag(y);
+            }
         }
         if old.styled() {
             self.rows[y].set_styled(!full && styled);
@@ -1245,9 +1333,25 @@ impl Page {
         x: usize,
         y: usize,
     ) -> Result<(), Error> {
+        self.clear_cells(y, x, x + 1, false)?;
+        self.clone_cell_from_cleared(src, i, x, y)
+    }
+    /// Like [`Page::clone_cell_from`] but the destination cell must already
+    /// have been cleared (e.g. its whole row range was cleared up front).
+    fn clone_cell_from_cleared(
+        &mut self,
+        src: &Self,
+        i: usize,
+        x: usize,
+        y: usize,
+    ) -> Result<(), Error> {
         let cell = src.cells[i];
         let dst = self.cell_index(x, y)?;
-        self.clear_cells(y, x, x + 1, false)?;
+        // Plain cells (the vast majority) carry no managed memory.
+        if !cell.has_grapheme() && !cell.hyperlink() && !cell.has_styling() {
+            self.cells[dst] = cell;
+            return Ok(());
+        }
         self.cells[dst] = cell;
         self.cells[dst].set_style_id(0);
         self.cells[dst].set_hyperlink(false);
@@ -1379,9 +1483,17 @@ impl Page {
         let original_row = *self.get_row(dst_y).ok_or(Error::InvalidCoordinate)?;
         self.clear_cells(dst_y, dst_x, dst_x + len, false)?;
         if source_row.managed_memory() {
+            // Row metadata/cell indices were validated above (`get_row`).
+            let from = source_row.cells() + src_x;
+            let to = original_row.cells() + dst_x;
             for n in 0..len {
-                let i = src.cell_index(src_x + n, src_y)?;
-                self.clone_cell_from(src, i, dst_x + n, dst_y)?;
+                let cell = src.cells[from + n];
+                if !cell.has_grapheme() && !cell.hyperlink() && !cell.has_styling() {
+                    // Plain cell: no managed memory to copy.
+                    self.cells[to + n] = cell;
+                } else {
+                    self.clone_cell_from_cleared(src, from + n, dst_x + n, dst_y)?;
+                }
             }
         } else {
             let from = source_row.cells() + src_x;
@@ -1640,7 +1752,14 @@ impl Page {
     }
 }
 
-fn swap_map<T>(map: &mut HashMap<usize, T>, a: usize, b: usize) {
+#[cfg(not(any(debug_assertions, test)))]
+impl Page {
+    /// No-op in release builds (the integrity checks are debug-only).
+    #[inline(always)]
+    pub fn assert_integrity(&self) {}
+}
+
+fn swap_map<T, S: std::hash::BuildHasher>(map: &mut HashMap<usize, T, S>, a: usize, b: usize) {
     let av = map.remove(&a);
     let bv = map.remove(&b);
     if let Some(v) = av {
@@ -1653,6 +1772,53 @@ fn swap_map<T>(map: &mut HashMap<usize, T>, a: usize, b: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn chunk_alloc_matches_naive_first_fit() {
+        let mut fast = ChunkAlloc::new(
+            AllocLayout {
+                bitmap_count: 5,
+                ..AllocLayout::default()
+            },
+            16,
+        )
+        .unwrap();
+        let mut naive = vec![false; 5 * 64];
+        let mut live: Vec<Allocation> = Vec::new();
+        let mut seed = 0x1234_5678_9abc_def0u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for _ in 0..20_000 {
+            if rnd() % 3 != 0 || live.is_empty() {
+                let n = (rnd() % 70 + 1) as usize;
+                let expect = (|| {
+                    let mut run = 0;
+                    for (i, &used) in naive.iter().enumerate() {
+                        run = if used { 0 } else { run + 1 };
+                        if run == n {
+                            return Some(i + 1 - n);
+                        }
+                    }
+                    None
+                })();
+                let got = fast.alloc(n * 16);
+                assert_eq!(got.map(|a| a.start), expect);
+                if let Some(a) = got {
+                    naive[a.start..a.start + a.len].fill(true);
+                    live.push(a);
+                }
+            } else {
+                let i = (rnd() as usize) % live.len();
+                let a = live.swap_remove(i);
+                naive[a.start..a.start + a.len].fill(false);
+                fast.free(a);
+            }
+        }
+    }
+
     use crate::style::{Color, Flags};
     fn page() -> Page {
         Page::init(Capacity {

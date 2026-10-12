@@ -549,7 +549,6 @@ impl RenderState {
                 continue;
             }
 
-            row.cells.grapheme.resize_with(cols, Vec::new);
             row.cells.style.resize(cols, Style::default());
             for (x, page_cell) in page_cells.iter().enumerate() {
                 // Append assuming its a single-codepoint, styled cell
@@ -569,6 +568,11 @@ impl RenderState {
                         if let Ok(idx) = p.cell_index(x, usize::from(row_pin.y))
                             && let Some(g) = p.lookup_grapheme(idx)
                         {
+                            // Only rows that actually contain graphemes pay
+                            // for the per-cell vectors.
+                            if row.cells.grapheme.is_empty() {
+                                row.cells.grapheme.resize_with(cols, Vec::new);
+                            }
                             row.cells.grapheme[x].extend_from_slice(g);
                         }
                     }

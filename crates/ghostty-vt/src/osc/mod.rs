@@ -458,6 +458,7 @@ impl Parser {
         self.writer != Writer::None
     }
 
+    #[inline]
     fn write_byte(&mut self, c: u8) {
         match self.writer {
             Writer::None => unreachable!(),
@@ -474,13 +475,14 @@ impl Parser {
     }
 
     /// Consume the next character c and advance the parser state.
+    ///
+    /// The payload-accumulation fast path is inlined into callers; the
+    /// numeric-prefix state machine lives in [`Parser::next_state`].
+    #[inline]
     pub fn next(&mut self, c: u8) {
-        #[allow(clippy::enum_glob_use)]
-        use State::*;
-
         // If the state becomes invalid for any reason, just discard
         // any further input.
-        if self.state == Invalid {
+        if self.state == State::Invalid {
             return;
         }
 
@@ -490,6 +492,14 @@ impl Parser {
             self.write_byte(c);
             return;
         }
+
+        self.next_state(c);
+    }
+
+    #[inline(never)]
+    fn next_state(&mut self, c: u8) {
+        #[allow(clippy::enum_glob_use)]
+        use State::*;
 
         match self.state {
             // handled above, so should never be here

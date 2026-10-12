@@ -613,6 +613,12 @@ impl Terminal {
         // We have a printable character, save it
         self.previous_char = Some(c);
 
+        // Fast path: the overwhelmingly common case of printing a single-width
+        // character in the middle of a line onto a plain narrow cell.
+        if width == 1 && !self.modes.get(Mode::Insert) && self.print_fast(c, right_limit) {
+            return Ok(());
+        }
+
         // If we're soft-wrapping, then handle that first.
         if self.screen().cursor.pending_wrap && self.modes.get(Mode::Wraparound) {
             self.print_wrap()?;
@@ -691,6 +697,66 @@ impl Terminal {
         // Move the cursor
         self.screen_mut().cursor_right(1);
         Ok(())
+    }
+
+    /// Fast path of `print` for a single-width character that does not hit
+    /// the cursor's right limit. Performs exactly what the general path does
+    /// (mark dirty, write the cell, move right) with a single page lookup.
+    /// Returns `false` without touching anything if any precondition for the
+    /// shortcut does not hold; the caller then takes the general path.
+    #[inline]
+    fn print_fast(&mut self, c: u32, right_limit: size::CellCountInt) -> bool {
+        let scr = self.screens.active_mut();
+        if scr.cursor.pending_wrap
+            || scr.cursor.hyperlink_id != 0
+            || scr.charset.single_shift.is_some()
+            || c == KITTY_PLACEHOLDER
+            || usize::from(scr.cursor.x) + 1 >= usize::from(right_limit)
+        {
+            return false;
+        }
+        let set = scr.charset.charsets.get(scr.charset.gl);
+        if set != Charset::Utf8 && set != Charset::Ascii {
+            return false;
+        }
+
+        let style_id = scr.cursor.style_id;
+        let protected = scr.cursor.protected;
+        let semantic = scr.cursor.semantic_content;
+        let pin_handle = scr.cursor.page_pin;
+        let Some(pin) = scr.pages.tracked_pin(pin_handle) else {
+            return false;
+        };
+        let (x, y) = (usize::from(pin.x), usize::from(pin.y));
+        let page = scr.page_mut(pin.node);
+        let Ok(idx) = page.cell_index(x, y) else {
+            return false;
+        };
+        let old = page.cells[idx];
+        if old.wide() != Wide::Narrow
+            || old.has_grapheme()
+            || old.hyperlink()
+            || old.style_id() != style_id
+        {
+            return false;
+        }
+
+        // Same cell value as `print_cell` produces.
+        let mut new_cell = Cell::init(c);
+        new_cell.set_content_tag(ContentTag::Codepoint);
+        new_cell.set_style_id(style_id);
+        new_cell.set_wide(Wide::Narrow);
+        new_cell.set_protected(protected);
+        new_cell.set_semantic_content(semantic);
+        page.cells[idx] = new_cell;
+        page.rows[y].set_dirty(true);
+
+        // Move the cursor right (`Screen::cursor_right(1)`).
+        if let Some(p) = scr.pages.tracked_pin_x_mut(pin_handle) {
+            p.x += 1;
+        }
+        scr.cursor.x += 1;
+        true
     }
 
     /// The grapheme-clustering section of `print`. Returns `true` if the

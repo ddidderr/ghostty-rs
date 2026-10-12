@@ -301,9 +301,30 @@ impl Parser {
     /// Next consumes the next character c and returns the actions to execute.
     /// Up to 3 actions may need to be executed -- in order -- representing
     /// the state exit, transition, and entry actions.
+    #[inline]
     pub fn next(&mut self, c: u8) -> [Option<Action>; 3] {
         let effect = TABLE[c as usize][self.state as usize];
 
+        // Fast path: staying in the same state means there are no exit or
+        // entry actions, only the transition action.
+        if self.state == effect.state {
+            return match effect.action {
+                TransitionAction::Print => [None, Some(Action::Print(u32::from(c))), None],
+                TransitionAction::Execute => [None, Some(Action::Execute(c)), None],
+                action => [None, self.do_action(action, c), None],
+            };
+        }
+
+        self.next_state_change(c, effect)
+    }
+
+    /// The general path of [`Parser::next`] when the state changes.
+    #[inline(never)]
+    fn next_state_change(
+        &mut self,
+        c: u8,
+        effect: crate::parse_table::Transition,
+    ) -> [Option<Action>; 3] {
         let next_state = effect.state;
         let action = effect.action;
 
@@ -313,58 +334,49 @@ impl Parser {
         // 2. transition action
         // 3. entry action to new state
 
-        // Exit depends on current state
-        let exit = if self.state == next_state {
-            None
-        } else {
-            match self.state {
-                State::OscString => self.osc_parser.end(Some(c)).map(Action::OscDispatch),
-                State::DcsPassthrough => Some(Action::DcsUnhook),
-                State::SosPmApcString => Some(Action::ApcEnd),
-                _ => None,
-            }
-        };
+        // The actions are written straight into the result array: building
+        // the three `Option<Action>` values separately and then moving them
+        // into the array costs a store-forwarding stall per byte.
+        let mut out: [Option<Action>; 3] = [None, None, None];
 
-        let transition = self.do_action(action, c);
+        // Exit depends on current state (we always change state here).
+        match self.state {
+            State::OscString => out[0] = self.osc_parser.end(Some(c)).map(Action::OscDispatch),
+            State::DcsPassthrough => out[0] = Some(Action::DcsUnhook),
+            State::SosPmApcString => out[0] = Some(Action::ApcEnd),
+            _ => {}
+        }
+
+        out[1] = self.do_action(action, c);
 
         // Entry depends on new state
-        let entry = if self.state == next_state {
-            None
-        } else {
-            match next_state {
-                State::Escape | State::DcsEntry | State::CsiEntry => {
-                    self.clear();
-                    None
+        match next_state {
+            State::Escape | State::DcsEntry | State::CsiEntry => self.clear(),
+            State::OscString => self.osc_parser.reset(),
+            State::DcsPassthrough => 'dcs_hook: {
+                // Ignore too many parameters
+                if self.params_idx as usize >= MAX_PARAMS {
+                    break 'dcs_hook;
                 }
-                State::OscString => {
-                    self.osc_parser.reset();
-                    None
+                // Finalize parameters
+                if self.param_acc_idx > 0 {
+                    self.params[self.params_idx as usize] = self.param_acc;
+                    self.params_idx += 1;
                 }
-                State::DcsPassthrough => 'dcs_hook: {
-                    // Ignore too many parameters
-                    if self.params_idx as usize >= MAX_PARAMS {
-                        break 'dcs_hook None;
-                    }
-                    // Finalize parameters
-                    if self.param_acc_idx > 0 {
-                        self.params[self.params_idx as usize] = self.param_acc;
-                        self.params_idx += 1;
-                    }
-                    Some(Action::DcsHook(Dcs::new(
-                        &self.intermediates[..self.intermediates_idx as usize],
-                        &self.params[..self.params_idx as usize],
-                        c,
-                    )))
-                }
-                State::SosPmApcString => Some(Action::ApcStart),
-                _ => None,
+                out[2] = Some(Action::DcsHook(Dcs::new(
+                    &self.intermediates[..self.intermediates_idx as usize],
+                    &self.params[..self.params_idx as usize],
+                    c,
+                )));
             }
-        };
+            State::SosPmApcString => out[2] = Some(Action::ApcStart),
+            _ => {}
+        }
 
         // After generating the actions, we set our next state.
         self.state = next_state;
 
-        [exit, transition, entry]
+        out
     }
 
     #[inline]
@@ -378,7 +390,7 @@ impl Parser {
         self.intermediates_idx += 1;
     }
 
-    #[inline]
+    #[inline(always)]
     fn do_action(&mut self, action: TransitionAction, c: u8) -> Option<Action> {
         match action {
             TransitionAction::None | TransitionAction::Ignore => None,
@@ -445,8 +457,12 @@ impl Parser {
                     params_sep: self.params_sep,
                     final_: c,
                 };
-                csi.params_buf[..self.params_idx as usize]
-                    .copy_from_slice(&self.params[..self.params_idx as usize]);
+                // A fixed-size masked copy (vectorizes) instead of a
+                // variable-length `copy_from_slice`, which is a libc call.
+                let n = usize::from(self.params_idx);
+                for (i, (dst, src)) in csi.params_buf.iter_mut().zip(&self.params).enumerate() {
+                    *dst = if i < n { *src } else { 0 };
+                }
 
                 // We only allow colon or mixed separators for the 'm' command.
                 if c != b'm' && self.params_sep.count() > 0 {

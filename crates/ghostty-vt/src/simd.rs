@@ -34,12 +34,45 @@ fn utf8_byte_sequence_length(first: u8) -> Option<usize> {
     }
 }
 
-/// Decode `bytes` (exactly one sequence) strictly; `None` if ill-formed.
+/// Decode `bytes` (exactly one sequence whose length matches its leading
+/// byte) strictly; `None` if ill-formed (overlong, surrogate, out of range or
+/// a bad continuation byte). Equivalent to `std::str::from_utf8` on one char.
+#[inline]
 fn utf8_decode(bytes: &[u8]) -> Option<u32> {
-    std::str::from_utf8(bytes)
-        .ok()
-        .and_then(|s| s.chars().next())
-        .map(|c| c as u32)
+    #[inline]
+    fn cont(b: u8) -> bool {
+        b & 0xC0 == 0x80
+    }
+    match *bytes {
+        [b0] if b0 < 0x80 => Some(u32::from(b0)),
+        [b0 @ 0xC2..=0xDF, b1] if cont(b1) => {
+            Some((u32::from(b0 & 0x1F) << 6) | u32::from(b1 & 0x3F))
+        }
+        [b0 @ 0xE0..=0xEF, b1, b2] if cont(b1) && cont(b2) => {
+            let ok = match b0 {
+                0xE0 => b1 >= 0xA0,
+                0xED => b1 < 0xA0,
+                _ => true,
+            };
+            ok.then(|| {
+                (u32::from(b0 & 0x0F) << 12) | (u32::from(b1 & 0x3F) << 6) | u32::from(b2 & 0x3F)
+            })
+        }
+        [b0 @ 0xF0..=0xF4, b1, b2, b3] if cont(b1) && cont(b2) && cont(b3) => {
+            let ok = match b0 {
+                0xF0 => b1 >= 0x90,
+                0xF4 => b1 < 0x90,
+                _ => true,
+            };
+            ok.then(|| {
+                (u32::from(b0 & 0x07) << 18)
+                    | (u32::from(b1 & 0x3F) << 12)
+                    | (u32::from(b2 & 0x3F) << 6)
+                    | u32::from(b3 & 0x3F)
+            })
+        }
+        _ => None,
+    }
 }
 
 /// Decode UTF-8 from `input` into `output` until an ESC (0x1B) is found.
@@ -59,7 +92,17 @@ pub fn utf8_decode_until_control_seq(input: &[u8], output: &mut [u32]) -> Decode
     let mut decode_offset = 0;
     let mut decode_count = 0;
     while decode_offset < decode.len() {
+        // ASCII fast path: a run of single-byte sequences.
         let rem = &decode[decode_offset..];
+        if rem[0] < 0x80 {
+            let run = rem.iter().take_while(|&&b| b < 0x80).count();
+            for (o, &b) in output[decode_count..decode_count + run].iter_mut().zip(rem) {
+                *o = u32::from(b);
+            }
+            decode_count += run;
+            decode_offset += run;
+            continue;
+        }
         let Some(cp_len) = utf8_byte_sequence_length(rem[0]) else {
             break;
         };
@@ -92,6 +135,57 @@ pub fn utf8_decode_until_control_seq(input: &[u8], output: &mut [u32]) -> Decode
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn utf8_decode_matches_std() {
+        fn std_decode(bytes: &[u8]) -> Option<u32> {
+            std::str::from_utf8(bytes)
+                .ok()
+                .and_then(|s| s.chars().next())
+                .map(|c| c as u32)
+        }
+        for b0 in 0..=255u8 {
+            let Some(len) = utf8_byte_sequence_length(b0) else {
+                continue;
+            };
+            match len {
+                1 => assert_eq!(utf8_decode(&[b0]), std_decode(&[b0])),
+                2 => {
+                    for b1 in 0..=255u8 {
+                        assert_eq!(
+                            utf8_decode(&[b0, b1]),
+                            std_decode(&[b0, b1]),
+                            "{b0:x} {b1:x}"
+                        );
+                    }
+                }
+                3 => {
+                    for b1 in 0..=255u8 {
+                        for b2 in 0..=255u8 {
+                            assert_eq!(
+                                utf8_decode(&[b0, b1, b2]),
+                                std_decode(&[b0, b1, b2]),
+                                "{b0:x} {b1:x} {b2:x}"
+                            );
+                        }
+                    }
+                }
+                _ => {
+                    for b1 in 0..=255u8 {
+                        for b2 in [0x00, 0x7F, 0x80, 0xA0, 0xBF, 0xC0] {
+                            for b3 in [0x00, 0x7F, 0x80, 0xBF, 0xC0] {
+                                assert_eq!(
+                                    utf8_decode(&[b0, b1, b2, b3]),
+                                    std_decode(&[b0, b1, b2, b3]),
+                                    "{b0:x} {b1:x} {b2:x} {b3:x}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn index_of_basic() {
