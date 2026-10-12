@@ -18,6 +18,17 @@
 //!                                   # inspector window (PNG)
 //! inspector-click 100 20  # left click in the inspector (logical px)
 //! inspector-scroll 100 200 -3  # mouse wheel in the inspector
+//! mouse-move 100 50 [ctrl+shift]   # pointer motion (logical px)
+//! mouse-press 1 [mods]    # button 1/2/3 at the last position
+//! mouse-release 1 [mods]
+//! click 1 [mods]          # press+release; repeat quickly for multi-click
+//! drag 10 10 200 10 [mods]  # move, press left, move in steps, release
+//! scroll 0 -3             # wheel (dx dy, in ticks)
+//! resize 600 400         # set the window default size (logical px)
+//! clipboard-set a\nb       # set the GDK clipboard (\n and \\ escapes)
+//! window-screenshot /abs/out.png  # GTK render of the whole window (dialogs included)
+//! windows-dump            # log every toplevel window / dialog
+//! clipboard-dump          # log the GDK clipboard and primary text
 //! quit                    # quit the application
 //! ```
 //!
@@ -47,6 +58,17 @@ pub enum Step {
     InspectorScreenshot(String),
     InspectorClick(f64, f64),
     InspectorScroll(f64, f64, f64),
+    MouseMove(f64, f64, String),
+    MousePress(u32, String),
+    MouseRelease(u32, String),
+    Click(u32, String),
+    Drag(f64, f64, f64, f64, String),
+    Scroll(f64, f64),
+    ClipboardDump,
+    Resize(i32, i32),
+    ClipboardSet(String),
+    WindowsDump,
+    WindowScreenshot(String),
     Quit,
 }
 
@@ -90,6 +112,63 @@ pub fn parse(script: &str) -> Result<Vec<Step>, String> {
                     return Err(err("inspector-scroll needs x y dy"));
                 };
                 Step::InspectorScroll(x, y, dy)
+            }
+            "mouse-move" | "drag" => {
+                let n = if cmd == "drag" { 4 } else { 2 };
+                let w: Vec<&str> = rest.split_whitespace().collect();
+                if w.len() < n || w.len() > n + 1 {
+                    return Err(err(&format!("{cmd} needs {n} numbers [mods]")));
+                }
+                let v: Vec<f64> = w[..n]
+                    .iter()
+                    .map(|x| x.parse())
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| err("bad number"))?;
+                let mods = w.get(n).unwrap_or(&"").to_string();
+                if cmd == "drag" {
+                    Step::Drag(v[0], v[1], v[2], v[3], mods)
+                } else {
+                    Step::MouseMove(v[0], v[1], mods)
+                }
+            }
+            "mouse-press" | "mouse-release" | "click" => {
+                let w: Vec<&str> = rest.split_whitespace().collect();
+                let b = w
+                    .first()
+                    .and_then(|x| x.parse().ok())
+                    .ok_or_else(|| err("needs a button number"))?;
+                let mods = w.get(1).unwrap_or(&"").to_string();
+                match cmd {
+                    "mouse-press" => Step::MousePress(b, mods),
+                    "mouse-release" => Step::MouseRelease(b, mods),
+                    _ => Step::Click(b, mods),
+                }
+            }
+            "scroll" => {
+                let v: Vec<f64> = rest
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| err("scroll needs dx dy"))?;
+                let [dx, dy] = v[..] else {
+                    return Err(err("scroll needs dx dy"));
+                };
+                Step::Scroll(dx, dy)
+            }
+            "clipboard-dump" => Step::ClipboardDump,
+            "windows-dump" => Step::WindowsDump,
+            "window-screenshot" if !rest.is_empty() => Step::WindowScreenshot(rest.to_owned()),
+            "clipboard-set" => Step::ClipboardSet(rest.replace("\\n", "\n")),
+            "resize" => {
+                let v: Vec<i32> = rest
+                    .split_whitespace()
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| err("resize needs w h"))?;
+                let [w, h] = v[..] else {
+                    return Err(err("resize needs w h"));
+                };
+                Step::Resize(w, h)
             }
             "quit" => Step::Quit,
             _ => return Err(err(&format!("bad command {line:?}"))),
@@ -166,6 +245,7 @@ pub fn start(app: &Application) {
         app: app.clone(),
         steps,
         next: RefCell::new(0),
+        pos: std::cell::Cell::new((0.0, 0.0)),
     });
     // Wait for the first surface to be ready (realized, core initialized).
     glib::timeout_add_local(Duration::from_millis(100), move || {
@@ -182,6 +262,72 @@ struct Runner {
     app: Application,
     steps: Vec<Step>,
     next: RefCell<usize>,
+    /// Last pointer position (logical px).
+    pos: std::cell::Cell<(f64, f64)>,
+}
+
+/// Render the whole widget tree of `win` (GL area content may be blank, but
+/// dialogs and popovers are included) to a PNG.
+fn window_screenshot(win: &gtk::Window, path: &str) {
+    let (w, h) = (win.width(), win.height());
+    let paintable = gtk::WidgetPaintable::new(Some(win));
+    let snapshot = gtk::Snapshot::new();
+    paintable.snapshot(
+        snapshot.upcast_ref::<gdk::Snapshot>(),
+        f64::from(w),
+        f64::from(h),
+    );
+    let Some(node) = snapshot.to_node() else {
+        log::warn!("debug input: empty window snapshot");
+        return;
+    };
+    let Some(renderer) = win.native().and_then(|n| n.renderer()) else {
+        log::warn!("debug input: no renderer");
+        return;
+    };
+    let texture = renderer.render_texture(node, None);
+    match texture.save_to_png(path) {
+        Ok(()) => log::warn!("debug input: wrote window screenshot {path}"),
+        Err(err) => log::error!("debug input: window screenshot failed: {err}"),
+    }
+}
+
+fn dump_tree(w: &gtk::Widget, depth: usize) {
+    log::warn!(
+        "debug input: tree {:indent$}{} mapped={}",
+        "",
+        w.type_().name(),
+        w.is_mapped(),
+        indent = depth * 2
+    );
+    let mut c = w.first_child();
+    while let Some(child) = c {
+        dump_tree(&child, depth + 1);
+        c = child.next_sibling();
+    }
+}
+
+fn parse_mods(spec: &str) -> gdk::ModifierType {
+    let mut state = gdk::ModifierType::empty();
+    for m in spec.split('+').filter(|m| !m.is_empty()) {
+        state |= match m.to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => gdk::ModifierType::CONTROL_MASK,
+            "shift" => gdk::ModifierType::SHIFT_MASK,
+            "alt" => gdk::ModifierType::ALT_MASK,
+            "super" | "meta" => gdk::ModifierType::SUPER_MASK,
+            _ => gdk::ModifierType::empty(),
+        };
+    }
+    state
+}
+
+/// Modifier state GDK reports while a button is held.
+fn button_mask(button: u32) -> gdk::ModifierType {
+    match button {
+        1 => gdk::ModifierType::BUTTON1_MASK,
+        2 => gdk::ModifierType::BUTTON2_MASK,
+        _ => gdk::ModifierType::BUTTON3_MASK,
+    }
 }
 
 impl Runner {
@@ -214,6 +360,72 @@ impl Runner {
                     return;
                 }
                 Step::Key(spec) => self.key(&spec),
+                Step::MouseMove(x, y, m) => {
+                    self.pos.set((x, y));
+                    if let Some(s) = self.active_surface() {
+                        s.debug_mouse_move(x, y, parse_mods(&m));
+                    }
+                }
+                Step::MousePress(b, m) => self.button(true, b, &m),
+                Step::MouseRelease(b, m) => self.button(false, b, &m),
+                Step::Click(b, m) => {
+                    self.button(true, b, &m);
+                    self.button(false, b, &m);
+                }
+                Step::Drag(x1, y1, x2, y2, m) => {
+                    if let Some(s) = self.active_surface() {
+                        let mods = parse_mods(&m);
+                        self.pos.set((x1, y1));
+                        s.debug_mouse_move(x1, y1, mods);
+                        s.debug_mouse_button(true, 1, x1, y1, mods);
+                        for i in 1..=10 {
+                            let t = f64::from(i) / 10.0;
+                            let (x, y) = (x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+                            self.pos.set((x, y));
+                            s.debug_mouse_move(x, y, mods | gdk::ModifierType::BUTTON1_MASK);
+                        }
+                        s.debug_mouse_button(false, 1, x2, y2, mods);
+                    }
+                }
+                Step::Scroll(_dx, dy) => {
+                    if let Some(s) = self.active_surface() {
+                        s.debug_scroll(dy);
+                    }
+                }
+                Step::Resize(w, h) => {
+                    if let Some(win) = self.app.active_window() {
+                        win.set_default_size(w, h);
+                    }
+                }
+                Step::ClipboardSet(text) => {
+                    if let Some(d) = gdk::Display::default() {
+                        d.clipboard().set_text(&text);
+                    }
+                }
+                Step::WindowScreenshot(path) => {
+                    if let Some(win) = self.app.active_window() {
+                        window_screenshot(&win, &path);
+                    }
+                }
+                Step::WindowsDump => {
+                    if let Some(win) = self.app.active_window() {
+                        dump_tree(win.upcast_ref(), 0);
+                    }
+                    for w in gtk::Window::list_toplevels() {
+                        log::warn!(
+                            "debug input: toplevel {} title={:?} visible={}",
+                            w.type_().name(),
+                            w.downcast_ref::<gtk::Window>()
+                                .and_then(gtk::prelude::GtkWindowExt::title),
+                            w.is_visible()
+                        );
+                    }
+                }
+                Step::ClipboardDump => {
+                    if let Some(s) = self.active_surface() {
+                        s.debug_clipboard_dump();
+                    }
+                }
                 Step::Text(text) => match self.active_surface() {
                     Some(s) => s.debug_commit_text(&text),
                     None => log::warn!("debug input: no active surface"),
@@ -248,6 +460,18 @@ impl Runner {
                 },
             }
         }
+    }
+
+    fn button(&self, press: bool, button: u32, mods: &str) {
+        let Some(s) = self.active_surface() else {
+            return;
+        };
+        let (x, y) = self.pos.get();
+        let mut m = parse_mods(mods);
+        if !press {
+            m |= button_mask(button);
+        }
+        s.debug_mouse_button(press, button, x, y, m);
     }
 
     fn key(&self, spec: &str) {
@@ -300,5 +524,31 @@ mod tests {
         );
         assert!(parse("wait x").is_err());
         assert!(parse("bogus").is_err());
+    }
+
+    #[test]
+    fn parse_mouse_steps() {
+        let s = "mouse-move 1 2\nmouse-move 1.5 2 ctrl+shift\nmouse-press 1\nmouse-release 3 alt\nclick 2\ndrag 1 2 3 4\nscroll 0 -3\nresize 600 400\nclipboard-set a\\nb\nclipboard-dump\nwindows-dump\nwindow-screenshot /tmp/w.png\n";
+        assert_eq!(
+            parse(s).expect("valid script"),
+            vec![
+                Step::MouseMove(1.0, 2.0, String::new()),
+                Step::MouseMove(1.5, 2.0, "ctrl+shift".into()),
+                Step::MousePress(1, String::new()),
+                Step::MouseRelease(3, "alt".into()),
+                Step::Click(2, String::new()),
+                Step::Drag(1.0, 2.0, 3.0, 4.0, String::new()),
+                Step::Scroll(0.0, -3.0),
+                Step::Resize(600, 400),
+                Step::ClipboardSet("a\nb".into()),
+                Step::ClipboardDump,
+                Step::WindowsDump,
+                Step::WindowScreenshot("/tmp/w.png".into()),
+            ]
+        );
+        assert!(parse("mouse-move 1").is_err());
+        assert!(parse("drag 1 2 3").is_err());
+        assert!(parse("click x").is_err());
+        assert!(parse("scroll 1").is_err());
     }
 }

@@ -772,6 +772,236 @@ impl Surface {
         }
     }
 
+    // ---- mouse handlers shared by the GTK callbacks and the debug replay ----
+
+    fn mouse_down_impl(
+        &self,
+        button_raw: u32,
+        state: gdk::ModifierType,
+        x: f64,
+        y: f64,
+        assume_focus: bool,
+    ) {
+        let this = self;
+
+        // Bell stops ringing if any mouse button is pressed.
+        this.set_bell_ringing(false);
+
+        // Get our surface. If we don't have one, ignore this.
+        let imp = this.imp();
+        let Some(core_surface) = this.core() else {
+            return;
+        };
+
+        // If we don't have focus, grab it.
+        let had_focus = assume_focus || imp.gl_area.has_focus();
+        if !had_focus {
+            imp.gl_area.grab_focus();
+        }
+
+        // Report the event
+        let button = translate_mouse_button(button_raw);
+
+        // If this click is only transitioning split focus, suppress it so
+        // it doesn't get forwarded to the terminal as a mouse event.
+        if !had_focus && button == MouseButton::Left {
+            imp.suppress_left_mouse_release.set(true);
+            return;
+        }
+
+        if button == MouseButton::Middle && !imp.gtk_enable_primary_paste.get() {
+            return;
+        }
+
+        let consumed = {
+            let mods = gtk_key::translate_mods(state);
+            match core_surface.mouse_button_callback(MouseButtonState::Press, button, mods) {
+                Ok(c) => c,
+                Err(err) => {
+                    log::warn!("error in key callback err={err}");
+                    false
+                }
+            }
+        };
+
+        // If a right click isn't consumed, mouse_button_callback selects
+        // the hovered word and returns false. We can use this to handle
+        // the context menu opening under normal scenarios.
+        if !consumed && button == MouseButton::Right {
+            this.emit_by_name::<()>("menu", &[]);
+
+            let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
+            let popover = imp.context_menu.upcast_ref::<gtk::Popover>();
+            popover.set_pointing_to(Some(&rect));
+            popover.popup();
+        }
+    }
+
+    fn mouse_up_impl(&self, button_raw: u32, state: gdk::ModifierType, event: Option<&gdk::Event>) {
+        let this = self;
+
+        let imp = this.imp();
+        let Some(surface) = this.core() else { return };
+        let gtk_mods = state;
+        let button = translate_mouse_button(button_raw);
+
+        if button == MouseButton::Left && imp.suppress_left_mouse_release.get() {
+            imp.suppress_left_mouse_release.set(false);
+            return;
+        }
+
+        if button == MouseButton::Middle && !imp.gtk_enable_primary_paste.get() {
+            return;
+        }
+
+        let mods = gtk_key::translate_mods(gtk_mods);
+        let consumed = match surface.mouse_button_callback(MouseButtonState::Release, button, mods)
+        {
+            Ok(c) => c,
+            Err(err) => {
+                log::warn!("error in key callback err={err}");
+                return;
+            }
+        };
+
+        // Trigger the on-screen keyboard if we have no selection, and
+        // that the mouse event hasn't been intercepted by the callback.
+        //
+        // It's better to do this here rather than within the core
+        // callback since we have direct access to the underlying
+        // gdk.Event here.
+        if !consumed
+            && button == MouseButton::Left
+            && !surface.has_selection()
+            && !this.show_on_screen_keyboard_event(event)
+        {
+            log::warn!("failed to activate the on-screen keyboard");
+        }
+    }
+
+    fn mouse_motion_impl(&self, state: gdk::ModifierType, x: f64, y: f64) {
+        let this = self;
+        let imp = this.imp();
+
+        let (sx, sy) = this.scaled_coordinates(x, y);
+        let pos = CursorPos {
+            x: sx as f32,
+            y: sy as f32,
+        };
+
+        // There seem to be at least two cases where GTK issues a mouse
+        // motion event without the cursor actually moving:
+        // 1. GLArea is resized under the mouse. This has the unfortunate
+        //    side effect of causing focus to potentially change when
+        //    `focus-follows-mouse` is enabled.
+        // 2. The window title is updated. This can cause the mouse to
+        //    unhide incorrectly when hide-mouse-when-typing is enabled.
+        // To prevent incorrect behavior, we'll only grab focus and
+        // continue with callback logic if the cursor has actually moved.
+        let cur = imp.cursor_pos.get();
+        let is_cursor_still = (cur.x - pos.x).abs() < 1.0 && (cur.y - pos.y).abs() < 1.0;
+        if is_cursor_still {
+            return;
+        }
+
+        // If we don't have focus, and we want it, grab it.
+        let config = imp.config.borrow().clone();
+        if let Some(config) = config
+            && !imp.gl_area.has_focus()
+            && config.get().focus_follows_mouse
+        {
+            imp.gl_area.grab_focus();
+        }
+
+        // Our pos changed, update
+        imp.cursor_pos.set(pos);
+
+        // Notify the callback
+        if let Some(surface) = this.core() {
+            let mods = gtk_key::translate_mods(state);
+            if let Err(err) = surface.cursor_pos_callback(pos, Some(mods)) {
+                log::warn!("error in cursor pos callback err={err}");
+            }
+        }
+    }
+
+    fn scroll_vertical_impl(&self, x: f64, y: f64) -> bool {
+        let this = self;
+        let imp = this.imp();
+        let Some(surface) = this.core() else {
+            return false;
+        };
+
+        // Multiply precision scrolls by 10 to get a better response from
+        // touchpad scrolling
+        let precision = imp.precision_scroll.get();
+        let multiplier = if precision { 10.0 } else { 1.0 };
+        let scroll_mods = ghostty_input::ScrollMods {
+            precision,
+            ..ghostty_input::ScrollMods::default()
+        };
+
+        let (sx, sy) = this.scaled_coordinates(x, y);
+        // We invert because we apply natural scrolling to the values.
+        // This behavior has existed for years without Linux users
+        // complaining but I suspect we'll have to make this configurable
+        // in the future or read a system setting.
+        match surface.scroll_callback(-sx * multiplier, -sy * multiplier, scroll_mods) {
+            Ok(()) => true,
+            Err(err) => {
+                log::warn!("error in scroll callback err={err}");
+                false
+            }
+        }
+    }
+
+    /// Debug input replay: pointer motion (logical widget coordinates).
+    pub fn debug_mouse_move(&self, x: f64, y: f64, state: gdk::ModifierType) {
+        self.mouse_motion_impl(state, x, y);
+    }
+
+    /// Debug input replay: button press/release (1 left, 2 middle, 3 right).
+    pub fn debug_mouse_button(
+        &self,
+        press: bool,
+        button: u32,
+        x: f64,
+        y: f64,
+        state: gdk::ModifierType,
+    ) {
+        if press {
+            // The replayed window is usually not the compositor-focused one, so
+            // pretend the click did not need to transition focus.
+            self.mouse_down_impl(button, state, x, y, true);
+        } else {
+            self.mouse_up_impl(button, state, None);
+        }
+    }
+
+    /// Debug input replay: wheel scroll (vertical goes through the same
+    /// handler as the scroll controller; horizontal tab switching is skipped).
+    pub fn debug_scroll(&self, dy: f64) {
+        self.scroll_vertical_impl(0.0, dy);
+    }
+
+    /// Debug input replay: text of the GDK clipboard and primary selection.
+    pub fn debug_clipboard_dump(&self) {
+        log::warn!(
+            "debug input: context menu visible = {}",
+            self.imp().context_menu.is_visible()
+        );
+        let display = self.display();
+        for (name, cb) in [
+            ("clipboard", display.clipboard()),
+            ("primary", display.primary_clipboard()),
+        ] {
+            cb.read_text_async(gtk::gio::Cancellable::NONE, move |r| match r {
+                Ok(t) => log::warn!("debug input: {name} = {:?}", t.map(|s| s.to_string())),
+                Err(e) => log::warn!("debug input: {name} read failed: {e}"),
+            });
+        }
+    }
+
     /// Debug input replay: commit text as the input method would (the
     /// `commit` signal of the IM context), outside of any key event.
     pub fn debug_commit_text(&self, text: &str) {
@@ -3047,58 +3277,13 @@ mod imp {
             let Some(event) = gesture.current_event() else {
                 return;
             };
-
-            // Bell stops ringing if any mouse button is pressed.
-            this.set_bell_ringing(false);
-
-            // Get our surface. If we don't have one, ignore this.
-            let imp = this.imp();
-            let Some(core_surface) = this.core() else {
-                return;
-            };
-
-            // If we don't have focus, grab it.
-            let had_focus = imp.gl_area.has_focus();
-            if !had_focus {
-                imp.gl_area.grab_focus();
-            }
-
-            // Report the event
-            let button = translate_mouse_button(gesture.current_button());
-
-            // If this click is only transitioning split focus, suppress it so
-            // it doesn't get forwarded to the terminal as a mouse event.
-            if !had_focus && button == MouseButton::Left {
-                imp.suppress_left_mouse_release.set(true);
-                return;
-            }
-
-            if button == MouseButton::Middle && !imp.gtk_enable_primary_paste.get() {
-                return;
-            }
-
-            let consumed = {
-                let mods = gtk_key::translate_mods(event.modifier_state());
-                match core_surface.mouse_button_callback(MouseButtonState::Press, button, mods) {
-                    Ok(c) => c,
-                    Err(err) => {
-                        log::warn!("error in key callback err={err}");
-                        false
-                    }
-                }
-            };
-
-            // If a right click isn't consumed, mouse_button_callback selects
-            // the hovered word and returns false. We can use this to handle
-            // the context menu opening under normal scenarios.
-            if !consumed && button == MouseButton::Right {
-                this.emit_by_name::<()>("menu", &[]);
-
-                let rect = gdk::Rectangle::new(x as i32, y as i32, 1, 1);
-                let popover = imp.context_menu.upcast_ref::<gtk::Popover>();
-                popover.set_pointing_to(Some(&rect));
-                popover.popup();
-            }
+            this.mouse_down_impl(
+                gesture.current_button(),
+                event.modifier_state(),
+                x,
+                y,
+                false,
+            );
         }
 
         #[template_callback]
@@ -3112,44 +3297,11 @@ mod imp {
             let Some(event) = gesture.current_event() else {
                 return;
             };
-
-            let imp = this.imp();
-            let Some(surface) = this.core() else { return };
-            let gtk_mods = event.modifier_state();
-            let button = translate_mouse_button(gesture.current_button());
-
-            if button == MouseButton::Left && imp.suppress_left_mouse_release.get() {
-                imp.suppress_left_mouse_release.set(false);
-                return;
-            }
-
-            if button == MouseButton::Middle && !imp.gtk_enable_primary_paste.get() {
-                return;
-            }
-
-            let mods = gtk_key::translate_mods(gtk_mods);
-            let consumed =
-                match surface.mouse_button_callback(MouseButtonState::Release, button, mods) {
-                    Ok(c) => c,
-                    Err(err) => {
-                        log::warn!("error in key callback err={err}");
-                        return;
-                    }
-                };
-
-            // Trigger the on-screen keyboard if we have no selection, and
-            // that the mouse event hasn't been intercepted by the callback.
-            //
-            // It's better to do this here rather than within the core
-            // callback since we have direct access to the underlying
-            // gdk.Event here.
-            if !consumed
-                && button == MouseButton::Left
-                && !surface.has_selection()
-                && !this.show_on_screen_keyboard_event(Some(&event))
-            {
-                log::warn!("failed to activate the on-screen keyboard");
-            }
+            this.mouse_up_impl(
+                gesture.current_button(),
+                event.modifier_state(),
+                Some(&event),
+            );
         }
 
         #[template_callback]
@@ -3157,48 +3309,7 @@ mod imp {
             let Some(event) = ec.current_event() else {
                 return;
             };
-            let imp = this.imp();
-
-            let (sx, sy) = this.scaled_coordinates(x, y);
-            let pos = CursorPos {
-                x: sx as f32,
-                y: sy as f32,
-            };
-
-            // There seem to be at least two cases where GTK issues a mouse
-            // motion event without the cursor actually moving:
-            // 1. GLArea is resized under the mouse. This has the unfortunate
-            //    side effect of causing focus to potentially change when
-            //    `focus-follows-mouse` is enabled.
-            // 2. The window title is updated. This can cause the mouse to
-            //    unhide incorrectly when hide-mouse-when-typing is enabled.
-            // To prevent incorrect behavior, we'll only grab focus and
-            // continue with callback logic if the cursor has actually moved.
-            let cur = imp.cursor_pos.get();
-            let is_cursor_still = (cur.x - pos.x).abs() < 1.0 && (cur.y - pos.y).abs() < 1.0;
-            if is_cursor_still {
-                return;
-            }
-
-            // If we don't have focus, and we want it, grab it.
-            let config = imp.config.borrow().clone();
-            if let Some(config) = config
-                && !imp.gl_area.has_focus()
-                && config.get().focus_follows_mouse
-            {
-                imp.gl_area.grab_focus();
-            }
-
-            // Our pos changed, update
-            imp.cursor_pos.set(pos);
-
-            // Notify the callback
-            if let Some(surface) = this.core() {
-                let mods = gtk_key::translate_mods(event.modifier_state());
-                if let Err(err) = surface.cursor_pos_callback(pos, Some(mods)) {
-                    log::warn!("error in cursor pos callback err={err}");
-                }
-            }
+            this.mouse_motion_impl(event.modifier_state(), x, y);
         }
 
         #[template_callback]
@@ -3238,32 +3349,7 @@ mod imp {
             y: f64,
             this: &super::Surface,
         ) -> bool {
-            let imp = this.imp();
-            let Some(surface) = this.core() else {
-                return false;
-            };
-
-            // Multiply precision scrolls by 10 to get a better response from
-            // touchpad scrolling
-            let precision = imp.precision_scroll.get();
-            let multiplier = if precision { 10.0 } else { 1.0 };
-            let scroll_mods = ghostty_input::ScrollMods {
-                precision,
-                ..ghostty_input::ScrollMods::default()
-            };
-
-            let (sx, sy) = this.scaled_coordinates(x, y);
-            // We invert because we apply natural scrolling to the values.
-            // This behavior has existed for years without Linux users
-            // complaining but I suspect we'll have to make this configurable
-            // in the future or read a system setting.
-            match surface.scroll_callback(-sx * multiplier, -sy * multiplier, scroll_mods) {
-                Ok(()) => true,
-                Err(err) => {
-                    log::warn!("error in scroll callback err={err}");
-                    false
-                }
-            }
+            this.scroll_vertical_impl(x, y)
         }
 
         #[template_callback]
