@@ -381,9 +381,14 @@ mod tests {
         );
         let mut d = DiagnosticList::default();
         assert!(open(&e("/tmp"), None, &mut d).is_none());
+        // Windows cannot open a directory as a file (AccessDenied).
         assert_eq!(
             d.items()[0].message,
-            "not reading theme from \"/tmp\": it is a directory"
+            if cfg!(windows) {
+                "failed to load theme from the path \"/tmp\": error.AccessDenied"
+            } else {
+                "not reading theme from \"/tmp\": it is a directory"
+            }
         );
     }
 
@@ -469,7 +474,11 @@ mod tests {
             let mut d = DiagnosticList::default();
             assert!(open(&e(name), Some(&EncodedOs::from_path(&dir)), &mut d).is_none());
             assert!(
-                d.items()[0].message.ends_with("it is a directory"),
+                d.items()[0].message.ends_with(if cfg!(windows) {
+                    "error.AccessDenied"
+                } else {
+                    "it is a directory"
+                }),
                 "{}",
                 d.items()[0].message
             );
@@ -484,7 +493,10 @@ mod tests {
         std::fs::write(dir.join("themes/mytheme-zzz"), "background = #000000\n").unwrap();
         let mut d = DiagnosticList::default();
         let t = open(&e("mytheme-zzz"), Some(&EncodedOs::from_path(&dir)), &mut d).unwrap();
-        assert!(t.path.ends_with_plain("themes/mytheme-zzz"));
+        assert!(
+            t.path
+                .ends_with_plain(&format!("themes{}mytheme-zzz", std::path::MAIN_SEPARATOR))
+        );
         assert!(d.is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -493,7 +505,13 @@ mod tests {
     fn theme_not_found_lists_tried_paths() {
         let mut d = DiagnosticList::default();
         assert!(open(&e("nope-zzz"), Some(&e("/nonexistent-res")), &mut d).is_none());
-        assert!(d.items().iter().any(|x| x.message
-            == "theme \"nope-zzz\" not found, tried path \"/nonexistent-res/themes/nope-zzz\""));
+        let tried = std::path::Path::new("/nonexistent-res")
+            .join("themes")
+            .join("nope-zzz");
+        let want = format!(
+            "theme \"nope-zzz\" not found, tried path \"{}\"",
+            tried.display()
+        );
+        assert!(d.items().iter().any(|x| x.message == want));
     }
 }

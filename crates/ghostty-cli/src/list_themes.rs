@@ -387,7 +387,13 @@ mod tests {
         );
         assert_eq!("Zeta (resources)\n", list(ColorScheme::Light, false));
         assert_eq!(
-            format!("Zeta (resources) {}/themes/Zeta\n", res.as_encoded()),
+            format!(
+                "Zeta (resources) {}\n",
+                std::path::Path::new(res.as_encoded())
+                    .join("themes")
+                    .join("Zeta")
+                    .display()
+            ),
             list(ColorScheme::Light, true)
         );
     }

@@ -25,6 +25,39 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
+/// `std.fs.Dir.realpath` / `posix.realpath`: the canonical absolute path.
+///
+/// `std::fs::canonicalize` returns an extended-length `\\?\C:\...` path on
+/// Windows, while Zig's `realpath` (`GetFinalPathNameByHandle` through the NT
+/// object name) yields the plain DOS path `C:\...`. The verbatim form rejects
+/// `/` separators and is not accepted as a working directory by `cmd.exe`, so
+/// it must not leak into config values or child processes.
+pub fn realpath(path: impl AsRef<std::path::Path>) -> io::Result<PathBuf> {
+    let real = std::fs::canonicalize(path)?;
+    #[cfg(windows)]
+    let real = strip_verbatim_prefix(real);
+    Ok(real)
+}
+
+/// Turn `\\?\C:\x` into `C:\x` and `\\?\UNC\srv\share\x` into
+/// `\\srv\share\x`; other paths are returned unchanged.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let Some(s) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    if let Some(rest) = s.strip_prefix(r"\\?\") {
+        let b = rest.as_bytes();
+        if b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':' {
+            return PathBuf::from(rest);
+        }
+    }
+    path
+}
+
 /// Search for "cmd" in the PATH and return the absolute path. Non-UTF-8
 /// bytes are carried via [`crate::osbytes`]; see [`expand_os`].
 pub fn expand(cmd: &crate::osbytes::EncodedOs) -> Result<Option<crate::osbytes::EncodedOs>, Error> {
@@ -103,6 +136,24 @@ fn is_executable(_meta: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_verbatim_prefix_cases() {
+        let t = |a: &str| strip_verbatim_prefix(PathBuf::from(a));
+        assert_eq!(t(r"\\?\C:\a\b"), PathBuf::from(r"C:\a\b"));
+        assert_eq!(t(r"\\?\UNC\srv\share\x"), PathBuf::from(r"\\srv\share\x"));
+        assert_eq!(t(r"\\?\GLOBALROOT\x"), PathBuf::from(r"\\?\GLOBALROOT\x"));
+        assert_eq!(t(r"C:\a"), PathBuf::from(r"C:\a"));
+        assert_eq!(t("/usr/bin"), PathBuf::from("/usr/bin"));
+    }
+
+    #[test]
+    fn realpath_has_no_verbatim_prefix() {
+        let tmp = crate::TempDir::init().unwrap();
+        let p = realpath(tmp.path()).unwrap();
+        assert!(!p.to_string_lossy().starts_with(r"\\?\"), "{p:?}");
+        assert!(p.is_dir());
+    }
 
     /// Plain-text wrapper over [`expand`] for the literals used below.
     fn expand(cmd: &str) -> Result<Option<String>, Error> {

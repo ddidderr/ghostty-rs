@@ -29,7 +29,9 @@ ghostty-os.workspace = true
 log = "0.4"
 
 [dev-dependencies]
-rustix = { version = "1", features = ["process"] }
+ghostty-terminal.workspace = true
+ghostty-vt.workspace = true
+rustix = { version = "1", features = ["process", "pty", "termios", "fs", "stdio"] }
 serde_json = "1"
 tempfile = "3"
 
@@ -78,6 +80,8 @@ ghostty-lib = { path = "crates/ghostty-lib" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+# `--cfg wine` is set by scripts/windows-wine-test.sh to ignore Wine limitations.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(wine)"] }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -211,7 +211,15 @@ mod tests {
             open(&e("/nonexistent/ghostty/file")).unwrap_err(),
             OpenFileError::FileNotFound
         );
-        assert_eq!(open(&e("/tmp")).unwrap_err(), OpenFileError::NotAFile);
+        // Windows opens a directory with `ERROR_ACCESS_DENIED` (Zig 0.15's
+        // `OpenFile` maps FILE_IS_A_DIRECTORY to AccessDenied as well), which
+        // is an "unexpected" open error there.
+        let dir_err = if cfg!(windows) {
+            OpenFileError::FileOpenFailed
+        } else {
+            OpenFileError::NotAFile
+        };
+        assert_eq!(open(&e("/tmp")).unwrap_err(), dir_err);
         let p = std::env::temp_dir().join(format!("ghostty-file-load-{}", std::process::id()));
         std::fs::write(&p, "").unwrap();
         assert_eq!(

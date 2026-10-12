@@ -158,7 +158,7 @@ impl Path {
         std::fs::read_dir(&base_path)?;
 
         let full = base_path.join(path.to_syscall_path()?);
-        let abs = match std::fs::canonicalize(&full) {
+        let abs = match realpath(&full) {
             Ok(p) => EncodedOs::from_path(&p),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // The file doesn't exist. Try to resolve the relative path
@@ -276,6 +276,18 @@ impl ConfigField for RepeatablePath {
     }
 }
 
+/// `posix.realpath`: the canonical path without the `\\?\` verbatim prefix
+/// `std::fs::canonicalize` adds on Windows (Zig's `realpath` has none).
+#[cfg(windows)]
+pub(crate) fn realpath(path: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    ghostty_os::path::realpath(path)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn realpath(path: impl AsRef<std::path::Path>) -> std::io::Result<std::path::PathBuf> {
+    std::fs::canonicalize(path)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -391,7 +403,14 @@ mod tests {
         let mut diags = DiagnosticList::default();
         let mut p = Path::Required(e("../nope/x.conf"));
         p.expand(&e("/tmp"), &mut diags).unwrap();
-        assert_eq!(p, Path::Required(e("/nope/x.conf")));
+        // Resolved lexically with the platform's separator (`\nope\x.conf`
+        // on Windows, like Zig's `std.fs.path.resolve`).
+        let expected = if cfg!(windows) {
+            "\\nope\\x.conf"
+        } else {
+            "/nope/x.conf"
+        };
+        assert_eq!(p, Path::Required(e(expected)));
 
         let mut p = Path::Optional(e("/abs/path"));
         p.expand(&e("/tmp"), &mut diags).unwrap();
@@ -403,7 +422,7 @@ mod tests {
     #[test]
     fn expand_interior_nul_resolves_the_c_string_prefix_like_zig() {
         let tmp = ghostty_os::TempDir::init().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = realpath(tmp.path()).unwrap();
         std::fs::write(base.join("exists"), b"x").unwrap();
 
         // The syscall sees only the prefix, which exists: the real path of
@@ -429,7 +448,7 @@ mod tests {
     fn expand_symlink_to_non_utf8_target_round_trips() {
         use std::os::unix::ffi::OsStrExt;
         let tmp = ghostty_os::TempDir::init().unwrap();
-        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let base = realpath(tmp.path()).unwrap();
         let target = base.join(std::ffi::OsStr::from_bytes(b"t\xffarget"));
         std::fs::write(&target, b"x").unwrap();
         std::os::unix::fs::symlink(&target, base.join("link")).unwrap();

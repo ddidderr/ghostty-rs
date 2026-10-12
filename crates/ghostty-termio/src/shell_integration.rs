@@ -452,7 +452,9 @@ mod tests {
 
         fn new(shell: Shell) -> Self {
             let tmp = TempDir::init().unwrap();
-            let path = std::fs::canonicalize(tmp.path())
+            // (`canonicalize` would give a `\\?\` verbatim path on Windows,
+            // which rejects the `/` separators used below.)
+            let path = ghostty_os::path::realpath(tmp.path())
                 .unwrap()
                 .to_string_lossy()
                 .into_owned();
@@ -814,7 +816,7 @@ mod tests {
     #[test]
     fn bash_missing_resources() {
         let tmp = TempDir::init().unwrap();
-        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = ghostty_os::path::realpath(tmp.path()).unwrap();
         let mut env = EnvMap::new();
         assert!(
             setup_bash(&sh("bash"), &EncodedOs::from_path(&dir), &mut env)
@@ -838,7 +840,11 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            format!("{}/shell-integration:/usr/local/share:/usr/share", res.path),
+            format!(
+                "{}/shell-integration{}/usr/local/share:/usr/share",
+                res.path,
+                if cfg!(windows) { ';' } else { ':' }
+            ),
             env.get("XDG_DATA_DIRS").unwrap().to_str().unwrap()
         );
     }
@@ -858,7 +864,11 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            format!("{}/shell-integration:/opt/share", res.path),
+            format!(
+                "{}/shell-integration{}/opt/share",
+                res.path,
+                if cfg!(windows) { ';' } else { ':' }
+            ),
             env.get("XDG_DATA_DIRS").unwrap().to_str().unwrap()
         );
     }
@@ -866,7 +876,7 @@ mod tests {
     #[test]
     fn xdg_missing_resources() {
         let tmp = TempDir::init().unwrap();
-        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = ghostty_os::path::realpath(tmp.path()).unwrap();
         let mut env = EnvMap::new();
         assert!(!setup_xdg_data_dirs(&EncodedOs::from_path(&dir), &mut env));
         assert_eq!(0, env.len());
@@ -914,7 +924,7 @@ mod tests {
     #[test]
     fn nushell_missing_resources() {
         let tmp = TempDir::init().unwrap();
-        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = ghostty_os::path::realpath(tmp.path()).unwrap();
         let mut env = EnvMap::new();
         assert!(setup_nushell(&sh("nu"), &EncodedOs::from_path(&dir), &mut env).is_none());
         assert_eq!(0, env.len());
@@ -955,7 +965,7 @@ mod tests {
     #[test]
     fn zsh_missing_resources() {
         let tmp = TempDir::init().unwrap();
-        let dir = std::fs::canonicalize(tmp.path()).unwrap();
+        let dir = ghostty_os::path::realpath(tmp.path()).unwrap();
         let mut env = EnvMap::new();
         assert!(setup_zsh(&sh("zsh"), &EncodedOs::from_path(&dir), &mut env).is_none());
         assert_eq!(0, env.len());

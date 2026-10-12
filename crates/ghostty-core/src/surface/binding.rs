@@ -445,7 +445,7 @@ pub fn write_screen_temp_file(
         let mut file = opts.open(&file_path)?;
         file.write_all(contents.as_bytes())?;
         file.flush()?;
-        Ok(std::fs::canonicalize(&file_path)?)
+        Ok(ghostty_os::path::realpath(&file_path)?)
     })();
 
     match result {

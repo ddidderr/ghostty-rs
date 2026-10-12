@@ -47,6 +47,10 @@ objc2-core-graphics = "0.3.2"
 objc2-core-text = "0.3.2"
 objc2-foundation = "0.3.2"
 
+# Compiles `hb-ft.cc` for the bundled HarfBuzz on Windows (see build.rs).
+[build-dependencies]
+cc = "1"
+
 [features]
 default = []
 # CoreText for discovery, FreeType for rendering, HarfBuzz for shaping

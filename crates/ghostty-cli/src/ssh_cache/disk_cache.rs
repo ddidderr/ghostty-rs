@@ -416,6 +416,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        wine,
+        ignore = "wine: ntdll NtSetInformationFile(FileRenameInformationEx, REPLACE_IF_EXISTS|POSIX_SEMANTICS) is unsupported (\"unsupported flags: 0x3\"), so std::fs::rename over an existing file fails with ERROR_ACCESS_DENIED; real Windows supports it"
+    )]
     fn disk_cache_operations() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("cache");
@@ -438,6 +442,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        wine,
+        ignore = "wine: ntdll NtSetInformationFile(FileRenameInformationEx, REPLACE_IF_EXISTS|POSIX_SEMANTICS) is unsupported (\"unsupported flags: 0x3\"), so std::fs::rename over an existing file fails with ERROR_ACCESS_DENIED; real Windows supports it"
+    )]
     fn disk_cache_cleans_up_temp_files() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = DiskCache {
@@ -467,6 +475,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        wine,
+        ignore = "wine: ntdll NtSetInformationFile(FileRenameInformationEx, REPLACE_IF_EXISTS|POSIX_SEMANTICS) is unsupported (\"unsupported flags: 0x3\"), so std::fs::rename over an existing file fails with ERROR_ACCESS_DENIED; real Windows supports it"
+    )]
     fn disk_cache_invalid_host() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = DiskCache {

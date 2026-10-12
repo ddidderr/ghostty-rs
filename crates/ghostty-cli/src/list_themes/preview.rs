@@ -32,6 +32,7 @@ use ratatui::{
     layout::{Position, Rect},
     style::{Color, Modifier, Style},
 };
+use unicode_segmentation::UnicodeSegmentation as _;
 
 use super::{
     ColorScheme,
@@ -62,102 +63,137 @@ pub enum Scheme {
     Dark,
 }
 
-/// A minimal single line text input (`vaxis.widgets.TextInput`).
+/// A single line text input (`vaxis.widgets.TextInput`). The cursor is a
+/// byte offset (always on a grapheme boundary) and all editing follows
+/// vaxis: grapheme-wise left/right/delete, byte-wise (ASCII space) words.
 #[derive(Debug, Clone, Default)]
 pub struct TextInput {
     pub text: String,
-    /// Cursor position in chars.
+    /// Cursor position in bytes.
     pub cursor: usize,
 }
 
+/// Byte length of the first grapheme of `s` (0 when empty).
+fn first_grapheme_len(s: &str) -> usize {
+    s.graphemes(true).next().map_or(0, str::len)
+}
+
+/// Byte length of the last grapheme of `s` (0 when empty).
+fn last_grapheme_len(s: &str) -> usize {
+    s.graphemes(true).next_back().map_or(0, str::len)
+}
+
 impl TextInput {
-    fn byte_idx(&self, chars: usize) -> usize {
-        self.text
-            .char_indices()
-            .nth(chars)
-            .map_or(self.text.len(), |(i, _)| i)
-    }
-
-    fn len(&self) -> usize {
-        self.text.chars().count()
-    }
-
     pub fn clear(&mut self) {
         self.text.clear();
         self.cursor = 0;
     }
 
-    /// Handle an editing key. Returns true if it was consumed.
+    fn move_left(&mut self, n: usize) {
+        self.cursor = self.cursor.saturating_sub(n);
+    }
+
+    fn move_right(&mut self, n: usize) {
+        self.cursor = (self.cursor + n).min(self.text.len());
+    }
+
+    /// Delete `n` bytes before the cursor (`growGapLeft`).
+    fn delete_left(&mut self, n: usize) {
+        let start = self.cursor.saturating_sub(n);
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    /// Delete `n` bytes after the cursor (`growGapRight`).
+    fn delete_right(&mut self, n: usize) {
+        let end = (self.cursor + n).min(self.text.len());
+        self.text.drain(self.cursor..end);
+    }
+
+    /// Bytes from the cursor to the end of the next word (`moveForwardWordwise`).
+    fn forward_word_len(&self) -> usize {
+        let second = &self.text.as_bytes()[self.cursor..];
+        let start = second.iter().take_while(|&&b| b == b' ').count();
+        second[start..]
+            .iter()
+            .position(|&b| b == b' ')
+            .map_or(second.len(), |p| start + p)
+    }
+
+    /// Bytes from the cursor back to the start of the previous word
+    /// (`moveBackwardWordwise`).
+    fn backward_word_len(&self) -> usize {
+        let first = self.text[..self.cursor].trim_end_matches(' ');
+        let idx = first.rfind(' ').map_or(0, |last| last + 1);
+        self.cursor - idx
+    }
+
+    /// Handle an editing key (`TextInput.update`). Returns true if it was
+    /// consumed.
     pub fn update(&mut self, key: &KeyEvent) -> bool {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
-        match key.code {
-            KeyCode::Char(c) if !ctrl && !alt => {
-                let at = self.byte_idx(self.cursor);
-                self.text.insert(at, c);
-                self.cursor += 1;
-            }
-            KeyCode::Backspace => {
-                if self.cursor > 0 {
-                    let at = self.byte_idx(self.cursor - 1);
-                    self.text.remove(at);
-                    self.cursor -= 1;
-                }
-            }
-            KeyCode::Delete | KeyCode::Char('d') if key.code == KeyCode::Delete || ctrl => {
-                if self.cursor < self.len() {
-                    let at = self.byte_idx(self.cursor);
-                    self.text.remove(at);
-                }
-            }
-            KeyCode::Left | KeyCode::Char('b') if key.code == KeyCode::Left || ctrl => {
-                self.cursor = self.cursor.saturating_sub(1);
-            }
-            KeyCode::Right | KeyCode::Char('f') if key.code == KeyCode::Right || ctrl => {
-                self.cursor = (self.cursor + 1).min(self.len());
-            }
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::Char('a') if ctrl => self.cursor = 0,
-            KeyCode::End => self.cursor = self.len(),
-            KeyCode::Char('e') if ctrl => self.cursor = self.len(),
-            KeyCode::Char('u') if ctrl => {
-                let at = self.byte_idx(self.cursor);
-                self.text.drain(..at);
-                self.cursor = 0;
-            }
-            KeyCode::Char('k') if ctrl => {
-                let at = self.byte_idx(self.cursor);
-                self.text.truncate(at);
-            }
-            KeyCode::Char('w') if ctrl => {
-                let upto = self.byte_idx(self.cursor);
-                let head = self.text[..upto].trim_end_matches(' ');
-                let new_end = head.rfind(' ').map_or(0, |i| i + 1);
-                self.text.drain(new_end..upto);
-                self.cursor = self.text[..new_end].chars().count();
-            }
-            _ => return false,
+        // vaxis `Key.matches` compares the modifiers exactly (lock keys
+        // aside), except that text input tolerates Shift.
+        let m = key.modifiers;
+        let none = m.is_empty();
+        let only = |x: KeyModifiers| m == x;
+        let ctrl = only(KeyModifiers::CONTROL);
+        let alt = only(KeyModifiers::ALT);
+        let code = key.code;
+        let c = |ch: char| code == KeyCode::Char(ch);
+        if none && code == KeyCode::Backspace {
+            self.delete_left(last_grapheme_len(&self.text[..self.cursor]));
+        } else if (none && code == KeyCode::Delete) || (ctrl && c('d')) {
+            self.delete_right(first_grapheme_len(&self.text[self.cursor..]));
+        } else if (none && code == KeyCode::Left) || (ctrl && c('b')) {
+            self.move_left(last_grapheme_len(&self.text[..self.cursor]));
+        } else if (none && code == KeyCode::Right) || (ctrl && c('f')) {
+            self.move_right(first_grapheme_len(&self.text[self.cursor..]));
+        } else if (ctrl && c('a')) || (none && code == KeyCode::Home) {
+            self.cursor = 0;
+        } else if (ctrl && c('e')) || (none && code == KeyCode::End) {
+            self.cursor = self.text.len();
+        } else if ctrl && c('k') {
+            self.text.truncate(self.cursor);
+        } else if ctrl && c('u') {
+            self.delete_left(self.cursor);
+        } else if alt && (c('b') || code == KeyCode::Left) {
+            self.move_left(self.backward_word_len());
+        } else if alt && (c('f') || code == KeyCode::Right) {
+            self.move_right(self.forward_word_len());
+        } else if (ctrl && c('w')) || (alt && code == KeyCode::Backspace) {
+            // Move one word backward, then delete what was moved over.
+            let n = self.backward_word_len();
+            self.move_left(n);
+            self.delete_right(n);
+        } else if alt && c('d') {
+            self.delete_right(self.forward_word_len());
+        } else if let KeyCode::Char(ch) = code
+            && (none || only(KeyModifiers::SHIFT))
+        {
+            self.text.insert(self.cursor, ch);
+            self.cursor += ch.len_utf8();
+        } else {
+            return false;
         }
         true
     }
 }
 
 /// `zf.rank` with `.plain = true, .to_lower = true`: every token must match
-/// the (lowercased) name as a subsequence. Only whether a rank exists is used
-/// by the preview, so the score is a simple span length (lower is better).
+/// the (ASCII-lowercased) name as a subsequence of bytes. Only whether a
+/// rank exists is used by the preview, so the score is a simple span length
+/// (lower is better).
 #[must_use]
 pub fn rank(name: &str, tokens: &[&str]) -> Option<f64> {
-    let name: Vec<char> = name.to_lowercase().chars().collect();
+    let name: Vec<u8> = name.to_ascii_lowercase().into_bytes();
     let mut total = 0.0;
     for token in tokens {
-        let token: Vec<char> = token.chars().collect();
+        let token = token.as_bytes();
         if token.is_empty() {
             continue;
         }
         // Prefer a contiguous match.
-        let contiguous = name
-            .windows(token.len())
-            .position(|w| w == token.as_slice());
+        let contiguous = name.windows(token.len()).position(|w| w == token);
         if let Some(start) = contiguous {
             total += start as f64;
             continue;
@@ -380,23 +416,8 @@ pub struct Preview {
     overlays: Vec<Overlay>,
 }
 
-fn initial_scheme() -> Scheme {
-    // COLORFGBG is "fg;bg" (sometimes "fg;default;bg"); bg 0-6 and 8 are dark.
-    if let Ok(v) = std::env::var("COLORFGBG") {
-        if let Some(bg) = v.rsplit(';').next().and_then(|s| s.parse::<u8>().ok()) {
-            return if bg <= 6 || bg == 8 {
-                Scheme::Dark
-            } else {
-                Scheme::Light
-            };
-        }
-    }
-    Scheme::Light
-}
-
 impl Preview {
-    #[must_use]
-    pub fn new(themes: Vec<ThemeListElement>, theme_filter: ColorScheme) -> Preview {
+    pub fn new(themes: Vec<ThemeListElement>, theme_filter: ColorScheme) -> Result<Preview, Error> {
         let mut p = Preview {
             should_quit: false,
             themes,
@@ -405,7 +426,7 @@ impl Preview {
             window: 0,
             hex: false,
             mode: Mode::Normal,
-            color_scheme: initial_scheme(),
+            color_scheme: Scheme::Light,
             text_input: TextInput::default(),
             theme_filter,
             mouse: None,
@@ -415,12 +436,12 @@ impl Preview {
             effects: vec![],
             overlays: vec![],
         };
-        p.update_filtered();
-        p
+        p.update_filtered()?;
+        Ok(p)
     }
 
     /// Recompute the filtered theme list (Zig: `updateFiltered`).
-    pub fn update_filtered(&mut self) {
+    pub fn update_filtered(&mut self) -> Result<(), Error> {
         let relative = self.current.saturating_sub(self.window);
         let selected: Option<String> = self
             .filtered
@@ -436,8 +457,7 @@ impl Preview {
         let searching = !self.text_input.text.is_empty();
 
         for (i, theme) in self.themes.iter_mut().enumerate() {
-            // Errors are ignored here (Zig would abort the whole preview).
-            let _ = theme_config.load_file(&absolute_path(&theme.path));
+            theme_config.load_file(&absolute_path(&theme.path))?;
             if !should_include_theme(self.theme_filter, &theme_config) {
                 continue;
             }
@@ -453,13 +473,13 @@ impl Preview {
         }
 
         if old == self.filtered {
-            return;
+            return Ok(());
         }
 
         if self.filtered.is_empty() {
             self.current = 0;
             self.window = 0;
-            return;
+            return Ok(());
         }
 
         let (current, window) = (|| {
@@ -485,6 +505,7 @@ impl Preview {
         })();
         self.current = current;
         self.window = window;
+        Ok(())
     }
 
     pub fn up(&mut self, count: usize) {
@@ -516,15 +537,16 @@ impl Preview {
     }
 
     /// Handle a terminal event (Zig: `update`).
-    pub fn update(&mut self, event: &Event) {
+    pub fn update(&mut self, event: &Event) -> Result<(), Error> {
         match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.update_key(key),
+            Event::Key(key) if key.kind != KeyEventKind::Release => self.update_key(key)?,
             Event::Mouse(m) => self.mouse = Some(*m),
             _ => {}
         }
+        Ok(())
     }
 
-    fn update_key(&mut self, key: &KeyEvent) {
+    fn update_key(&mut self, key: &KeyEvent) -> Result<(), Error> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
         let plain = key.modifiers.difference(KeyModifiers::SHIFT).is_empty();
@@ -553,7 +575,7 @@ impl Preview {
                 }
                 if ctrl && matches!(code, KeyCode::Char('x' | '/' | '_')) {
                     self.text_input.clear();
-                    self.update_filtered();
+                    self.update_filtered()?;
                 }
                 if plain && code == KeyCode::Home {
                     self.current = 0;
@@ -599,7 +621,7 @@ impl Preview {
                         ColorScheme::Dark => ColorScheme::Light,
                         ColorScheme::Light => ColorScheme::All,
                     };
-                    self.update_filtered();
+                    self.update_filtered()?;
                 }
             }
             Mode::Help => {
@@ -619,15 +641,15 @@ impl Preview {
             Mode::Search => {
                 if plain && matches!(code, KeyCode::Esc | KeyCode::Enter) {
                     self.mode = Mode::Normal;
-                    return;
+                    return Ok(());
                 }
                 if ctrl && matches!(code, KeyCode::Char('x' | '/' | '_')) {
                     self.text_input.clear();
-                    self.update_filtered();
-                    return;
+                    self.update_filtered()?;
+                    return Ok(());
                 }
                 self.text_input.update(key);
-                self.update_filtered();
+                self.update_filtered()?;
             }
             Mode::Save => {
                 if is_char('q') {
@@ -641,6 +663,7 @@ impl Preview {
                 }
             }
         }
+        Ok(())
     }
 
     fn save_selected_theme(&self) {
@@ -849,12 +872,7 @@ impl Preview {
                     self.ui_standard(),
                 );
                 child.print(&self.text_input.text, self.ui_standard(), 0, 0);
-                let col = gw(&self
-                    .text_input
-                    .text
-                    .chars()
-                    .take(self.text_input.cursor)
-                    .collect::<String>());
+                let col = gw(&self.text_input.text[..self.text_input.cursor]);
                 if col < child.area.width {
                     cursor = Some(Position::new(child.area.x + col, child.area.y));
                 }
@@ -1653,15 +1671,15 @@ fn convert_mouse(m: termina::event::MouseEvent) -> MouseEvent {
 /// color-scheme report (`CSI ? 997 ; 1|2 n`, sent in answer to
 /// `CSI ? 996 n` and on every change while `CSI ? 2031 h` is active), which
 /// vaxis delivers as its `color_scheme` event.
-fn handle_terminal_event(app: &mut Preview, ev: termina::Event) {
+fn handle_terminal_event(app: &mut Preview, ev: termina::Event) -> Result<(), Error> {
     use termina::escape::csi::{Csi, Mode, ThemeMode};
     match ev {
         termina::Event::Key(k) => {
             if let Some(k) = convert_key(k) {
-                app.update(&Event::Key(k));
+                app.update(&Event::Key(k))?;
             }
         }
-        termina::Event::Mouse(m) => app.update(&Event::Mouse(convert_mouse(m))),
+        termina::Event::Mouse(m) => app.update(&Event::Mouse(convert_mouse(m)))?,
         termina::Event::Csi(Csi::Mode(Mode::ReportTheme(t))) => {
             app.color_scheme = match t {
                 ThemeMode::Dark => Scheme::Dark,
@@ -1670,11 +1688,12 @@ fn handle_terminal_event(app: &mut Preview, ev: termina::Event) {
         }
         _ => {}
     }
+    Ok(())
 }
 
 /// Run the interactive preview (Zig: `preview`). Blocks until the user quits.
 pub fn preview(themes: Vec<ThemeListElement>, theme_filter: ColorScheme) -> Result<(), Error> {
-    let mut app = Preview::new(themes, theme_filter);
+    let mut app = Preview::new(themes, theme_filter)?;
     run_loop(&mut app)
 }
 
@@ -1727,10 +1746,10 @@ fn run_loop(app: &mut Preview) -> Result<(), Error> {
 
             // Block for an event, then drain everything that is pending.
             let first = tty.read(|_| true)?;
-            handle_terminal_event(app, first);
+            handle_terminal_event(app, first)?;
             while tty.poll(|_| true, Some(std::time::Duration::ZERO))? {
                 let ev = tty.read(|_| true)?;
-                handle_terminal_event(app, ev);
+                handle_terminal_event(app, ev)?;
             }
             for effect in app.take_effects() {
                 match effect {
@@ -1811,7 +1830,7 @@ mod tests {
                 ("delta-light", "#f0f0f0"),
             ],
         );
-        let mut p = Preview::new(themes, ColorScheme::All);
+        let mut p = Preview::new(themes, ColorScheme::All).unwrap();
         p.color_scheme = Scheme::Light;
         p
     }
@@ -1833,28 +1852,28 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
         assert_eq!(4, p.filtered.len());
-        p.update(&ch('j'));
-        p.update(&key(KeyCode::Down));
+        p.update(&ch('j')).unwrap();
+        p.update(&key(KeyCode::Down)).unwrap();
         assert_eq!(2, p.current);
-        p.update(&key(KeyCode::PageDown));
+        p.update(&key(KeyCode::PageDown)).unwrap();
         assert_eq!(3, p.current);
-        p.update(&ch('k'));
+        p.update(&ch('k')).unwrap();
         assert_eq!(2, p.current);
-        p.update(&key(KeyCode::PageUp));
+        p.update(&key(KeyCode::PageUp)).unwrap();
         assert_eq!(0, p.current);
-        p.update(&key(KeyCode::End));
+        p.update(&key(KeyCode::End)).unwrap();
         assert_eq!(3, p.current);
-        p.update(&key(KeyCode::Home));
+        p.update(&key(KeyCode::Home)).unwrap();
         assert_eq!(0, p.current);
         assert!(!p.should_quit);
-        p.update(&ch('q'));
+        p.update(&ch('q')).unwrap();
         assert!(p.should_quit);
 
         let mut p = app(&tmp);
-        p.update(&ctrl('c'));
+        p.update(&ctrl('c')).unwrap();
         assert!(p.should_quit);
         let mut p = app(&tmp);
-        p.update(&key(KeyCode::Esc));
+        p.update(&key(KeyCode::Esc)).unwrap();
         assert!(p.should_quit);
     }
 
@@ -1862,7 +1881,7 @@ mod tests {
     fn filter_cycles_and_filters() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('f'));
+        p.update(&ch('f')).unwrap();
         assert_eq!(ColorScheme::Dark, p.theme_filter);
         let names: Vec<_> = p
             .filtered
@@ -1870,10 +1889,10 @@ mod tests {
             .map(|&i| p.themes[i].theme.as_str())
             .collect();
         assert_eq!(vec!["alpha", "gamma-dark"], names);
-        p.update(&ch('f'));
+        p.update(&ch('f')).unwrap();
         assert_eq!(ColorScheme::Light, p.theme_filter);
         assert_eq!(2, p.filtered.len());
-        p.update(&ch('f'));
+        p.update(&ch('f')).unwrap();
         assert_eq!(ColorScheme::All, p.theme_filter);
         assert_eq!(4, p.filtered.len());
     }
@@ -1882,25 +1901,25 @@ mod tests {
     fn search_mode() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('/'));
+        p.update(&ch('/')).unwrap();
         assert_eq!(Mode::Search, p.mode);
-        p.update(&ch('G'));
-        p.update(&ch('a'));
-        p.update(&ch('m'));
+        p.update(&ch('G')).unwrap();
+        p.update(&ch('a')).unwrap();
+        p.update(&ch('m')).unwrap();
         assert_eq!("Gam", p.text_input.text);
         assert_eq!(1, p.filtered.len());
         assert_eq!("gamma-dark", p.themes[p.filtered[0]].theme);
-        p.update(&key(KeyCode::Backspace));
-        p.update(&key(KeyCode::Backspace));
-        p.update(&key(KeyCode::Backspace));
+        p.update(&key(KeyCode::Backspace)).unwrap();
+        p.update(&key(KeyCode::Backspace)).unwrap();
+        p.update(&key(KeyCode::Backspace)).unwrap();
         assert_eq!(4, p.filtered.len());
-        p.update(&ch('l'));
-        p.update(&ch('t'));
+        p.update(&ch('l')).unwrap();
+        p.update(&ch('t')).unwrap();
         assert_eq!(1, p.filtered.len()); // "delta-light" is the only match for "lt"
-        p.update(&ctrl('x'));
+        p.update(&ctrl('x')).unwrap();
         assert_eq!("", p.text_input.text);
         assert_eq!(4, p.filtered.len());
-        p.update(&key(KeyCode::Enter));
+        p.update(&key(KeyCode::Enter)).unwrap();
         assert_eq!(Mode::Normal, p.mode);
     }
 
@@ -1908,19 +1927,19 @@ mod tests {
     fn hex_toggle_and_help_mode() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('x'));
+        p.update(&ch('x')).unwrap();
         assert!(p.hex);
-        p.update(&ch('d'));
+        p.update(&ch('d')).unwrap();
         assert!(!p.hex);
-        p.update(&key(KeyCode::F(1)));
+        p.update(&key(KeyCode::F(1))).unwrap();
         assert_eq!(Mode::Help, p.mode);
         // Keys are modal: 'j' does nothing in help.
-        p.update(&ch('j'));
+        p.update(&ch('j')).unwrap();
         assert_eq!(0, p.current);
-        p.update(&key(KeyCode::Esc));
+        p.update(&key(KeyCode::Esc)).unwrap();
         assert_eq!(Mode::Normal, p.mode);
         assert!(!p.should_quit);
-        p.update(&ch('?'));
+        p.update(&ch('?')).unwrap();
         assert_eq!(Mode::Help, p.mode);
     }
 
@@ -1928,11 +1947,12 @@ mod tests {
     fn copy_and_save() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('c'));
+        p.update(&ch('c')).unwrap();
         p.update(&Event::Key(KeyEvent::new(
             KeyCode::Char('C'),
             KeyModifiers::SHIFT,
-        )));
+        )))
+        .unwrap();
         let effects = p.take_effects();
         assert_eq!(
             Effect::Copy(ghostty_os::osbytes::EncodedOs::from_encoded("alpha")),
@@ -1947,11 +1967,11 @@ mod tests {
 
         let auto = tmp.path().join("cfg/auto/theme.ghostty");
         p.auto_theme_path = Some(auto.clone());
-        p.update(&key(KeyCode::Enter));
+        p.update(&key(KeyCode::Enter)).unwrap();
         assert_eq!(Mode::Save, p.mode);
-        p.update(&ch('w'));
+        p.update(&ch('w')).unwrap();
         assert_eq!("theme = alpha\n", std::fs::read_to_string(&auto).unwrap());
-        p.update(&key(KeyCode::Esc));
+        p.update(&key(KeyCode::Esc)).unwrap();
         assert_eq!(Mode::Normal, p.mode);
     }
 
@@ -1974,7 +1994,7 @@ mod tests {
     fn draw_layout() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('j'));
+        p.update(&ch('j')).unwrap();
         let buf = render(&mut p, 120, 60);
         // List on the left: selected item has the marker and the arrow at col 30.
         let r1 = row_text(&buf, 1);
@@ -2014,8 +2034,15 @@ mod tests {
             .iter()
             .find(|o| o.text == "alpha" && o.x == 2)
             .unwrap();
-        assert!(alpha.link.as_deref().unwrap().starts_with("file:///"));
-        assert!(alpha.link.as_deref().unwrap().ends_with("/alpha"));
+        // (On Windows the path is `C:\...`; Zig's `toUri` does not rewrite it,
+        // the backslashes are percent-encoded.)
+        let (prefix, suffix) = if cfg!(windows) {
+            ("file://", "%5Calpha")
+        } else {
+            ("file:///", "/alpha")
+        };
+        assert!(alpha.link.as_deref().unwrap().starts_with(prefix));
+        assert!(alpha.link.as_deref().unwrap().ends_with(suffix));
         // The five lorem ipsum words get their own underline overlays.
         let uls: Vec<(String, Ul)> = ov
             .iter()
@@ -2031,7 +2058,7 @@ mod tests {
         }
         // And the raw escapes carry OSC 8 and the 4:N styles.
         let raw = render_overlays(&ov);
-        assert!(raw.contains("\x1b]8;;file:///"));
+        assert!(raw.contains(&format!("\x1b]8;;{prefix}")));
         assert!(raw.contains("\x1b]8;;\x1b\\"));
         for sgr in ["4:2", "4:3", "4:4", "4:5"] {
             assert!(raw.contains(sgr), "{sgr}");
@@ -2042,7 +2069,7 @@ mod tests {
     fn popup_drops_covered_overlays() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('?'));
+        p.update(&ch('?')).unwrap();
         let _ = render(&mut p, 120, 40);
         // The help window covers the middle of the screen: no overlay may
         // intersect it.
@@ -2060,10 +2087,10 @@ mod tests {
         let mut p = app(&tmp);
         let mut parser = termina::Parser::default();
         parser.parse(b"\x1b[?997;1n", false);
-        handle_terminal_event(&mut p, parser.pop().unwrap());
+        handle_terminal_event(&mut p, parser.pop().unwrap()).unwrap();
         assert_eq!(Scheme::Dark, p.color_scheme);
         parser.parse(b"\x1b[?997;2n", false);
-        handle_terminal_event(&mut p, parser.pop().unwrap());
+        handle_terminal_event(&mut p, parser.pop().unwrap()).unwrap();
         assert_eq!(Scheme::Light, p.color_scheme);
     }
 
@@ -2085,7 +2112,7 @@ mod tests {
     fn draw_help_and_save_and_search_overlays() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('?'));
+        p.update(&ch('?')).unwrap();
         let buf = render(&mut p, 120, 40);
         let all: String = (0..40)
             .map(|y| row_text(&buf, y))
@@ -2094,8 +2121,8 @@ mod tests {
         assert!(all.contains("Cycle through theme filters."));
         assert!(all.contains('\u{256d}') && all.contains('\u{256f}'));
 
-        p.update(&key(KeyCode::Esc));
-        p.update(&key(KeyCode::Enter));
+        p.update(&key(KeyCode::Esc)).unwrap();
+        p.update(&key(KeyCode::Enter)).unwrap();
         let buf = render(&mut p, 120, 40);
         let all: String = (0..40)
             .map(|y| row_text(&buf, y))
@@ -2104,9 +2131,9 @@ mod tests {
         assert!(all.contains("theme = alpha"));
         assert!(all.contains("config-file = ?auto/theme.ghostty"));
 
-        p.update(&key(KeyCode::Esc));
-        p.update(&ch('/'));
-        p.update(&ch('b'));
+        p.update(&key(KeyCode::Esc)).unwrap();
+        p.update(&ch('/')).unwrap();
+        p.update(&ch('b')).unwrap();
         let mut buf = Buffer::empty(Rect::new(0, 0, 120, 40));
         let cursor = p.draw(&mut buf);
         assert!(cursor.is_some());
@@ -2116,18 +2143,18 @@ mod tests {
     fn empty_filter_shows_no_theme_found() {
         let tmp = tempfile::tempdir().unwrap();
         let mut p = app(&tmp);
-        p.update(&ch('/'));
-        p.update(&ch('z'));
-        p.update(&ch('z'));
+        p.update(&ch('/')).unwrap();
+        p.update(&ch('z')).unwrap();
+        p.update(&ch('z')).unwrap();
         assert_eq!(0, p.filtered.len());
         let buf = render(&mut p, 80, 20);
         assert!(row_text(&buf, 9).contains("No theme found!"));
         // Navigation does not panic with an empty list.
-        p.update(&key(KeyCode::Enter));
-        p.update(&key(KeyCode::Esc));
-        p.update(&key(KeyCode::End));
-        p.update(&ch('j'));
-        p.update(&ch('c'));
+        p.update(&key(KeyCode::Enter)).unwrap();
+        p.update(&key(KeyCode::Esc)).unwrap();
+        p.update(&key(KeyCode::End)).unwrap();
+        p.update(&ch('j')).unwrap();
+        p.update(&ch('c')).unwrap();
         assert_eq!(0, p.current);
     }
 
@@ -2157,17 +2184,19 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             })
         };
-        p.update(&mouse(MouseEventKind::Up(MouseButton::Left), 2));
+        p.update(&mouse(MouseEventKind::Up(MouseButton::Left), 2))
+            .unwrap();
         render(&mut p, 120, 30);
         assert_eq!(2, p.current);
-        p.update(&mouse(MouseEventKind::ScrollUp, 0));
+        p.update(&mouse(MouseEventKind::ScrollUp, 0)).unwrap();
         render(&mut p, 120, 30);
         assert_eq!(1, p.current);
-        p.update(&mouse(MouseEventKind::ScrollDown, 0));
+        p.update(&mouse(MouseEventKind::ScrollDown, 0)).unwrap();
         render(&mut p, 120, 30);
         assert_eq!(2, p.current);
         // Click below the last theme does nothing.
-        p.update(&mouse(MouseEventKind::Up(MouseButton::Left), 20));
+        p.update(&mouse(MouseEventKind::Up(MouseButton::Left), 20))
+            .unwrap();
         render(&mut p, 120, 30);
         assert_eq!(2, p.current);
     }
@@ -2178,9 +2207,9 @@ mod tests {
         let names: Vec<String> = (0..40).map(|i| format!("theme{i:02}")).collect();
         let refs: Vec<(&str, &str)> = names.iter().map(|n| (n.as_str(), "#000000")).collect();
         let themes = make_themes(tmp.path(), &refs);
-        let mut p = Preview::new(themes, ColorScheme::All);
+        let mut p = Preview::new(themes, ColorScheme::All).unwrap();
         render(&mut p, 100, 10);
-        p.update(&key(KeyCode::PageDown));
+        p.update(&key(KeyCode::PageDown)).unwrap();
         let buf = render(&mut p, 100, 10);
         assert_eq!(20, p.current);
         assert_eq!(11, p.window);
@@ -2213,6 +2242,163 @@ mod tests {
         assert_eq!("éllo d", t.text);
         t.update(&KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL));
         assert_eq!("", t.text);
+    }
+
+    fn typed(t: &mut TextInput, text: &str) {
+        for c in text.chars() {
+            t.update(&KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+    }
+
+    fn press(t: &mut TextInput, code: KeyCode, m: KeyModifiers) -> bool {
+        t.update(&KeyEvent::new(code, m))
+    }
+
+    #[test]
+    fn text_input_word_navigation_matches_vaxis() {
+        let alt = KeyModifiers::ALT;
+        let mut t = TextInput::default();
+        typed(&mut t, "blue red");
+        press(&mut t, KeyCode::Char('b'), alt);
+        typed(&mut t, "X");
+        assert_eq!("blue Xred", t.text);
+
+        // Alt+B skips trailing spaces; Alt+Left is the same.
+        let mut t = TextInput::default();
+        typed(&mut t, "one two   ");
+        press(&mut t, KeyCode::Left, alt);
+        assert_eq!(4, t.cursor);
+        press(&mut t, KeyCode::Char('b'), alt);
+        assert_eq!(0, t.cursor);
+        // Alt+F: skips leading spaces then stops before the next space.
+        press(&mut t, KeyCode::Char('f'), alt);
+        assert_eq!(3, t.cursor);
+        press(&mut t, KeyCode::Right, alt);
+        assert_eq!(7, t.cursor);
+        press(&mut t, KeyCode::Char('f'), alt);
+        assert_eq!(10, t.cursor);
+
+        // Alt+D deletes forward to the end of the next word.
+        let mut t = TextInput::default();
+        typed(&mut t, "one two three");
+        press(&mut t, KeyCode::Home, KeyModifiers::NONE);
+        press(&mut t, KeyCode::Char('d'), alt);
+        assert_eq!(" two three", t.text);
+        press(&mut t, KeyCode::Char('d'), alt);
+        assert_eq!(" three", t.text);
+
+        // Ctrl+W and Alt+Backspace delete the previous word.
+        let mut t = TextInput::default();
+        typed(&mut t, "one two three");
+        press(&mut t, KeyCode::Char('w'), KeyModifiers::CONTROL);
+        assert_eq!("one two ", t.text);
+        press(&mut t, KeyCode::Backspace, alt);
+        assert_eq!("one ", t.text);
+        assert_eq!(4, t.cursor);
+
+        // Ctrl+D / Ctrl+B / Ctrl+F / Ctrl+A / Ctrl+E / Ctrl+U / Ctrl+K.
+        let ctrl = KeyModifiers::CONTROL;
+        let mut t = TextInput::default();
+        typed(&mut t, "abcdef");
+        press(&mut t, KeyCode::Char('b'), ctrl);
+        press(&mut t, KeyCode::Char('b'), ctrl);
+        press(&mut t, KeyCode::Char('d'), ctrl);
+        assert_eq!("abcdf", t.text);
+        press(&mut t, KeyCode::Char('f'), ctrl);
+        assert_eq!(5, t.cursor);
+        press(&mut t, KeyCode::Char('a'), ctrl);
+        press(&mut t, KeyCode::Char('f'), ctrl);
+        press(&mut t, KeyCode::Char('k'), ctrl);
+        assert_eq!("a", t.text);
+        typed(&mut t, "bc");
+        press(&mut t, KeyCode::Char('b'), ctrl);
+        press(&mut t, KeyCode::Char('u'), ctrl);
+        assert_eq!("c", t.text);
+        assert_eq!(0, t.cursor);
+        press(&mut t, KeyCode::Char('e'), ctrl);
+        assert_eq!(1, t.cursor);
+
+        // Modifiers must match exactly: Ctrl+Left is not a plain Left and
+        // Alt+x is not text.
+        let mut t = TextInput::default();
+        typed(&mut t, "ab");
+        assert!(!press(&mut t, KeyCode::Left, ctrl));
+        assert!(!press(&mut t, KeyCode::Char('x'), alt));
+        assert_eq!("ab", t.text);
+        assert_eq!(2, t.cursor);
+    }
+
+    #[test]
+    fn text_input_is_grapheme_aware() {
+        let none = KeyModifiers::NONE;
+        // Backspace removes the whole cluster (e + combining acute).
+        let mut t = TextInput::default();
+        typed(&mut t, "xe\u{301}");
+        press(&mut t, KeyCode::Backspace, none);
+        assert_eq!("x", t.text);
+
+        // Left/Right/Delete move over a whole ZWJ emoji sequence.
+        let astronaut = "\u{1f469}\u{200d}\u{1f680}";
+        let mut t = TextInput::default();
+        typed(&mut t, &format!("a{astronaut}b"));
+        press(&mut t, KeyCode::Left, none);
+        press(&mut t, KeyCode::Left, none);
+        assert_eq!(1, t.cursor);
+        press(&mut t, KeyCode::Delete, none);
+        assert_eq!("ab", t.text);
+
+        let mut t = TextInput::default();
+        typed(&mut t, &format!("{astronaut}{astronaut}"));
+        press(&mut t, KeyCode::Home, none);
+        press(&mut t, KeyCode::Right, none);
+        assert_eq!(astronaut.len(), t.cursor);
+    }
+
+    #[test]
+    fn rank_folds_ascii_only() {
+        // A non-ASCII capital is not folded on either side.
+        assert!(rank("\u{c4}", &["\u{c4}"]).is_some());
+        assert!(rank("\u{c4}", &["\u{e4}"]).is_none());
+        assert!(rank("\u{e4}", &["\u{c4}"]).is_none());
+        // ASCII is folded in the name (the query is lowered by the caller).
+        assert!(rank("Catppuccin", &["cat"]).is_some());
+    }
+
+    #[test]
+    fn search_with_non_ascii_query_matches_like_zig() {
+        let tmp = tempfile::tempdir().unwrap();
+        let themes = make_themes(
+            tmp.path(),
+            &[("\u{c4}rger", "#000000"), ("plain", "#000000")],
+        );
+        let mut p = Preview::new(themes, ColorScheme::All).unwrap();
+        p.update(&ch('/')).unwrap();
+        p.update(&ch('\u{c4}')).unwrap();
+        assert_eq!(1, p.filtered.len());
+        p.update(&key(KeyCode::Backspace)).unwrap();
+        p.update(&ch('\u{e4}')).unwrap();
+        assert_eq!(0, p.filtered.len());
+    }
+
+    #[test]
+    fn initial_scheme_is_light_regardless_of_colorfgbg() {
+        let tmp = tempfile::tempdir().unwrap();
+        let themes = make_themes(tmp.path(), &[("a", "#000000")]);
+        let p = temp_env::with_var("COLORFGBG", Some("15;0"), || {
+            Preview::new(themes, ColorScheme::All).unwrap()
+        });
+        assert_eq!(Scheme::Light, p.color_scheme);
+    }
+
+    #[test]
+    fn load_file_error_propagates() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut themes = make_themes(tmp.path(), &[("a", "#000000")]);
+        // A theme file with an unreadable path: a path below a regular file.
+        let bad = tmp.path().join("a").join("nope");
+        themes[0].path = ghostty_os::osbytes::EncodedOs::from_path(&bad);
+        let result = Preview::new(themes, ColorScheme::All);
+        assert!(result.is_err());
     }
 
     #[test]

@@ -180,7 +180,13 @@ mod tests {
         let _g = LOCK.lock().unwrap();
         detect().unwrap();
         let before = backend();
-        assert!(!prefer(Backend::Iocp));
+        // Iocp is the Windows candidate; Epoll is never one there.
+        let non_candidate = if cfg!(windows) {
+            Backend::Epoll
+        } else {
+            Backend::Iocp
+        };
+        assert!(!prefer(non_candidate));
         assert_eq!(backend(), before);
     }
 

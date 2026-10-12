@@ -245,6 +245,15 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn init_is_a_noop_on_windows() {
+        // i18n is unsupported on Windows (Zig returns before looking at it).
+        assert!(init(std::path::Path::new("ghostty")).is_ok());
+        assert!(init(std::path::Path::new("/")).is_ok());
+    }
+
+    #[test]
+    #[cfg(not(windows))]
     fn init_rejects_dirless_resources_dir() {
         assert!(matches!(
             init(std::path::Path::new("ghostty")),

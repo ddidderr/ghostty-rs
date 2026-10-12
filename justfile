@@ -282,6 +282,11 @@ check-macos target="aarch64-apple-darwin":
 check-windows:
     scripts/windows-crosscheck.sh
 
+# Run the Windows test suites under Wine (builds expat/FreeType/fontconfig for
+# mingw on the first run; see docs/rewrite/notes/windows-wine.md).
+test-windows-wine *args:
+    scripts/windows-wine-test.sh {{ args }}
+
 # Build, lint and test the wasm32 targets.
 check-wasm:
     scripts/wasm-check.sh

@@ -14,7 +14,8 @@ All of Ghostty's Zig code is ported: the Linux GTK app (verified at runtime
 and pixel-identical to Ghostty 1.3.1), the `libghostty` and `libghostty-vt`
 C APIs (same headers/ABI), WASM, crash reporting, and the macOS
 (Metal/CoreText) and Windows (ConPTY) code paths. macOS and Windows are
-compile-checked on Linux (`just check-macos`, `just check-windows`) but have
+compile-checked on Linux (`just check-macos`, `just check-windows`); the
+Windows test suites also run under Wine (`just test-windows-wine`), macOS has
 not been run natively. The Swift macOS app is not part of the port; it is a
 client of the libghostty C API.
 
@@ -63,6 +64,8 @@ build (see `docs/rewrite/notes/perf-P1.md`).
   Ghostty's own Zig code (sets up Zig 0.15.2 under `target/`).
 - `just visual-parity` — pixel comparison against the installed Ghostty in a
   headless nested weston.
+- `just test-windows-wine` — runs the Windows test suites (incl. ConPTY /
+  `cmd.exe` end-to-end tests) under Wine with mingw-w64.
 - `just check-all` — native gate plus macOS/Windows/WASM checks.
 
 ## Documentation

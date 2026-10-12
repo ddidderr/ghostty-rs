@@ -44,6 +44,7 @@ windows-sys = { version = "0.61", features = [
 # and only allowed on minimal, SAFETY-commented items.
 [lints.rust]
 unsafe_code = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(wine)"] }
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

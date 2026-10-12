@@ -4216,7 +4216,7 @@ impl Config {
 
         // Any paths referenced from the CLI are relative to the current working
         // directory.
-        let cwd = std::fs::canonicalize(".")?;
+        let cwd = crate::path::realpath(".")?;
         self.expand_paths(&EncodedOs::from_path(&cwd))?;
         Ok(())
     }
@@ -5115,10 +5115,20 @@ mod tests {
     fn write_theme(td: &TempDir, name: &str, data: &str) -> String {
         let p = td.path().join(name);
         std::fs::write(&p, data).unwrap();
-        std::fs::canonicalize(&p)
+        crate::path::realpath(&p)
             .unwrap()
             .to_string_lossy()
             .into_owned()
+    }
+
+    /// A path as a `light:`/`dark:` pair value. Backslashes are escapes in
+    /// the pair syntax (as in Zig), so Windows paths must be quoted.
+    fn pair_value(path: &str) -> String {
+        if cfg!(windows) {
+            format!("\"{}\"", path.replace('\\', "\\\\"))
+        } else {
+            path.to_owned()
+        }
     }
 
     #[test]
@@ -5223,7 +5233,11 @@ mod tests {
         let dark = write_theme(&td, "theme_dark", include_str!("testdata/theme_dark"));
 
         let mut cfg_light = Config::default();
-        let mut i = it(&[&format!("--theme=light:{light},dark:{dark}")]);
+        let mut i = it(&[&format!(
+            "--theme=light:{},dark:{}",
+            pair_value(&light),
+            pair_value(&dark)
+        )]);
         cfg_light.load_iter(&mut i).unwrap();
         cfg_light.finalize().unwrap();
 
@@ -5407,7 +5421,11 @@ mod tests {
         let td = TempDir::init().unwrap();
         let light = write_theme(&td, "theme_light", include_str!("testdata/theme_light"));
         let dark = write_theme(&td, "theme_dark", include_str!("testdata/theme_dark"));
-        let arg = format!("--theme=light:{light},dark:{dark}");
+        let arg = format!(
+            "--theme=light:{},dark:{}",
+            pair_value(&light),
+            pair_value(&dark)
+        );
 
         // Light
         {

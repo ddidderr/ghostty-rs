@@ -1443,6 +1443,7 @@ dependencies = [
  "tempfile",
  "termina",
  "thiserror 2.0.21",
+ "unicode-segmentation",
  "unicode-width",
 ]
 
@@ -1530,6 +1531,7 @@ name = "ghostty-font"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "cc",
  "freetype-sys",
  "ghostty-config",
  "ghostty-datastruct",
@@ -1686,6 +1688,8 @@ dependencies = [
  "ghostty-core",
  "ghostty-crash",
  "ghostty-os",
+ "ghostty-terminal",
+ "ghostty-vt",
  "log",
  "rustix",
  "serde_json",

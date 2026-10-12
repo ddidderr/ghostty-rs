@@ -216,6 +216,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        wine,
+        ignore = "wine: ntdll NtSetInformationFile(FileRenameInformationEx, REPLACE_IF_EXISTS|POSIX_SEMANTICS) is unsupported (\"unsupported flags: 0x3\"), so std::fs::rename over an existing file fails with ERROR_ACCESS_DENIED; real Windows supports it"
+    )]
     fn add_list_host_remove_clear() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = DiskCache {

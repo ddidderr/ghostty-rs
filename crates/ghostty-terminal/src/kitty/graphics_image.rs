@@ -45,6 +45,17 @@ fn os_path_from_bytes(bytes: &[u8]) -> Option<std::ffi::OsString> {
     std::str::from_utf8(bytes).ok().map(Into::into)
 }
 
+/// `posix.realpath` (no `\\?\` verbatim prefix on Windows, like Zig).
+#[cfg(windows)]
+fn realpath(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    ghostty_os::path::realpath(path)
+}
+
+#[cfg(not(windows))]
+fn realpath(path: impl AsRef<Path>) -> std::io::Result<std::path::PathBuf> {
+    std::fs::canonicalize(path)
+}
+
 use ghostty_vt::kitty::graphics_command::{
     Command,
     Display,
@@ -157,7 +168,7 @@ impl LoadingImage {
                     log::warn!("failed to get absolute path: BadPathName");
                     return Err(Error::InvalidData);
                 };
-                let path = match std::fs::canonicalize(Path::new(&os_path)) {
+                let path = match realpath(Path::new(&os_path)) {
                     Ok(p) => p,
                     Err(err) => {
                         log::warn!("failed to get absolute path: {err}");
@@ -600,7 +611,7 @@ fn is_path_in_temp_dir_with(path: &[u8], tmp_dir: Option<std::ffi::OsString>) ->
 
         // The temporary dir is sometimes a symlink. On macOS for
         // example /tmp is /private/var/...
-        if let Ok(real_dir) = std::fs::canonicalize(&dir)
+        if let Ok(real_dir) = realpath(&dir)
             && path.starts_with(real_dir.as_os_str().as_bytes())
         {
             return true;
@@ -779,11 +790,7 @@ mod tests {
         fn write(&self, name: &str, data: &[u8]) -> String {
             let p = self.0.join(name);
             std::fs::write(&p, data).unwrap();
-            std::fs::canonicalize(p)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .to_owned()
+            realpath(p).unwrap().to_str().unwrap().to_owned()
         }
     }
     impl Drop for TmpDir {
@@ -1032,17 +1039,23 @@ mod tests {
 
     #[test]
     fn image_load_rejects_proc_and_nul_paths() {
-        let c = cmd(
-            Transmission {
-                format: TransmissionFormat::Rgb,
-                medium: TransmissionMedium::File,
-                width: 1,
-                height: 1,
-                ..Transmission::default()
-            },
-            b"/proc/self/status",
-        );
-        assert_eq!(LoadingImage::init(&c).unwrap_err(), Error::InvalidData);
+        // The `/proc/` guard is a prefix check on the canonical path, which
+        // on Windows is a drive path (Wine even maps `/proc` through `Z:`),
+        // so it only applies to POSIX.
+        #[cfg(unix)]
+        {
+            let c = cmd(
+                Transmission {
+                    format: TransmissionFormat::Rgb,
+                    medium: TransmissionMedium::File,
+                    width: 1,
+                    height: 1,
+                    ..Transmission::default()
+                },
+                b"/proc/self/status",
+            );
+            assert_eq!(LoadingImage::init(&c).unwrap_err(), Error::InvalidData);
+        }
         let c = cmd(
             Transmission {
                 medium: TransmissionMedium::File,

@@ -62,7 +62,7 @@ impl Options {
                 .map_err(|e| ArgError::Other(e.to_string()))?;
             let realpath = expanded
                 .to_path()
-                .and_then(std::fs::canonicalize)
+                .and_then(ghostty_os::path::realpath)
                 .map_err(|e| ArgError::Other(e.to_string()))?;
             self.working_directory_seen = true;
             return Ok(Some(
@@ -210,7 +210,7 @@ fn run_args(args: &[impl AsRef<[u8]>], stderr: &mut dyn std::io::Write) -> Resul
 
     if !opts.working_directory_seen {
         // This should be inserted at the beginning of the list, just in case `-e` was used.
-        let wd = std::fs::canonicalize(".")?;
+        let wd = ghostty_os::path::realpath(".")?;
         opts.arguments.insert(
             0,
             [
@@ -309,8 +309,13 @@ mod tests {
     fn working_directory_is_resolved() {
         let o = parse_str("--working-directory=/");
         assert!(o.working_directory_seen);
+        // The root resolves to `Z:\` under Wine / `C:\` on Windows.
+        let root = format!(
+            "--working-directory={}",
+            ghostty_os::path::realpath("/").unwrap().display()
+        );
         assert_eq!(
-            vec!["--working-directory=/"],
+            vec![root.as_str()],
             o.arguments
                 .iter()
                 .map(|v| std::str::from_utf8(v).unwrap())

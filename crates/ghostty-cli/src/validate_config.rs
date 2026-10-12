@@ -42,7 +42,7 @@ fn run_inner(opts: &Options, stdout: &mut dyn Write) -> Result<u8, Error> {
     if let Some(config_path) = &opts.config_file {
         // Byte-preserving: the option string carries non-UTF-8 bytes via the
         // reversible `osbytes` escape and the canonical path may too.
-        let abs_path = std::fs::canonicalize(config_path.to_path()?)?;
+        let abs_path = ghostty_os::path::realpath(config_path.to_path()?)?;
         cfg.load_file(&EncodedOs::from_path(&abs_path))?;
         cfg.load_recursive_files()?;
     } else {
