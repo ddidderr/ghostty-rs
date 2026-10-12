@@ -81,7 +81,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z11 | RV9 gaps: NUL font names, Zig parseInt/parseFloat, C NUL, ASCII trim, ArgIteratorGeneral, diagnostics | sonnet | ✅ | 3456 tests; 202-field differential vs installed Ghostty: 0 mismatches |
 | Z12 | Zig numeric parsing in VT/terminal/protocol parsers | sonnet | ✅ | 3468 tests |
 | DF | differential fuzzing: Zig terminal core vs Rust terminal core (Zig 0.15.2 driver) | sonnet | 🟨 | |
-| RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | 🟨 | |
+| RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
+| Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
