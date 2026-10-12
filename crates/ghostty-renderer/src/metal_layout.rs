@@ -478,12 +478,35 @@ pub const PIPELINE_DESCS: [PipelineDesc; 5] = [
     },
 ];
 
+/// Size in bytes of the replacement Metal buffer when `req_bytes` bytes no
+/// longer fit (`metal/buffer.zig` `sync`/`syncFromArrayLists`: "enough to
+/// hold double what we require").
+///
+/// Upstream bug fixed: Zig computes `size = req_bytes * 2` and then passes
+/// `size * @sizeOf(T)` to `newBufferWithLength:options:`, multiplying by the
+/// element size a second time (`sizeof(T)` times too much GPU memory). The
+/// length is already in bytes, so this is exactly double.
+#[must_use]
+pub const fn grown_buffer_bytes(req_bytes: usize) -> usize {
+    req_bytes * 2
+}
+
 #[cfg(test)]
 mod tests {
     use core::mem::{offset_of, size_of};
 
     use super::*;
     use crate::shader_types::{Bools, PaddingExtend};
+
+    #[test]
+    fn grown_buffer_bytes_is_double_the_required_bytes_not_scaled_by_size_of_t() {
+        // 100 vertices of a 32-byte type: 3200 bytes required, 6400 allocated
+        // (Zig would ask Metal for 6400 * 32 bytes).
+        let req_bytes = 100 * size_of::<CellText>();
+        assert_eq!(grown_buffer_bytes(req_bytes), req_bytes * 2);
+        assert_eq!(grown_buffer_bytes(0), 0);
+        assert_eq!(grown_buffer_bytes(1), 2);
+    }
 
     #[test]
     fn resource_options_bits() {

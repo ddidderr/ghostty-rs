@@ -9,7 +9,7 @@ use objc2_metal::{MTLBuffer, MTLDevice as _, MTLResourceOptions};
 use super::{Device, Error};
 use crate::{
     graphics_api::{ApiError, GpuBuffer},
-    metal_layout::{ResourceOptions, StorageMode},
+    metal_layout::{ResourceOptions, StorageMode, grown_buffer_bytes},
 };
 
 /// Options for initializing a buffer.
@@ -124,8 +124,9 @@ impl<T: Pod> Buffer<T> {
             // require (the old buffer is released when it is replaced).
             //
             // NOTE: Zig multiplies this size by `@sizeOf(T)` a second time,
-            // over-allocating; we allocate exactly double.
-            let size = req_bytes * 2;
+            // over-allocating; we allocate exactly double
+            // (see `grown_buffer_bytes`).
+            let size = grown_buffer_bytes(req_bytes);
             self.buffer = self
                 .opts
                 .device
