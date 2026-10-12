@@ -419,6 +419,12 @@ impl Application {
     pub fn new(core_app: Rc<dyn CoreApp>) -> Self {
         init_locale();
 
+        // AdwApplication loads style.css & co. from `resource-base-path` once,
+        // during startup, and only if the resources exist then. Zig's
+        // gresource is registered by a C constructor before main; ours must
+        // be registered explicitly before startup.
+        crate::register_resources();
+
         // Capture GLib/GObject/GTK log messages.
         glib::log_set_writer_func(glib_log_writer);
 

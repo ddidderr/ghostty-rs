@@ -3,7 +3,8 @@
 ## Overview / status
 Port of ZIG/src/apprt/gtk (GTK4 + libadwaita, gtk4-rs 0.11 / libadwaita 0.9, baseline GTK 4.14 / adw 1.5).
 build.rs compiles resources/ui/**/*.blp with blueprint-compiler and bundles UI+CSS+icons into a gresource
-(`register_resources()`). Inspector/imgui deferred (menu action is a no-op with TODO). Dropped the ghostty-core
+(`register_resources()`, called in `Application::new` before startup so AdwApplication
+auto-loads style.css from `resource-base-path`). Inspector/imgui deferred (menu action is a no-op with TODO). Dropped the ghostty-core
 dependency (cycle): the core boundary is the trait set in `src/core.rs`.
 
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
