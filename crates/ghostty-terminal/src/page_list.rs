@@ -1094,10 +1094,28 @@ impl PageList {
                 page.size.rows = 0;
             } else {
                 let page = &mut self.node_mut(id).ok_or(Error::InvalidId)?.data;
-                for y in a..b {
-                    page.clear_cells(y, 0, usize::from(page.size.cols), false)?;
+                if a == 0 {
+                    // Zig (`eraseRows`) SWAPS the surviving rows into place
+                    // rather than rotating, then clears the cells of the
+                    // rows left over past the new size. Row metadata (e.g.
+                    // the `wrap` flag) of those leftover rows is NOT reset
+                    // and becomes visible again when the page regrows into
+                    // them, so the exact arrangement must match.
+                    let cols = usize::from(page.size.cols);
+                    let scroll_amount = rows - b;
+                    for i in 0..scroll_amount {
+                        page.rows.swap(i, i + b);
+                        page.rows[i].set_dirty(true);
+                    }
+                    for y in scroll_amount..rows {
+                        page.clear_cells(y, 0, cols, false)?;
+                    }
+                } else {
+                    for y in a..b {
+                        page.clear_cells(y, 0, usize::from(page.size.cols), false)?;
+                    }
+                    page.rows[a..rows].rotate_left(b - a);
                 }
-                page.rows[a..rows].rotate_left(b - a);
                 page.size.rows -= (b - a) as u16;
                 for row in &mut page.rows[a..usize::from(page.size.rows)] {
                     row.set_dirty(true);

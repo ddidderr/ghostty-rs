@@ -33,7 +33,7 @@ workspace = true
 
 [workspace]
 resolver = "3"
-members = [".", "crates/*"]
+members = [".", "crates/*", "tools/difftest"]
 
 # The upstream Ghostty version this rewrite tracks (Zig: `build.zig.zon`
 # `.version`); consumed by `crates/ghostty-cli/build.rs`.

@@ -904,6 +904,17 @@ impl Terminal {
                         // This is like print_cell but without clearing the
                         // grapheme data from the cell, so we can move it
                         // later.
+                        // Zig keeps a raw pointer (`prev.cell`) to this cell;
+                        // remember its page cell index, because the wrap below
+                        // may scroll (rows move, cell memory does not) and the
+                        // grapheme move must still use THIS cell.
+                        let prev_idx = {
+                            let scr = self.screen_mut();
+                            let (x, pin) = (scr.cursor.x, scr.cursor_pin());
+                            scr.page(pin.node)
+                                .cell_index(usize::from(x), usize::from(pin.y))
+                                .expect("prev cell")
+                        };
                         {
                             let cell = self.screen_mut().cursor_cell_mut();
                             cell.set_wide(if row_wrap {
@@ -929,8 +940,11 @@ impl Terminal {
 
                             if new_pin.node == old_pin.node {
                                 let page = self.screen_mut().page_mut(new_pin.node);
-                                let old_idx = page.cell_index(old_x, old_y).expect("old cell");
                                 let new_idx = page.cell_index(new_x, new_y).expect("new cell");
+                                // Zig moves from `prev.cell`, NOT from `old_pin`
+                                // (they differ when margins keep the row from
+                                // scrolling the cell out of `old_pin`).
+                                let old_idx = prev_idx;
                                 page.move_grapheme(old_idx, new_idx)?;
                                 page.cells[old_idx].set_content_tag(ContentTag::Codepoint);
                                 page.cells[new_idx].set_content_tag(ContentTag::CodepointGrapheme);

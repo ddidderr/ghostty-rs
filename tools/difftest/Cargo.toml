@@ -1,0 +1,14 @@
+[package]
+name = "ghostty-difftest"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ghostty-terminal.workspace = true
+ghostty-vt.workspace = true
+ghostty-unicode.workspace = true
+
+[lints]
+workspace = true

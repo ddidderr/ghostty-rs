@@ -47,6 +47,26 @@ test:
 clean:
     cargo clean
 
+# Differential fuzzing of the terminal core, Zig (reference) vs Rust. Sets up
+# Zig 0.15.2 + a copy of the Zig source + the Zig driver under target/ on the
+# first run (network needed), then fuzzes SEEDS x CASES random escape-heavy
+# streams twice: assertions on (debug Rust vs ReleaseSafe Zig) and assertions
+# off (production Rust vs ReleaseFast Zig). Divergences are saved under
+# target/difftest-work/fails-<seed>/ (minimise with `difftest_fuzz min`). See
+# docs/rewrite/notes/difftest-DF.md.
+difftest CASES="20000" SEEDS="1 2 3":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tools/difftest/setup.sh
+    cargo build -p ghostty-difftest
+    cargo build --profile production -p ghostty-difftest
+    jobs="$(nproc)"
+    for s in {{ SEEDS }}; do
+        timeout 3000 target/debug/difftest_fuzz run --seed "$s" --cases {{ CASES }} --jobs "$jobs" --tokens 120
+        timeout 3000 target/production/difftest_fuzz run --seed "$s" --cases {{ CASES }} --jobs "$jobs" --tokens 120 \
+            --zig target/difftest-zig-fast/bin/difftest_zig
+    done
+
 # Build the build-data generator (Zig: `ghostty-build-data`,
 # src/main_build_data.zig) in release mode.
 build-data:

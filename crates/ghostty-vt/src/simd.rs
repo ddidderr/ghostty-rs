@@ -1,7 +1,10 @@
 //! SIMD-optimized routines (ZIG/src/simd). The Rust port is scalar-only:
-//! `memchr` provides the vectorized byte search, and UTF-8 decoding follows
-//! the Zig scalar fallback (`utf8DecodeUntilControlSeqScalar`), which is
-//! tested to match the SIMD behavior.
+//! `memchr` provides the vectorized byte search, and UTF-8 decoding
+//! reproduces the observable behaviour of the C++ SIMD path (`vt.cpp`:
+//! simdutf + utfcpp `replace_invalid` + `trim_partial_utf8`), which is what a
+//! default Ghostty build runs. (It differs from Zig's scalar fallback
+//! `utf8DecodeUntilControlSeqScalar` for ill-formed input; found by the
+//! differential fuzzer, see docs/rewrite/notes/difftest-DF.md.)
 //!
 //! Not ported: `codepoint_width` (belongs to `ghostty-unicode`) and
 //! `base64` (the `base64` crate is used by `kitty::graphics_command`).
@@ -22,113 +25,155 @@ pub struct DecodeResult {
     pub decoded: usize,
 }
 
-/// Length of a UTF-8 sequence given its leading byte, `None` if the byte
-/// cannot start a sequence (Zig `std.unicode.utf8ByteSequenceLength`).
-fn utf8_byte_sequence_length(first: u8) -> Option<usize> {
-    match first {
-        0x00..=0x7F => Some(1),
-        0xC0..=0xDF => Some(2),
-        0xE0..=0xEF => Some(3),
-        0xF0..=0xF7 => Some(4),
-        _ => None,
+/// `simdutf::scalar::utf8::trim_partial_utf8`: the length of `input` with a
+/// trailing (possibly) incomplete UTF-8 sequence removed. Purely byte-value
+/// based (it does not validate), exactly like the C++.
+fn trim_partial_utf8(input: &[u8]) -> usize {
+    let length = input.len();
+    if length < 3 {
+        match length {
+            2 => {
+                if input[1] >= 0xc0 {
+                    return 1;
+                }
+                if input[0] >= 0xe0 {
+                    return 0;
+                }
+                return length;
+            }
+            1 => {
+                if input[0] >= 0xc0 {
+                    return 0;
+                }
+                return length;
+            }
+            _ => return length,
+        }
     }
+    if input[length - 1] >= 0xc0 {
+        return length - 1;
+    }
+    if input[length - 2] >= 0xe0 {
+        return length - 2;
+    }
+    if input[length - 3] >= 0xf0 {
+        return length - 3;
+    }
+    length
 }
 
-/// Decode `bytes` (exactly one sequence whose length matches its leading
-/// byte) strictly; `None` if ill-formed (overlong, surrogate, out of range or
-/// a bad continuation byte). Equivalent to `std::str::from_utf8` on one char.
-#[inline]
-fn utf8_decode(bytes: &[u8]) -> Option<u32> {
+/// Decode `input` into `output` replacing invalid sequences with U+FFFD the
+/// way `DecodeUTF8` in `vt.cpp` does: simdutf for the all-valid fast path and
+/// `utf8::replace_invalid` (utfcpp) otherwise. Because replacement output is
+/// valid UTF-8, this is equivalent to a single utfcpp pass:
+///
+/// - an invalid lead byte (`0x80..=0xC1`-style continuation bytes, `0xF8..`)
+///   becomes one U+FFFD and only that byte is skipped;
+/// - an incomplete sequence, overlong encoding, surrogate or out-of-range
+///   code point becomes ONE U+FFFD and the lead byte plus every following
+///   continuation byte is skipped;
+/// - a sequence truncated by the end of input becomes one U+FFFD.
+fn decode_utf8_replace(input: &[u8], output: &mut [u32]) -> usize {
     #[inline]
-    fn cont(b: u8) -> bool {
+    fn is_trail(b: u8) -> bool {
         b & 0xC0 == 0x80
     }
-    match *bytes {
-        [b0] if b0 < 0x80 => Some(u32::from(b0)),
-        [b0 @ 0xC2..=0xDF, b1] if cont(b1) => {
-            Some((u32::from(b0 & 0x1F) << 6) | u32::from(b1 & 0x3F))
+    let mut count = 0;
+    let mut i = 0;
+    while i < input.len() {
+        let lead = input[i];
+        let len = if lead < 0x80 {
+            1
+        } else if lead >> 5 == 0x6 {
+            2
+        } else if lead >> 4 == 0xe {
+            3
+        } else if lead >> 3 == 0x1e {
+            4
+        } else {
+            // INVALID_LEAD
+            output[count] = 0xFFFD;
+            count += 1;
+            i += 1;
+            continue;
+        };
+        // Gather the sequence, tracking utfcpp's error classes.
+        let mut cp = if len == 1 {
+            u32::from(lead)
+        } else {
+            u32::from(lead) & (0x7f >> len)
+        };
+        let mut err = None; // Some(true) = NOT_ENOUGH_ROOM, Some(false) = other
+        for k in 1..len {
+            match input.get(i + k) {
+                None => {
+                    err = Some(true);
+                    break;
+                }
+                Some(&b) if !is_trail(b) => {
+                    err = Some(false);
+                    break;
+                }
+                Some(&b) => cp = (cp << 6) | u32::from(b & 0x3f),
+            }
         }
-        [b0 @ 0xE0..=0xEF, b1, b2] if cont(b1) && cont(b2) => {
-            let ok = match b0 {
-                0xE0 => b1 >= 0xA0,
-                0xED => b1 < 0xA0,
-                _ => true,
+        if err.is_none() {
+            let valid = cp <= 0x10_FFFF && !(0xD800..=0xDFFF).contains(&cp);
+            let overlong = match cp {
+                0..=0x7f => len != 1,
+                0x80..=0x7ff => len != 2,
+                0x800..=0xffff => len != 3,
+                _ => false,
             };
-            ok.then(|| {
-                (u32::from(b0 & 0x0F) << 12) | (u32::from(b1 & 0x3F) << 6) | u32::from(b2 & 0x3F)
-            })
+            if valid && !overlong {
+                output[count] = cp;
+                count += 1;
+                i += len;
+                continue;
+            }
+            err = Some(false);
         }
-        [b0 @ 0xF0..=0xF4, b1, b2, b3] if cont(b1) && cont(b2) && cont(b3) => {
-            let ok = match b0 {
-                0xF0 => b1 >= 0x90,
-                0xF4 => b1 < 0x90,
-                _ => true,
-            };
-            ok.then(|| {
-                (u32::from(b0 & 0x07) << 18)
-                    | (u32::from(b1 & 0x3F) << 12)
-                    | (u32::from(b2 & 0x3F) << 6)
-                    | u32::from(b3 & 0x3F)
-            })
+        output[count] = 0xFFFD;
+        count += 1;
+        if err == Some(true) {
+            // NOT_ENOUGH_ROOM: one replacement for the truncated tail.
+            break;
         }
-        _ => None,
+        i += 1;
+        while i < input.len() && is_trail(input[i]) {
+            i += 1;
+        }
     }
+    count
 }
 
-/// Decode UTF-8 from `input` into `output` until an ESC (0x1B) is found.
-/// `output.len()` must be at least `input.len()`.
+/// Decode UTF-8 from `input` into `output` until an ESC (0x1B) is found,
+/// faithfully following `ghostty_simd_decode_utf8_until_control_seq`
+/// (`ZIG/src/simd/vt.cpp`, the real SIMD path of a default Ghostty build):
 ///
-/// Invalid sequences have their leading byte replaced with U+FFFD and
-/// decoding continues after that byte. Decoding stops (without consuming)
-/// at an incomplete trailing sequence or at a byte that can't start a
-/// sequence (e.g. 0xFF or a stray continuation byte); the caller must handle
-/// those bytes itself (see `stream.rs`).
+/// - if an ESC is found, everything before it is decoded (invalid and
+///   truncated sequences become U+FFFD, see [`decode_utf8_replace`]) and the
+///   ESC position is returned;
+/// - otherwise a trailing partial sequence is trimmed with
+///   `trim_partial_utf8` (a byte-value heuristic, it may trim valid trailing
+///   bytes too) and the rest is decoded; the caller feeds the untouched tail
+///   to the scalar decoder.
+///
+/// `output.len()` must be at least `input.len()`.
 pub fn utf8_decode_until_control_seq(input: &[u8], output: &mut [u32]) -> DecodeResult {
     assert!(output.len() >= input.len());
-
-    let idx = index_of(input, 0x1B).unwrap_or(input.len());
-    let decode = &input[..idx];
-
-    let mut decode_offset = 0;
-    let mut decode_count = 0;
-    while decode_offset < decode.len() {
-        // ASCII fast path: a run of single-byte sequences.
-        let rem = &decode[decode_offset..];
-        if rem[0] < 0x80 {
-            let run = rem.iter().take_while(|&&b| b < 0x80).count();
-            for (o, &b) in output[decode_count..decode_count + run].iter_mut().zip(rem) {
-                *o = u32::from(b);
-            }
-            decode_count += run;
-            decode_offset += run;
-            continue;
-        }
-        let Some(cp_len) = utf8_byte_sequence_length(rem[0]) else {
-            break;
+    if let Some(esc) = index_of(input, 0x1B) {
+        let decoded = decode_utf8_replace(&input[..esc], output);
+        return DecodeResult {
+            consumed: esc,
+            decoded,
         };
-
-        // Partial input: defer to the future.
-        if rem.len() < cp_len {
-            break;
-        }
-
-        match utf8_decode(&rem[..cp_len]) {
-            Some(cp) => {
-                output[decode_count] = cp;
-                decode_offset += cp_len;
-            }
-            None => {
-                // Replace only the leading byte and continue after it.
-                output[decode_count] = 0xFFFD;
-                decode_offset += 1;
-            }
-        }
-        decode_count += 1;
     }
-
+    let trimmed = trim_partial_utf8(input);
+    let decoded = decode_utf8_replace(&input[..trimmed], output);
     DecodeResult {
-        consumed: decode_offset,
-        decoded: decode_count,
+        consumed: trimmed,
+        decoded,
     }
 }
 
@@ -137,54 +182,53 @@ mod tests {
     use super::*;
 
     #[test]
-    fn utf8_decode_matches_std() {
-        fn std_decode(bytes: &[u8]) -> Option<u32> {
-            std::str::from_utf8(bytes)
-                .ok()
-                .and_then(|s| s.chars().next())
-                .map(|c| c as u32)
-        }
-        for b0 in 0..=255u8 {
-            let Some(len) = utf8_byte_sequence_length(b0) else {
+    fn decode_valid_matches_std() {
+        let mut out = [0u32; 8];
+        for cp in (0..=0x10FFFFu32)
+            .step_by(7)
+            .chain([0x7f, 0x80, 0x7ff, 0x800, 0xffff, 0x10000, 0x10FFFF])
+        {
+            let Some(c) = char::from_u32(cp) else {
                 continue;
             };
-            match len {
-                1 => assert_eq!(utf8_decode(&[b0]), std_decode(&[b0])),
-                2 => {
-                    for b1 in 0..=255u8 {
-                        assert_eq!(
-                            utf8_decode(&[b0, b1]),
-                            std_decode(&[b0, b1]),
-                            "{b0:x} {b1:x}"
-                        );
-                    }
-                }
-                3 => {
-                    for b1 in 0..=255u8 {
-                        for b2 in 0..=255u8 {
-                            assert_eq!(
-                                utf8_decode(&[b0, b1, b2]),
-                                std_decode(&[b0, b1, b2]),
-                                "{b0:x} {b1:x} {b2:x}"
-                            );
-                        }
-                    }
-                }
-                _ => {
-                    for b1 in 0..=255u8 {
-                        for b2 in [0x00, 0x7F, 0x80, 0xA0, 0xBF, 0xC0] {
-                            for b3 in [0x00, 0x7F, 0x80, 0xBF, 0xC0] {
-                                assert_eq!(
-                                    utf8_decode(&[b0, b1, b2, b3]),
-                                    std_decode(&[b0, b1, b2, b3]),
-                                    "{b0:x} {b1:x} {b2:x} {b3:x}"
-                                );
-                            }
-                        }
-                    }
-                }
+            if c == '\x1b' {
+                continue;
             }
+            let mut b = [0u8; 4];
+            let s = c.encode_utf8(&mut b);
+            assert_eq!(decode_utf8_replace(s.as_bytes(), &mut out), 1);
+            assert_eq!(out[0], cp);
         }
+    }
+
+    // Regressions found by the differential fuzzer (utfcpp replace_invalid
+    // semantics: ONE U+FFFD per invalid sequence, trail bytes swallowed).
+    #[test]
+    fn decode_replace_swallows_trail_bytes() {
+        let mut out = [0u32; 16];
+        // overlong lead + trail
+        assert_eq!(decode_utf8_replace(b"\xc0\xa9", &mut out), 1);
+        assert_eq!(out[0], 0xFFFD);
+        // truncated 3-byte sequence followed by a non-trail byte
+        assert_eq!(decode_utf8_replace(b"\xe4\xa9\x41", &mut out), 2);
+        assert_eq!(&out[..2], &[0xFFFD, 0x41]);
+        // surrogate
+        assert_eq!(decode_utf8_replace(b"\xed\xa0\x80", &mut out), 1);
+        // invalid lead only skips itself
+        assert_eq!(decode_utf8_replace(b"\xff\x80", &mut out), 2);
+        // stray trail bytes are each invalid leads
+        assert_eq!(decode_utf8_replace(b"\x80\x80", &mut out), 2);
+        // truncated at end of input: one replacement
+        assert_eq!(decode_utf8_replace(b"\xf0\x9f", &mut out), 1);
+    }
+
+    #[test]
+    fn trim_partial_is_byte_value_based() {
+        assert_eq!(trim_partial_utf8(b"ab\xe4\x41"), 2);
+        assert_eq!(trim_partial_utf8(b"abc"), 3);
+        assert_eq!(trim_partial_utf8(b"ab\xff"), 2);
+        assert_eq!(trim_partial_utf8(b"\xe4\xb8"), 0);
+        assert_eq!(trim_partial_utf8(b""), 0);
     }
 
     #[test]

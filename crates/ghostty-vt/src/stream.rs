@@ -347,29 +347,33 @@ impl<H: Handler> Stream<H> {
         debug_assert!(input.len() <= cp_buf.len());
 
         let mut offset = 0;
-        while offset < input.len() {
-            // If the scalar UTF-8 decoder was in the middle of processing a
-            // code sequence, we continue until it's not.
-            if self.utf8decoder.in_sequence() {
-                self.next_utf8(input[offset])?;
-                offset += 1;
-                continue;
-            }
 
-            // If we're not in the ground state then we process until we are.
-            // This can happen if the last chunk of input put us in the middle
-            // of a control sequence.
-            if self.parser.state != State::Ground {
-                offset += self.consume_until_ground(&input[offset..])?;
-                continue;
+        // If the scalar UTF-8 decoder was in the middle of processing a code
+        // sequence, we continue until it's not.
+        while self.utf8decoder.in_sequence() {
+            if offset >= input.len() {
+                return Ok(());
             }
+            self.next_utf8(input[offset])?;
+            offset += 1;
+        }
+        if offset >= input.len() {
+            return Ok(());
+        }
 
-            if input[offset] == 0x1B {
-                offset += self.consume_all_escapes(&input[offset..])?;
-                continue;
-            }
+        // If we're not in the ground state then we process until we are. This
+        // can happen if the last chunk of input put us in the middle of a
+        // control sequence.
+        offset += self.consume_until_ground(&input[offset..])?;
+        if offset >= input.len() {
+            return Ok(());
+        }
+        offset += self.consume_all_escapes(&input[offset..])?;
 
-            // Ground state: everything up to the next ESC is UTF-8.
+        // If we're in the ground state then we can use SIMD to process input
+        // until we see an ESC (0x1B), since all other characters up to that
+        // point are just UTF-8.
+        while self.parser.state == State::Ground && offset < input.len() {
             let res = simd::utf8_decode_until_control_seq(&input[offset..], cp_buf);
             for &cp in &cp_buf[..res.decoded] {
                 if cp <= 0xF {
@@ -378,18 +382,25 @@ impl<H: Handler> Stream<H> {
                     self.print(cp)?;
                 }
             }
+            // Consume the bytes we just processed.
             offset += res.consumed;
+
             if offset >= input.len() {
-                break;
+                return Ok(());
             }
 
-            // If our offset is NOT an escape then we must have a partial or
-            // invalid UTF-8 sequence. Pass that byte to the scalar decoder,
-            // which handles replacement and carries partial state over.
+            // If our offset is NOT an escape then we must have a partial
+            // UTF-8 sequence. In that case, we pass the whole remainder off
+            // to the scalar parser.
             if input[offset] != 0x1B {
-                self.next_utf8(input[offset])?;
-                offset += 1;
+                for &c in &input[offset..] {
+                    self.next_utf8(c)?;
+                }
+                return Ok(());
             }
+
+            // Process control sequences until we run out.
+            offset += self.consume_all_escapes(&input[offset..])?;
         }
         Ok(())
     }

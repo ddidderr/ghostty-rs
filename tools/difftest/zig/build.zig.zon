@@ -1,0 +1,12 @@
+.{
+    .name = .difftest_zig,
+    .version = "0.0.0",
+    .fingerprint = 0x5509a6937e82f017,
+    .minimum_zig_version = "0.15.1",
+    .dependencies = .{
+        // A COPY of the reference Ghostty source (never the reference tree
+        // itself), created by `just difftest-setup`.
+        .ghostty = .{ .path = "../../../target/zig-src" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

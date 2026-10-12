@@ -1520,6 +1520,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghostty-difftest"
+version = "0.1.0"
+dependencies = [
+ "ghostty-terminal",
+ "ghostty-unicode",
+ "ghostty-vt",
+]
+
+[[package]]
 name = "ghostty-font"
 version = "0.1.0"
 dependencies = [

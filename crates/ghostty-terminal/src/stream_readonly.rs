@@ -1022,4 +1022,94 @@ mod tests {
 
         s.next_slice(b"\x1b[?W").unwrap();
     }
+
+    // ---- Regressions found by the Zig-vs-Rust differential fuzzer
+    // (tools/difftest, docs/rewrite/notes/difftest-DF.md). Expected values
+    // come from the Zig reference driver.
+
+    fn screen_row_wrap(t: &Terminal, y: u32) -> bool {
+        use crate::point::{Coordinate, Point};
+        let pages = &t.screen().pages;
+        let pin = pages
+            .pin(Point::Screen(Coordinate { x: 0, y }))
+            .expect("row exists");
+        pin.row_and_cell(pages).expect("row").0.wrap()
+    }
+
+    fn cell_cps(t: &Terminal, row: u32) -> Vec<u32> {
+        use crate::point::{Coordinate, Point};
+        (0..t.cols)
+            .map(|x| {
+                t.screen()
+                    .pages
+                    .get_cell(Point::Active(Coordinate { x, y: row }))
+                    .map_or(0, crate::page::Cell::codepoint)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn difftest_invalid_utf8_overlong_swallows_trail_byte() {
+        // Zig's SIMD path (utfcpp replace_invalid) emits ONE U+FFFD for an
+        // overlong lead plus its continuation byte.
+        let mut t = term(10, 2);
+        t.vt_stream().next_slice(b"\xc0\xa9").unwrap();
+        assert_eq!(1, t.screen().cursor.x);
+        assert_eq!(0xFFFD, cell_cps(&t, 0)[0]);
+    }
+
+    #[test]
+    fn difftest_invalid_utf8_truncated_then_control() {
+        // e4 a9 followed by a non-trail byte: the truncated sequence is a
+        // single replacement and the following byte decodes normally.
+        let mut t = term(10, 2);
+        t.vt_stream().next_slice(b"\xe4\xa9A\xf0\x9f").unwrap();
+        let cps = cell_cps(&t, 0);
+        assert_eq!(&cps[..2], &[0xFFFD, 'A' as u32]);
+    }
+
+    #[test]
+    fn difftest_erase_scrollback_keeps_stale_row_flags() {
+        // Zig's eraseRows swaps rows and leaves the stale `wrap` flag in the
+        // leftover rows, which is visible once the page regrows.
+        let mut t = term(1, 1);
+        t.vt_stream().next_slice(b"xt\n\x1b[3Jex").unwrap();
+        assert!(screen_row_wrap(&t, 0));
+        assert!(!screen_row_wrap(&t, 1));
+    }
+
+    #[test]
+    fn difftest_grapheme_wrap_with_margins_moves_prev_cell() {
+        // Devanagari conjunct widening the cell at the last column while a
+        // left/right margin keeps the wrap from scrolling that cell: Zig moves
+        // the grapheme from the original cell pointer (not `up(1)`).
+        use crate::point::{Coordinate, Point};
+        let mut t = term(20, 8);
+        t.vt_stream()
+            .next_slice("\x1b[?2027h\x1b[?69h\x1b[;10s\x1b[50;41H\u{915}\u{94d}\u{937}".as_bytes())
+            .unwrap();
+        let pages = &t.screen().pages;
+        let pin = pages.pin(Point::Active(Coordinate { x: 0, y: 7 })).unwrap();
+        let (_, cell) = pin.row_and_cell(pages).unwrap();
+        assert_eq!(cell.codepoint(), 0x915);
+        assert_eq!(crate::page::Wide::Wide, cell.wide());
+        assert_eq!(Some(&[0x94d, 0x937][..]), pin.grapheme(pages));
+    }
+
+    /// Upstream (Zig) bug, deliberately NOT replicated: Zig's
+    /// `Terminal.print` grapheme path keeps `prev.cell` across a page
+    /// reallocation (hyperlink/string capacity growth) and appends the
+    /// grapheme into freed memory, silently losing U+FE0F here. Rust
+    /// addresses cells by index and keeps it. See difftest-DF.md.
+    #[test]
+    fn difftest_upstream_uaf_grapheme_survives_page_growth() {
+        let mut t = Terminal::new(Options {
+            max_scrollback: 1,
+            ..Options::new(5, 30)
+        })
+        .unwrap();
+        let input = b"\x1b\x5d\x38\x3b\x3b\x6c\x07\x35\x36\x37\x38\x39\x1b\x5b\x38\x65\x5f\x2c\xba\x9f\x87\xb8\x80\xbc\xbb\x1b\x5b\x35\x32\x72\x54\x68\x65\x20\x71\x75\x69\x63\x6b\x20\x62\x72\x6f\x77\x6e\x20\x66\x6f\x78\x1b\x5c\x61\x20\x40\x1b\x5b\x53\x1b\x4b\x30\x31\x32\x33\x34\x35\x36\x37\x31\x53\x1b\x73\x5d\x5b\x32\x6d\x9b\xff\x80\x80\x1b\x5b\x3f\x32\x30\x32\x37\x68\x1b\x5b\x3b\x33\x48\xf0\xc0\x5c\x77\x70\x5e\x6f\x20\x70\xe2\x9d\xa4\xef\xb8\x8f";
+        t.vt_stream().next_slice(input).unwrap();
+        assert!(t.plain_string().unwrap().contains("\u{2764}\u{fe0f}"));
+    }
 }
