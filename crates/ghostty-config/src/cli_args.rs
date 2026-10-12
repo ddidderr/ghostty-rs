@@ -343,10 +343,21 @@ pub fn parse_auto_struct_with(
 
 /// Decode a double-quoted Zig string literal (including the quotes).
 /// Returns `None` on failure. Bytes produced by `\x` escapes that do not form
-/// valid UTF-8 are converted lossily.
+/// valid UTF-8 stay raw bytes: they are carried through the reversible
+/// `ghostty_os::osbytes` escape encoding (`\xFF` -> `U+FDD0 U+00FF`, decoded back
+/// to `0xFF` by `config_str_to_bytes`). See [`parse_zig_string_literal_bytes`]
+/// for the raw bytes.
 #[must_use]
 pub fn parse_zig_string_literal(s: &str) -> Option<String> {
-    let b = s.as_bytes();
+    parse_zig_string_literal_bytes(s).map(|b| ghostty_os::osbytes::bytes_to_config_string(&b))
+}
+
+/// Byte-exact [`parse_zig_string_literal`] (Zig `std.zig.string_literal`
+/// decoding yields a `[]u8`).
+#[must_use]
+pub fn parse_zig_string_literal_bytes(s: &str) -> Option<Vec<u8>> {
+    let b = ghostty_os::osbytes::config_str_to_bytes(s);
+    let b = b.as_slice();
     if b.len() < 2 || b[0] != b'"' || b[b.len() - 1] != b'"' {
         return None;
     }
@@ -395,7 +406,7 @@ pub fn parse_zig_string_literal(s: &str) -> Option<String> {
         }
         i += 1;
     }
-    Some(String::from_utf8_lossy(&out).into_owned())
+    Some(out)
 }
 
 /// Parse a "packed struct" value (comma separated names, optionally
@@ -652,8 +663,13 @@ impl<I: Iterator<Item = String>> ArgIter for ArgsIterator<I> {
 /// Create an args iterator for the process args. This will skip argv0.
 #[must_use]
 pub fn args_iterator() -> ArgsIterator<std::iter::Skip<std::vec::IntoIter<String>>> {
-    // Byte-safe: never panics on non-UTF-8 arguments.
-    ArgsIterator::new(ghostty_os::args::collect_lossy().into_iter().skip(1))
+    // Byte-safe: non-UTF-8 arguments keep their bytes (reversible escape
+    // encoding, see `ghostty_os::osbytes`).
+    ArgsIterator::new(
+        ghostty_os::args::collect_config_strings()
+            .into_iter()
+            .skip(1),
+    )
 }
 
 /// An iterator valid for arg parsing from a slice.
@@ -791,7 +807,8 @@ impl<R: BufRead> LineIterator<R> {
 
             self.line += 1;
 
-            let line = String::from_utf8_lossy(&buf);
+            // Raw bytes survive via the reversible escape encoding.
+            let line = ghostty_os::osbytes::bytes_to_config_string(&buf);
             // Trim any whitespace (including CR) around it
             let trim = line.trim_matches(|c| c == ' ' || c == '\t' || c == '\r');
 
@@ -1532,5 +1549,43 @@ mod tests {
             "a\nA\u{1F47B}"
         );
         assert_eq!(parse_zig_string_literal("\"\\q\""), None);
+    }
+
+    #[test]
+    fn zig_string_literal_keeps_raw_bytes() {
+        // `\xFF` is not valid UTF-8 and must stay the single byte 0xFF.
+        assert_eq!(
+            parse_zig_string_literal_bytes("\"a\\xFFb\"").unwrap(),
+            vec![b'a', 0xff, b'b']
+        );
+        let s = parse_zig_string_literal("\"a\\xFFb\"").unwrap();
+        assert_eq!(
+            ghostty_os::osbytes::config_str_to_bytes(&s),
+            vec![b'a', 0xff, b'b']
+        );
+        assert!(!s.contains('\u{fffd}'));
+        // Valid multi-byte sequences spelled with escapes still decode.
+        assert_eq!(
+            parse_zig_string_literal("\"\\xC3\\xA9\"").unwrap(),
+            "\u{e9}"
+        );
+        // Raw (unescaped) invalid input bytes survive the escape encoding.
+        let raw = ghostty_os::osbytes::bytes_to_config_string(b"\"x\xfey\"");
+        assert_eq!(
+            parse_zig_string_literal_bytes(&raw).unwrap(),
+            vec![b'x', 0xfe, b'y']
+        );
+    }
+
+    #[test]
+    fn line_iterator_keeps_invalid_utf8_bytes() {
+        let data: &[u8] = b"title = a\xffb\n";
+        let mut it = LineIterator::new(data);
+        let line = it.next().unwrap();
+        assert_eq!(
+            ghostty_os::osbytes::config_str_to_bytes(&line),
+            b"--title=a\xffb".to_vec()
+        );
+        assert!(!line.contains('\u{fffd}'));
     }
 }

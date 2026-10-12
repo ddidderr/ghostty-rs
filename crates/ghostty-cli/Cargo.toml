@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 flate2 = "1.1.10"
+ghostty-build-info.workspace = true
 ghostty-apprt.workspace = true
 ghostty-config.workspace = true
 ghostty-crash.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "ghostty-build-info"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Single source of truth for the derived build version, channel, commit and mode (Zig: build_config.zig)"
+
+[lints]
+workspace = true

@@ -59,7 +59,7 @@ pub fn legacy_default_app_support_path() -> Result<String, xdg::Error> {
 #[cfg(target_os = "macos")]
 fn app_support_dir(sub_path: &str) -> Result<String, xdg::Error> {
     ghostty_os::macos::app_support_dir(sub_path)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|p| ghostty_os::osbytes::path_to_config_string(&p))
         .map_err(|_| xdg::Error::AppleApiFailed)
 }
 
@@ -159,9 +159,10 @@ impl std::error::Error for OpenFileError {}
 /// if it exists and is non-empty. This also constrains the possible
 /// errors to a smaller set that we can explicitly handle.
 pub fn open(path: &str) -> Result<File, OpenFileError> {
-    assert!(std::path::Path::new(path).is_absolute());
+    assert!(ghostty_os::osbytes::config_str_to_path(path).is_absolute());
 
-    let file = File::open(path).map_err(|err| {
+    // `path` may carry the reversible byte escape of non-UTF-8 names.
+    let file = File::open(ghostty_os::osbytes::config_str_to_os(path)).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {
             OpenFileError::FileNotFound
         } else {

@@ -3,7 +3,14 @@
 //! Zig reads the resources dir from global state; here it is passed
 //! explicitly (`resources_dir`, the value of `ResourcesDir.app()`).
 
-use std::{fs::File, path::Path};
+use std::fs::File;
+
+use ghostty_os::osbytes::{
+    config_str_to_os,
+    config_str_to_path,
+    os_to_config_string,
+    path_to_config_string,
+};
 
 use crate::diagnostics::{Diagnostic, DiagnosticList};
 
@@ -35,12 +42,9 @@ impl Location {
             .ok(),
             Location::Resources => {
                 let base = resources_dir?;
-                Some(
-                    Path::new(base)
-                        .join("themes")
-                        .to_string_lossy()
-                        .into_owned(),
-                )
+                Some(path_to_config_string(
+                    &config_str_to_path(base).join("themes"),
+                ))
             }
         }
     }
@@ -161,7 +165,7 @@ pub fn open(
     diags: &mut DiagnosticList,
 ) -> Option<OpenedTheme> {
     // Absolute themes are loaded a different path.
-    if Path::new(theme).is_absolute() {
+    if config_str_to_path(theme).is_absolute() {
         let file = open_absolute(theme, diags)?;
         if !check_regular(&file, theme, diags) {
             return None;
@@ -172,9 +176,9 @@ pub fn open(
         });
     }
 
-    let basename = Path::new(theme)
+    let basename = config_str_to_path(theme)
         .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
+        .map(os_to_config_string)
         .unwrap_or_default();
     if theme != basename {
         diag(
@@ -190,8 +194,8 @@ pub fn open(
     // one that exists.
     let mut it = LocationIterator::new(resources_dir);
     while let Some((_, dir)) = it.next_location() {
-        let path = Path::new(&dir).join(theme).to_string_lossy().into_owned();
-        match File::open(&path) {
+        let path = path_to_config_string(&config_str_to_path(&dir).join(config_str_to_os(theme)));
+        match File::open(config_str_to_path(&path)) {
             Ok(file) => {
                 if !check_regular(&file, theme, diags) {
                     return None;
@@ -215,7 +219,7 @@ pub fn open(
     // our iterator, reiterate over in order to build a better error message.
     it.reset();
     while let Some((_, dir)) = it.next_location() {
-        let path = Path::new(&dir).join(theme).to_string_lossy().into_owned();
+        let path = path_to_config_string(&config_str_to_path(&dir).join(config_str_to_os(theme)));
         diag(
             diags,
             format!("theme \"{theme}\" not found, tried path \"{path}\""),
@@ -229,7 +233,7 @@ pub fn open(
 /// then messages will be appended to the given error list and None is
 /// returned.
 pub fn open_absolute(theme: &str, diags: &mut DiagnosticList) -> Option<File> {
-    match File::open(theme) {
+    match File::open(config_str_to_path(theme)) {
         Ok(f) => Some(f),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {

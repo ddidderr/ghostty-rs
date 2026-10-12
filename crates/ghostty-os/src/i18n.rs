@@ -79,26 +79,49 @@ pub fn tr(msgid: &str) -> String {
 /// a POSIX-compliant value.
 ///
 /// The Zig version is a thin layer over gnulib's
-/// `_libintl_locale_name_canonicalize` (only linked when building libintl
-/// from source, i.e. macOS). That function isn't available here, so this is
-/// a pure-Rust approximation of the cases that matter: BCP-47 style tags
-/// have `-` replaced with `_` and the Chinese script tags are mapped to
-/// their POSIX region equivalents. Encodings are NOT parsed out (like the
-/// original, `en_US.UTF-8` becomes `en_US.UTF_8`).
+/// `_libintl_locale_name_canonicalize` (the Mac OS X flavour of
+/// `gl_locale_name_canonicalize`), after fixing up some `zh` locales. This
+/// ports that function exactly, including its legacy-name, language-tag and
+/// script tables ([`crate::i18n_canon_table`]). Encodings are NOT parsed out
+/// (like the original, `en_US.UTF-8` becomes `en_US.UTF_8`).
 pub fn canonicalize_locale(locale: &str) -> String {
     // Fix zh locales
     if let Some(fixed) = fix_zh_locale(locale) {
         return fixed.to_owned();
     }
 
-    // Emulate gnulib's mapping of bare zh script tags.
-    match locale {
-        "zh-Hans" => return "zh_CN".to_owned(),
-        "zh-Hant" => return "zh_TW".to_owned(),
-        _ => {}
+    libintl_locale_name_canonicalize(locale)
+}
+
+/// `gl_locale_name_canonicalize` (gnulib `localename-unsafe.c`).
+fn libintl_locale_name_canonicalize(name: &str) -> String {
+    use crate::i18n_canon_table::{LANGTAG_TABLE, LEGACY_TABLE, SCRIPT_TABLE};
+
+    // Step 1: Convert using legacy_table.
+    if name.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
+        && let Some((_, unixy)) = LEGACY_TABLE.iter().find(|(l, _)| *l == name)
+    {
+        return (*unixy).to_owned();
     }
 
-    locale.replace('-', "_")
+    // Step 2: Convert using langtag_table and script_table.
+    if name.len() == 7 && name.as_bytes()[2] == b'-' {
+        if let Some((_, unixy)) = LANGTAG_TABLE.iter().find(|(l, _)| *l == name) {
+            return (*unixy).to_owned();
+        }
+
+        // `name.get(3..)` is None only when byte 3 is not a char boundary,
+        // in which case no script entry can match.
+        if let Some(script) = name.get(3..)
+            && let Some((_, unixy)) = SCRIPT_TABLE.iter().find(|(s, _)| *s == script)
+        {
+            // name[2] = '@'; strcpy (name + 3, unixy)
+            return format!("{}@{unixy}", &name[..2]);
+        }
+    }
+
+    // Step 3: Convert new-style dash to Unix underscore.
+    name.replace('-', "_")
 }
 
 /// Handles some zh locales canonicalization because internal libintl
@@ -181,6 +204,37 @@ mod tests {
         // canonicalizeLocale does not handle encodings and will turn them into
         // underscores. We should parse them out before calling this function.
         assert_eq!("en_US.UTF_8", canonicalize_locale("en_US.UTF-8"));
+    }
+
+    #[test]
+    fn canonicalize_locale_libintl_tables() {
+        // langtag_table
+        assert_eq!("pa_IN", canonicalize_locale("pa-Guru"));
+        assert_eq!("pa_PK", canonicalize_locale("pa-Arab"));
+        assert_eq!("az", canonicalize_locale("az-Latn"));
+        assert_eq!("sr", canonicalize_locale("sr-Cyrl"));
+        assert_eq!("kk", canonicalize_locale("kk-Cyrl"));
+        assert_eq!("ga", canonicalize_locale("ga-dots"));
+        // 8 bytes long: the `strlen == 7` guard skips the tables (upstream quirk).
+        assert_eq!("yue_Hans", canonicalize_locale("yue-Hans"));
+        // script_table (name[2] = '@')
+        assert_eq!("sr@latin", canonicalize_locale("sr-Latn"));
+        assert_eq!("uz@arabic", canonicalize_locale("uz-Arab"));
+        assert_eq!("mn@mongolian", canonicalize_locale("mn-Mong"));
+        // legacy_table (only for names starting uppercase)
+        assert_eq!("pt_BR", canonicalize_locale("Brazilian Portuguese"));
+        assert_eq!("zh_TW", canonicalize_locale("Traditional Chinese"));
+        assert_eq!("de", canonicalize_locale("German"));
+        assert_eq!("yi", canonicalize_locale("Yiddish"));
+        assert_eq!("english", canonicalize_locale("english"));
+        // dash fallback
+        assert_eq!("pt_BR", canonicalize_locale("pt-BR"));
+        assert_eq!("en_US", canonicalize_locale("en-US"));
+        // non-ASCII input of length 7 must not panic
+        assert_eq!(
+            "\u{e9}\u{e9}\u{e9}x",
+            canonicalize_locale("\u{e9}\u{e9}\u{e9}x")
+        );
     }
 
     #[test]

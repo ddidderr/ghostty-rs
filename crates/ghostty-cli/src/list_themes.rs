@@ -15,6 +15,12 @@ use ghostty_config::{
     config_struct,
     theme::{Location, LocationIterator},
 };
+use ghostty_os::osbytes::{
+    config_str_to_bytes,
+    config_str_to_path,
+    os_to_config_string,
+    path_to_config_string,
+};
 
 use crate::{error::Error, tui};
 
@@ -121,7 +127,7 @@ pub fn collect_themes(resources_dir: Option<&str>) -> Vec<ThemeListElement> {
     let mut themes = vec![];
     let mut it = LocationIterator::new(resources_dir);
     while let Some((location, dir)) = it.next_location() {
-        let rd = match std::fs::read_dir(&dir) {
+        let rd = match std::fs::read_dir(config_str_to_path(&dir)) {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
@@ -137,15 +143,14 @@ pub fn collect_themes(resources_dir: Option<&str>) -> Vec<ThemeListElement> {
             if !(ft.is_file() || ft.is_symlink()) {
                 continue;
             }
-            let name = entry.file_name().to_string_lossy().into_owned();
+            // Entry names are raw bytes: keep them via the reversible escape.
+            let raw_name = entry.file_name();
+            let name = os_to_config_string(&raw_name);
             if name == ".DS_Store" {
                 continue;
             }
             themes.push(ThemeListElement {
-                path: std::path::Path::new(&dir)
-                    .join(&name)
-                    .to_string_lossy()
-                    .into_owned(),
+                path: path_to_config_string(&config_str_to_path(&dir).join(&raw_name)),
                 location,
                 theme: name,
                 rank: None,
@@ -170,8 +175,8 @@ pub fn should_include_theme(theme_filter: ColorScheme, theme_config: &Config) ->
 
 /// Make `path` absolute (`Config::load_file` requires absolute paths).
 pub(crate) fn absolute_path(path: &str) -> String {
-    std::path::absolute(path)
-        .map_or_else(|_| path.to_string(), |p| p.to_string_lossy().into_owned())
+    std::path::absolute(config_str_to_path(path))
+        .map_or_else(|_| path.to_string(), |p| path_to_config_string(&p))
 }
 
 fn resources_dir() -> Option<String> {
@@ -273,11 +278,14 @@ pub fn write_plain(
             continue;
         }
         let loc = location_name(theme.location);
-        if opts.path {
-            writeln!(out, "{} ({loc}) {}", theme.theme, theme.path)?;
+        // Names/paths are raw bytes in Zig: decode the reversible escape so
+        // non-UTF-8 bytes are written back unchanged.
+        let line = if opts.path {
+            format!("{} ({loc}) {}\n", theme.theme, theme.path)
         } else {
-            writeln!(out, "{} ({loc})", theme.theme)?;
-        }
+            format!("{} ({loc})\n", theme.theme)
+        };
+        out.write_all(&config_str_to_bytes(&line))?;
     }
     Ok(())
 }
@@ -295,6 +303,29 @@ mod tests {
             std::fs::write(dir.join(name), content).unwrap();
         }
         tmp
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_themes_keeps_non_utf8_names() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("themes");
+        std::fs::create_dir_all(&dir).unwrap();
+        let raw = std::ffi::OsStr::from_bytes(b"th\xffeme");
+        std::fs::write(dir.join(raw), "background = #000000\n").unwrap();
+        let res = tmp.path().to_string_lossy().into_owned();
+        let themes: Vec<_> = collect_themes(Some(&res))
+            .into_iter()
+            .filter(|t| t.location == Location::Resources)
+            .collect();
+        assert_eq!(1, themes.len());
+        assert_eq!(config_str_to_bytes(&themes[0].theme), b"th\xffeme".to_vec());
+        // The path points at the real file and the listing loads it.
+        assert_eq!(config_str_to_path(&themes[0].path), dir.join(raw));
+        let mut out = Vec::new();
+        write_plain(&mut out, &themes, &Options::default()).unwrap();
+        assert_eq!(out, b"th\xffeme (resources)\n");
     }
 
     #[test]

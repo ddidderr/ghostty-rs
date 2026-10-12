@@ -2,8 +2,10 @@
 
 use std::{
     fmt,
-    path::{Component, Path as StdPath, PathBuf},
+    path::{Component, PathBuf},
 };
+
+use ghostty_os::osbytes::{config_str_to_path, path_to_config_string};
 
 use crate::{
     c_value::CValue,
@@ -32,7 +34,7 @@ impl Default for Path {
 
 /// Lexically resolve `base/path` like `std.fs.path.resolve`.
 fn resolve_lexical(base: &str, path: &str) -> String {
-    let joined = PathBuf::from(base).join(path);
+    let joined = config_str_to_path(base).join(config_str_to_path(path));
     let mut out = PathBuf::new();
     for c in joined.components() {
         match c {
@@ -43,7 +45,7 @@ fn resolve_lexical(base: &str, path: &str) -> String {
             other => out.push(other.as_os_str()),
         }
     }
-    out.to_string_lossy().into_owned()
+    path_to_config_string(&out)
 }
 
 impl Path {
@@ -109,12 +111,15 @@ impl Path {
     /// absolute path. Errors are added to `diags` if they occur; an `Err` is
     /// only returned if the base directory cannot be opened.
     pub fn expand(&mut self, base: &str, diags: &mut DiagnosticList) -> std::io::Result<()> {
-        assert!(StdPath::new(base).is_absolute());
+        // Config strings carry non-UTF-8 bytes via a reversible escape
+        // encoding; filesystem calls use the decoded OS paths.
+        let base_path = config_str_to_path(base);
+        assert!(base_path.is_absolute());
 
         let path = self.path().to_string();
 
         // If it is already absolute we can ignore it.
-        if path.is_empty() || StdPath::new(&path).is_absolute() {
+        if path.is_empty() || config_str_to_path(&path).is_absolute() {
             return Ok(());
         }
 
@@ -143,11 +148,11 @@ impl Path {
         }
 
         // Make sure the base directory can be opened.
-        std::fs::read_dir(base)?;
+        std::fs::read_dir(&base_path)?;
 
-        let full = StdPath::new(base).join(&path);
+        let full = base_path.join(config_str_to_path(&path));
         let abs = match std::fs::canonicalize(&full) {
-            Ok(p) => p.to_string_lossy().into_owned(),
+            Ok(p) => path_to_config_string(&p),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // The file doesn't exist. Try to resolve the relative path
                 // another way.
@@ -373,5 +378,24 @@ mod tests {
         p.expand("/tmp", &mut diags).unwrap();
         assert_eq!(p, Path::Optional("/abs/path".into()));
         assert!(diags.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expand_symlink_to_non_utf8_target_round_trips() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = ghostty_os::TempDir::init().unwrap();
+        let base = std::fs::canonicalize(tmp.path()).unwrap();
+        let target = base.join(std::ffi::OsStr::from_bytes(b"t\xffarget"));
+        std::fs::write(&target, b"x").unwrap();
+        std::os::unix::fs::symlink(&target, base.join("link")).unwrap();
+
+        let mut p = Path::Required("link".into());
+        let mut diags = DiagnosticList::default();
+        p.expand(&path_to_config_string(&base), &mut diags).unwrap();
+        assert_eq!(diags.items().len(), 0);
+        // The canonical (non-UTF-8) target is preserved byte for byte.
+        assert_eq!(config_str_to_path(p.path()), target);
+        assert!(std::fs::metadata(config_str_to_path(p.path())).is_ok());
     }
 }

@@ -59,11 +59,12 @@ impl Options {
             let expanded =
                 ghostty_os::expand_home(stripped).map_err(|e| ArgError::Other(e.to_string()))?;
             let realpath =
-                std::fs::canonicalize(&expanded).map_err(|e| ArgError::Other(e.to_string()))?;
+                std::fs::canonicalize(ghostty_os::osbytes::config_str_to_path(&expanded))
+                    .map_err(|e| ArgError::Other(e.to_string()))?;
             self.working_directory_seen = true;
             return Ok(Some(format!(
                 "--working-directory={}",
-                realpath.to_string_lossy()
+                ghostty_os::osbytes::path_to_config_string(&realpath)
             )));
         }
 
@@ -192,8 +193,13 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
     if !opts.working_directory_seen {
         // This should be inserted at the beginning of the list, just in case `-e` was used.
         let wd = std::fs::canonicalize(".")?;
-        opts.arguments
-            .insert(0, format!("--working-directory={}", wd.to_string_lossy()));
+        opts.arguments.insert(
+            0,
+            format!(
+                "--working-directory={}",
+                ghostty_os::osbytes::path_to_config_string(&wd)
+            ),
+        );
     }
 
     let target = match opts.class {

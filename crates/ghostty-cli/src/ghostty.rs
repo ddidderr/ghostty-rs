@@ -243,6 +243,28 @@ pub fn detect(args: &[String]) -> Result<Option<Action>, DetectError> {
     detect_iter::<Action, _, _>(args.iter())
 }
 
+/// Convert raw OS arguments (Zig `[]const u8` argv) into the argument strings
+/// used by the CLI layers. No bytes are lost: invalid UTF-8 bytes use the
+/// reversible escape encoding of `ghostty_os::osbytes`, which the config
+/// layer (`cli_args`) decodes back to the original bytes.
+#[must_use]
+pub fn os_args_to_strings(args: &[std::ffi::OsString]) -> Vec<String> {
+    args.iter()
+        .map(|a| ghostty_os::osbytes::os_to_config_string(a))
+        .collect()
+}
+
+/// [`detect`] over raw OS arguments.
+pub fn detect_os(args: &[std::ffi::OsString]) -> Result<Option<Action>, DetectError> {
+    detect(&os_args_to_strings(args))
+}
+
+/// [`run_from_args`] over raw OS arguments (byte-preserving).
+#[must_use]
+pub fn run_from_os_args(args: &[std::ffi::OsString]) -> Option<u8> {
+    run_from_args(&os_args_to_strings(args))
+}
+
 /// The CLI entrypoint logic of `main_ghostty.zig` for actions: detect the
 /// action from `args` (the full argv), print the errors Ghostty prints for
 /// invalid invocations and run the action.
@@ -335,6 +357,23 @@ mod tests {
         assert_eq!(
             Some(Action::ListThemes),
             detect_str("+list-themes --help").unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_args_keep_non_utf8_bytes_and_still_dispatch() {
+        use std::os::unix::ffi::OsStringExt;
+        let args = vec![
+            std::ffi::OsString::from("ghostty"),
+            std::ffi::OsString::from_vec(b"--title=\xff".to_vec()),
+            std::ffi::OsString::from("+version"),
+        ];
+        assert_eq!(Some(Action::Version), detect_os(&args).unwrap());
+        let strings = os_args_to_strings(&args);
+        assert_eq!(
+            ghostty_os::osbytes::config_str_to_bytes(&strings[1]),
+            b"--title=\xff"
         );
     }
 

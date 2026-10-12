@@ -1408,14 +1408,13 @@ fn error_name(e: &ghostty_config::config::Error) -> String {
 pub fn resolve_auto_theme_path() -> Result<String, Error> {
     let main_cfg_path = ghostty_config::file_load::preferred_default_file_path()
         .map_err(|e| Error::Other(e.to_string()))?;
-    let base_dir = std::path::Path::new(&main_cfg_path)
+    let main_cfg_path = ghostty_os::osbytes::config_str_to_path(&main_cfg_path);
+    let base_dir = main_cfg_path
         .parent()
         .ok_or_else(|| Error::Other("BadPathName".to_string()))?;
-    Ok(base_dir
-        .join("auto")
-        .join("theme.ghostty")
-        .to_string_lossy()
-        .into_owned())
+    Ok(ghostty_os::osbytes::path_to_config_string(
+        &base_dir.join("auto").join("theme.ghostty"),
+    ))
 }
 
 /// `writeAutoThemeFile`.
@@ -1424,10 +1423,14 @@ pub fn write_auto_theme_file(path: Option<&str>, theme_name: &str) -> Result<(),
         Some(p) => p.to_string(),
         None => resolve_auto_theme_path()?,
     };
-    if let Some(dir) = std::path::Path::new(&auto_path).parent() {
+    let auto_path = ghostty_os::osbytes::config_str_to_path(&auto_path);
+    if let Some(dir) = auto_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&auto_path, format!("theme = {theme_name}\n"))?;
+    std::fs::write(
+        &auto_path,
+        ghostty_os::osbytes::config_str_to_bytes(&format!("theme = {theme_name}\n")),
+    )?;
     Ok(())
 }
 
@@ -1734,7 +1737,11 @@ fn run_loop(app: &mut Preview) -> Result<(), Error> {
                 match effect {
                     Effect::Copy(text) => {
                         let out = terminal.backend_mut();
-                        write!(out, "\x1b]52;c;{}\x1b\\", base64(text.as_bytes()))?;
+                        write!(
+                            out,
+                            "\x1b]52;c;{}\x1b\\",
+                            base64(&ghostty_os::osbytes::config_str_to_bytes(&text))
+                        )?;
                         out.flush()?;
                     }
                 }

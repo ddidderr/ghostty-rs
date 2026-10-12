@@ -5,9 +5,28 @@
 //! don't panic).
 
 /// Returns an iterator over the command line arguments.
+///
+/// If [`set_argv`] was called (the embedded `ghostty_init`, Zig:
+/// `std.os.argv = argv[0..argc]`) those arguments are returned instead of
+/// the process arguments.
 #[cfg(not(target_os = "macos"))]
-pub fn iterator() -> std::env::ArgsOs {
-    std::env::args_os()
+pub fn iterator() -> std::vec::IntoIter<std::ffi::OsString> {
+    match ARGV_OVERRIDE.lock().ok().and_then(|g| g.clone()) {
+        Some(v) => v.into_iter(),
+        None => std::env::args_os().collect::<Vec<_>>().into_iter(),
+    }
+}
+
+static ARGV_OVERRIDE: std::sync::Mutex<Option<Vec<std::ffi::OsString>>> =
+    std::sync::Mutex::new(None);
+
+/// Replace the process arguments seen by [`iterator`] (Zig's assignment to
+/// `std.os.argv` in `ghostty_init`). Has no effect on macOS, where the
+/// arguments always come from `NSProcessInfo` (as in Zig).
+pub fn set_argv(args: Vec<std::ffi::OsString>) {
+    if let Ok(mut g) = ARGV_OVERRIDE.lock() {
+        *g = Some(args);
+    }
 }
 
 /// Returns an iterator over the command line arguments.
@@ -27,15 +46,25 @@ pub fn iterator() -> std::vec::IntoIter<std::ffi::OsString> {
         .into_iter()
 }
 
-/// Collect the process arguments as `String`s without ever panicking on
-/// non-UTF-8 bytes (invalid sequences become U+FFFD). The CLI/config layers
-/// are string based; `+action` dispatch only depends on the ASCII prefix.
-pub fn collect_lossy() -> Vec<String> {
-    lossy(iterator())
+/// Collect the process arguments as raw OS strings (no conversion, never
+/// panics on non-UTF-8 bytes).
+pub fn collect_os() -> Vec<std::ffi::OsString> {
+    iterator().collect()
 }
 
-fn lossy(it: impl Iterator<Item = std::ffi::OsString>) -> Vec<String> {
-    it.map(|a| a.to_string_lossy().into_owned()).collect()
+/// Collect the process arguments as raw byte vectors (Zig `[]const u8`).
+pub fn collect_bytes() -> Vec<Vec<u8>> {
+    iterator().map(|a| crate::osbytes::os_bytes(&a)).collect()
+}
+
+/// Collect the process arguments as `String`s using the reversible
+/// byte-escape encoding of [`crate::osbytes`]: no bytes are lost, invalid
+/// UTF-8 bytes are carried as private-use escapes that the config layer
+/// decodes back to the original bytes.
+pub fn collect_config_strings() -> Vec<String> {
+    iterator()
+        .map(|a| crate::osbytes::os_to_config_string(&a))
+        .collect()
 }
 
 #[cfg(test)]
@@ -50,13 +79,13 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn lossy_does_not_panic_on_non_utf8() {
+    fn config_strings_keep_non_utf8_bytes() {
         use std::os::unix::ffi::OsStringExt;
-        let args = vec![
-            std::ffi::OsString::from("ghostty"),
-            std::ffi::OsString::from_vec(vec![b'+', b'x', 0xff]),
-        ];
-        let out = lossy(args.into_iter());
-        assert_eq!(out, vec!["ghostty".to_owned(), "+x\u{fffd}".to_owned()]);
+        let a = std::ffi::OsString::from_vec(vec![b'+', b'x', 0xff]);
+        let s = crate::osbytes::os_to_config_string(&a);
+        assert_eq!(
+            crate::osbytes::config_str_to_bytes(&s),
+            vec![b'+', b'x', 0xff]
+        );
     }
 }

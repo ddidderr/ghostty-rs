@@ -93,8 +93,7 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
     let Some(editor) = find_editor() else {
         // If we don't have `$EDITOR` set then we can't do anything
         // but we can still print a helpful message.
-        write!(
-            stderr,
+        let msg = String::from(
             "The $EDITOR or $VISUAL environment variable is not set or is empty.\n\
              This environment variable is required to edit the Ghostty configuration\n\
              via this CLI command.\n\
@@ -104,17 +103,20 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
              \n\
              If you prefer to edit the configuration file another way,\n\
              you can find the configuration file at the following path:\n\
-             \n"
-        )?;
-
+             \n",
+        );
         // Output the path using the OSC8 sequence so that it is linked.
-        writeln!(stderr, "\x1b]8;;file://{path}\x1b\\{path}\x1b]8;;\x1b\\")?;
+        // (Paths are raw bytes: decode the reversible escape when writing.)
+        let msg = format!("{msg}\x1b]8;;file://{path}\x1b\\{path}\x1b]8;;\x1b\\\n");
+        stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&msg))?;
         return Ok(1);
     };
 
     // Flush before exec so no output is lost.
     let _ = stderr.flush();
-    let err = std::process::Command::new(&editor).arg(path).exec();
+    let err = std::process::Command::new(ghostty_os::osbytes::config_str_to_os(&editor))
+        .arg(ghostty_os::osbytes::config_str_to_os(path))
+        .exec();
 
     // If we reached this point then exec failed.
     let err = match err.kind() {
@@ -122,8 +124,7 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
         std::io::ErrorKind::PermissionDenied => "error.AccessDenied".to_string(),
         _ => err.to_string(),
     };
-    write!(
-        stderr,
+    let msg = format!(
         "Failed to execute the editor. Error code={err}.\n\
          \n\
          This is usually due to the executable path not existing, invalid\n\
@@ -132,6 +133,7 @@ fn exec_editor(stderr: &mut dyn Write, path: &str) -> Result<u8, Error> {
          \n\
          Editor: {editor}\n\
          Path: {path}\n"
-    )?;
+    );
+    stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&msg))?;
     Ok(1)
 }

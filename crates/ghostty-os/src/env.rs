@@ -235,10 +235,24 @@ pub fn prepend_env(current: &str, value: &str) -> String {
     format!("{value}{DELIMITER}{current}")
 }
 
-/// Gets the value of an environment variable, or None if not found
-/// (or not valid unicode).
+/// Gets the raw value of an environment variable, or None if not found.
+/// A present value that is not valid UTF-8 is returned as-is (never treated
+/// as absent).
+pub fn getenv_os(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
+}
+
+/// Gets the raw value of an environment variable. Returns None if not found
+/// or the value is empty.
+pub fn getenv_not_empty_os(key: &str) -> Option<OsString> {
+    getenv_os(key).filter(|v| !v.is_empty())
+}
+
+/// Gets the value of an environment variable, or None if not found. A
+/// non-UTF-8 value is still present: its invalid bytes are carried through
+/// the reversible [`crate::osbytes`] encoding.
 pub fn getenv(key: &str) -> Option<String> {
-    std::env::var(key).ok()
+    getenv_os(key).map(|v| crate::osbytes::os_to_config_string(&v))
 }
 
 /// Gets the value of an environment variable. Returns None if not found or
@@ -292,6 +306,19 @@ mod tests {
     #[test]
     fn append_env_existing() {
         assert_eq!(append_env("a:b", "foo"), format!("a:b{DELIMITER}foo"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn getenv_non_utf8_is_present() {
+        let v = OsString::from_vec(vec![b'a', 0xff]);
+        temp_env::with_var("GHOSTTY_RS_T3", Some(&v), || {
+            assert_eq!(getenv_os("GHOSTTY_RS_T3").unwrap(), v);
+            assert_eq!(getenv_not_empty_os("GHOSTTY_RS_T3").unwrap(), v);
+            let s = getenv("GHOSTTY_RS_T3").unwrap();
+            assert_eq!(crate::osbytes::config_str_to_bytes(&s), vec![b'a', 0xff]);
+            assert!(getenv_not_empty("GHOSTTY_RS_T3").is_some());
+        });
     }
 
     #[cfg(unix)]

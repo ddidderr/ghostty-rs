@@ -70,19 +70,41 @@ pub fn restore_max_files(lim: Rlimit) {
     let _ = setrlimit(Resource::Nofile, lim);
 }
 
-/// Return the recommended path for temporary files.
-pub fn alloc_tmp_dir() -> Option<String> {
+/// Resource limit placeholder on platforms without `rlimit` (Zig:
+/// `rlimit = if (@hasDecl(posix.system, "rlimit")) posix.rlimit else struct {}`).
+#[cfg(not(unix))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Rlimit;
+
+/// Unsupported-platform fallback: returns `None` like Zig.
+#[cfg(not(unix))]
+pub fn fix_max_files() -> Option<Rlimit> {
+    None
+}
+
+/// Unsupported-platform fallback: no-op like Zig.
+#[cfg(not(unix))]
+pub fn restore_max_files(_lim: Rlimit) {}
+
+/// Return the recommended path for temporary files (byte-preserving).
+pub fn alloc_tmp_dir_os() -> Option<std::path::PathBuf> {
     if cfg!(windows) {
         // TODO: what is a good fallback path on windows? (same as Zig)
-        return std::env::var_os("TMP").map(|v| v.to_string_lossy().into_owned());
+        return std::env::var_os("TMP").map(Into::into);
     }
     if let Some(v) = std::env::var_os("TMPDIR") {
-        return Some(v.to_string_lossy().into_owned());
+        return Some(v.into());
     }
     if let Some(v) = std::env::var_os("TMP") {
-        return Some(v.to_string_lossy().into_owned());
+        return Some(v.into());
     }
-    Some("/tmp".to_owned())
+    Some("/tmp".into())
+}
+
+/// Return the recommended path for temporary files. Non-UTF-8 bytes are
+/// carried via [`crate::osbytes`]; see [`alloc_tmp_dir_os`].
+pub fn alloc_tmp_dir() -> Option<String> {
+    alloc_tmp_dir_os().map(|p| crate::osbytes::os_to_config_string(p.as_os_str()))
 }
 
 #[cfg(all(test, unix))]
@@ -100,6 +122,18 @@ mod tests {
         });
         temp_env::with_vars([("TMPDIR", None::<&str>), ("TMP", None)], || {
             assert_eq!(alloc_tmp_dir().as_deref(), Some("/tmp"));
+        });
+    }
+
+    #[test]
+    fn tmp_dir_non_utf8() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let v = std::ffi::OsString::from_vec(b"/tmp/\xff".to_vec());
+        temp_env::with_vars([("TMPDIR", Some(v.clone())), ("TMP", None)], || {
+            assert_eq!(
+                alloc_tmp_dir_os().unwrap().as_os_str().as_bytes(),
+                b"/tmp/\xff"
+            );
         });
     }
 

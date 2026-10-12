@@ -6,6 +6,10 @@
 
 use std::sync::OnceLock;
 
+/// Re-export of the derived version constants (`VERSION_STRING`, `COMMIT`,
+/// `RELEASE_CHANNEL`, `BUILD_MODE`) from `ghostty-build-info`.
+pub use ghostty_build_info as derived;
+
 /// A `major.minor.micro` version (Zig: `gtk_version.zig` / `adw_version.zig`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Version {
@@ -49,11 +53,11 @@ pub struct BuildInfo {
 impl Default for BuildInfo {
     fn default() -> Self {
         BuildInfo {
-            // Derived by `build.rs` (git describe / workspace app-version).
-            version_string: env!("GHOSTTY_VERSION_STRING").to_string(),
-            commit: Some(env!("GHOSTTY_COMMIT").to_string()).filter(|c| !c.is_empty()),
-            release_channel: env!("GHOSTTY_RELEASE_CHANNEL").to_string(),
-            build_mode: env!("GHOSTTY_BUILD_MODE").to_string(),
+            // Derived by `ghostty-build-info` (single source of truth).
+            version_string: ghostty_build_info::VERSION_STRING.to_string(),
+            commit: ghostty_build_info::COMMIT.map(str::to_string),
+            release_channel: ghostty_build_info::RELEASE_CHANNEL.to_string(),
+            build_mode: ghostty_build_info::BUILD_MODE.to_string(),
             app_runtime: ".gtk".to_string(),
             font_backend: ".fontconfig_freetype".to_string(),
             renderer: "renderer.generic.Renderer(renderer.OpenGL)".to_string(),

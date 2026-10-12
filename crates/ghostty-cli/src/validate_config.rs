@@ -39,8 +39,10 @@ fn run_inner(opts: &Options, stdout: &mut dyn Write) -> Result<u8, Error> {
 
     // If a config path is passed, validate it, otherwise validate default configs
     if let Some(config_path) = &opts.config_file {
-        let abs_path = std::fs::canonicalize(config_path)?;
-        cfg.load_file(&abs_path.to_string_lossy())?;
+        // Byte-preserving: the option string carries non-UTF-8 bytes via the
+        // reversible `osbytes` escape and the canonical path may too.
+        let abs_path = std::fs::canonicalize(ghostty_os::osbytes::config_str_to_path(config_path))?;
+        cfg.load_file(&ghostty_os::osbytes::path_to_config_string(&abs_path))?;
         cfg.load_recursive_files()?;
     } else {
         cfg = Config::load()?;
@@ -108,5 +110,22 @@ mod tests {
             config_file: Some("/nonexistent/ghostty/config".into()),
         };
         assert!(run_inner(&opts, &mut Vec::new()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn validate_symlink_to_non_utf8_target() {
+        use std::os::unix::ffi::OsStrExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join(std::ffi::OsStr::from_bytes(b"cfg\xff"));
+        std::fs::write(&target, "font-size = 14\n").unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let opts = Options {
+            config_file: Some(link.to_string_lossy().into_owned()),
+        };
+        let mut out = Vec::new();
+        assert_eq!(0, run_inner(&opts, &mut out).unwrap());
+        assert_eq!(out.len(), 0);
     }
 }

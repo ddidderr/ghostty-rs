@@ -1,6 +1,14 @@
-use std::{io, path::Path};
+use std::{
+    ffi::OsString,
+    io,
+    path::{Path, PathBuf},
+};
 
-use crate::path_join;
+use crate::osbytes::{config_str_to_os, os_to_config_string};
+
+fn enc(p: &Path) -> String {
+    os_to_config_string(p.as_os_str())
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResourcesDir {
@@ -24,6 +32,17 @@ impl ResourcesDir {
     /// In non-sandboxed environment, this should be the same as app().
     pub fn host(&self) -> Option<&str> {
         self.host_path.as_deref().or(self.app_path.as_deref())
+    }
+
+    /// Byte-preserving [`ResourcesDir::app`]: the string fields carry
+    /// non-UTF-8 bytes via [`crate::osbytes`], this decodes them.
+    pub fn app_os(&self) -> Option<PathBuf> {
+        self.app().map(|p| PathBuf::from(config_str_to_os(p)))
+    }
+
+    /// Byte-preserving [`ResourcesDir::host`].
+    pub fn host_os(&self) -> Option<PathBuf> {
+        self.host().map(|p| PathBuf::from(config_str_to_os(p)))
     }
 }
 
@@ -50,7 +69,7 @@ const DEV_SENTINELS: [&str; 1] = ["terminfo/x/xterm-ghostty"];
 /// Zig's `builtin.mode == .Debug` is mapped to `cfg!(debug_assertions)`.
 pub fn resources_dir() -> io::Result<ResourcesDir> {
     let exe = std::env::current_exe().ok();
-    let env = std::env::var("GHOSTTY_RESOURCES_DIR").ok();
+    let env = std::env::var_os("GHOSTTY_RESOURCES_DIR");
     Ok(resources_dir_impl(
         cfg!(debug_assertions),
         exe.as_deref(),
@@ -58,7 +77,7 @@ pub fn resources_dir() -> io::Result<ResourcesDir> {
     ))
 }
 
-fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> ResourcesDir {
+fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) -> ResourcesDir {
     // Use the GHOSTTY_RESOURCES_DIR environment variable in release builds.
     //
     // In debug builds we try using terminfo detection first instead, since
@@ -67,7 +86,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     // freshly built ones under zig-out/share/ghostty.
     if !debug && let Some(dir) = env.as_ref().filter(|d| !d.is_empty()) {
         return ResourcesDir {
-            app_path: Some(dir.clone()),
+            app_path: Some(os_to_config_string(dir)),
             host_path: None,
         };
     }
@@ -82,14 +101,12 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     // bundle as we expect it.
     while let Some(dir) = exe.parent() {
         exe = dir;
-        let dir_str = dir.to_string_lossy();
-
         // On MacOS, we look for the app bundle path.
         #[cfg(target_vendor = "apple")]
         for sentinel in SENTINELS {
-            if let Some(v) = maybe_dir(&dir_str, "Contents/Resources", sentinel) {
+            if let Some(v) = maybe_dir_os(dir, "Contents/Resources", sentinel) {
                 return ResourcesDir {
-                    app_path: Some(path_join(&[&v, "ghostty"])),
+                    app_path: Some(enc(&v.join("ghostty"))),
                     host_path: None,
                 };
             }
@@ -97,9 +114,9 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
 
         // We look for a /usr/share style path.
         for sentinel in SENTINELS {
-            if let Some(v) = maybe_dir(&dir_str, "share", sentinel) {
+            if let Some(v) = maybe_dir_os(dir, "share", sentinel) {
                 return ResourcesDir {
-                    app_path: Some(path_join(&[&v, "ghostty"])),
+                    app_path: Some(enc(&v.join("ghostty"))),
                     host_path: None,
                 };
             }
@@ -110,7 +127,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     // fallback and use the provided resources dir.
     if debug && let Some(dir) = env.filter(|d| !d.is_empty()) {
         return ResourcesDir {
-            app_path: Some(dir),
+            app_path: Some(os_to_config_string(&dir)),
             host_path: None,
         };
     }
@@ -122,7 +139,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     // lives inside this workspace.
     if debug && let Some(dir) = dev_resources_dir(exe_start) {
         return ResourcesDir {
-            app_path: Some(dir),
+            app_path: Some(enc(&dir)),
             host_path: None,
         };
     }
@@ -137,7 +154,7 @@ fn workspace_root() -> std::path::PathBuf {
 
 /// Returns `<workspace>/resources` if `exe` is inside the workspace this
 /// crate was built from and the directory contains our sentinel.
-fn dev_resources_dir(exe: &Path) -> Option<String> {
+fn dev_resources_dir(exe: &Path) -> Option<PathBuf> {
     let root = workspace_root().canonicalize().ok()?;
     let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
     if !exe.starts_with(&root) {
@@ -148,7 +165,15 @@ fn dev_resources_dir(exe: &Path) -> Option<String> {
         .iter()
         .chain(DEV_SENTINELS.iter())
         .any(|s| res.join(s).exists())
-        .then(|| res.to_string_lossy().into_owned())
+        .then_some(res)
+}
+
+/// Byte-preserving [`maybe_dir`].
+pub fn maybe_dir_os(base: &Path, sub: &str, suffix: &str) -> Option<PathBuf> {
+    let dir = base.join(sub);
+    // Folder doesn't exist. If a different error happens its okay
+    // we just ignore it and move on.
+    dir.join(suffix).exists().then_some(dir)
 }
 
 /// Little helper to check if the "base/sub/suffix" directory exists and
@@ -204,7 +229,7 @@ mod tests {
     fn env_in_release_wins_and_in_debug_is_fallback() {
         let td = make_tree();
         let exe = td.path().join("bin/ghostty");
-        let env = Some("/env/res".to_owned());
+        let env = Some(OsString::from("/env/res"));
         assert_eq!(
             resources_dir_impl(false, Some(&exe), env.clone()).app(),
             Some("/env/res")
@@ -220,7 +245,7 @@ mod tests {
         );
         // Empty env is ignored.
         assert_eq!(
-            resources_dir_impl(false, None, Some(String::new())).app(),
+            resources_dir_impl(false, None, Some(OsString::new())).app(),
             None
         );
     }
@@ -236,6 +261,23 @@ mod tests {
         // Release builds never use it.
         let r = resources_dir_impl(false, Some(&exe), None);
         assert_eq!(r.app(), None);
+    }
+
+    #[test]
+    fn non_utf8_env_dir_is_honored_and_exe_dir_detected() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let env = OsString::from_vec(b"/env/\xffres".to_vec());
+        let r = resources_dir_impl(false, None, Some(env.clone()));
+        assert_eq!(r.app_os().unwrap().as_os_str(), env.as_os_str());
+
+        // Executable lives under a directory with a non-UTF-8 name.
+        let td = crate::TempDir::init().unwrap();
+        let root = td.path().join(std::ffi::OsStr::from_bytes(b"r\xfeoot"));
+        std::fs::create_dir_all(root.join("share/terminfo/x")).unwrap();
+        std::fs::write(root.join("share/terminfo/x/xterm-ghostty"), b"").unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let r = resources_dir_impl(true, Some(&root.join("bin/ghostty")), None);
+        assert_eq!(r.app_os().unwrap(), root.join("share/ghostty"));
     }
 
     #[test]

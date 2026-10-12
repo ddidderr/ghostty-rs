@@ -1,6 +1,6 @@
-use std::io;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::{ffi::OsStr, io, path::PathBuf};
 
 /// `std.fs.path.delimiter` / `sep`.
 #[cfg(windows)]
@@ -25,28 +25,44 @@ pub enum Error {
     Io(#[from] io::Error),
 }
 
-/// Search for "cmd" in the PATH and return the absolute path.
+/// Search for "cmd" in the PATH and return the absolute path. Non-UTF-8
+/// bytes are carried via [`crate::osbytes`]; see [`expand_os`].
 pub fn expand(cmd: &str) -> Result<Option<String>, Error> {
+    let cmd = crate::osbytes::config_str_to_os(cmd);
+    Ok(expand_os(&cmd)?.map(|p| crate::osbytes::os_to_config_string(p.as_os_str())))
+}
+
+/// Byte-preserving [`expand`]: `$PATH` and the command are handled as raw
+/// bytes, so executables in directories with non-UTF-8 names are found.
+pub fn expand_os(cmd: &OsStr) -> Result<Option<PathBuf>, Error> {
+    let cmd_bytes = crate::osbytes::os_bytes(cmd);
+
     // If the command already contains a slash, then we return it as-is
     // because it is assumed to be absolute or relative.
-    if cmd.contains('/') {
-        return Ok(Some(cmd.to_owned()));
+    if cmd_bytes.contains(&b'/') {
+        return Ok(Some(PathBuf::from(cmd)));
     }
 
     let Some(path_var) = std::env::var_os("PATH") else {
         return Ok(None);
     };
-    let path_var = path_var.to_string_lossy();
+    let path_var = crate::osbytes::os_bytes(&path_var);
 
     let mut seen_eacces = false;
-    for search_path in path_var.split(DELIMITER).filter(|s| !s.is_empty()) {
+    for search_path in path_var
+        .split(|&b| b == DELIMITER as u8)
+        .filter(|s| !s.is_empty())
+    {
         // We need enough space in our path buffer to store this
-        let path_len = search_path.len() + cmd.len() + 1;
+        let path_len = search_path.len() + cmd_bytes.len() + 1;
         if MAX_PATH_BYTES < path_len {
             return Err(Error::PathTooLong);
         }
 
-        let full_path = format!("{search_path}{SEP}{cmd}");
+        let mut full = search_path.to_vec();
+        full.push(SEP as u8);
+        full.extend_from_slice(&cmd_bytes);
+        let full_path = PathBuf::from(crate::osbytes::os_from_bytes(full));
 
         // Stat it
         let f = match std::fs::File::open(&full_path) {
@@ -125,6 +141,25 @@ mod tests {
         temp_env::with_var("PATH", Some(p), || {
             assert!(expand("plain").unwrap().is_none());
             assert!(expand("adir").unwrap().is_none());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn expand_finds_executable_in_non_utf8_dir() {
+        use std::os::unix::{
+            ffi::{OsStrExt, OsStringExt},
+            fs::PermissionsExt,
+        };
+        let td = crate::TempDir::init().unwrap();
+        let dir = td.path().join(OsStr::from_bytes(b"d\xffir"));
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("mytool");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let pv = std::ffi::OsString::from_vec(dir.as_os_str().as_bytes().to_vec());
+        temp_env::with_var("PATH", Some(&pv), || {
+            assert_eq!(expand_os(OsStr::new("mytool")).unwrap(), Some(exe.clone()));
         });
     }
 }

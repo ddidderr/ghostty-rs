@@ -1,6 +1,8 @@
+use std::ffi::{OsStr, OsString};
 #[cfg(unix)]
 use std::process::{Command, Stdio};
 
+use crate::osbytes;
 #[cfg(unix)]
 use crate::passwd;
 
@@ -24,16 +26,29 @@ const MAX_PATH_BYTES: usize = 4096;
 
 /// Determine the home directory for the currently executing user. This
 /// is generally an expensive process so the value should be cached.
+///
+/// Non-UTF-8 bytes are preserved through [`crate::osbytes`]; use
+/// [`home_os`] for the raw OS string.
 pub fn home() -> Result<Option<String>, Error> {
     home_with_capacity(MAX_PATH_BYTES)
 }
 
+/// Byte-preserving [`home`].
+pub fn home_os() -> Result<Option<OsString>, Error> {
+    home_os_with_capacity(MAX_PATH_BYTES)
+}
+
 /// Like [`home`] but emulates the fixed output buffer of the Zig version:
 /// errors with `BufferTooSmall` if the result is longer than `cap` bytes.
-#[cfg(unix)]
 pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
-    let check = |s: String| {
-        if cap < s.len() {
+    Ok(home_os_with_capacity(cap)?.map(|h| osbytes::os_to_config_string(&h)))
+}
+
+/// Byte-preserving [`home_with_capacity`].
+#[cfg(unix)]
+pub fn home_os_with_capacity(cap: usize) -> Result<Option<OsString>, Error> {
+    let check = |s: OsString| {
+        if cap < osbytes::os_bytes(&s).len() {
             Err(Error::BufferTooSmall)
         } else {
             Ok(Some(s))
@@ -42,7 +57,7 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
 
     // First: if we have a HOME env var, then we use that.
     if let Some(result) = std::env::var_os("HOME") {
-        return check(result.to_string_lossy().into_owned());
+        return check(result);
     }
 
     // On macOS: [NSFileManager defaultManager].homeDirectoryForCurrentUser.path
@@ -53,12 +68,12 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
         let manager = NSFileManager::defaultManager();
         let home_url = manager.homeDirectoryForCurrentUser();
         if let Some(path) = home_url.path() {
-            return check(path.to_string());
+            return check(OsString::from(path.to_string()));
         }
     }
 
     // We try passwd. This doesn't work on multi-user mac but we try it anyways.
-    if let Ok(pw) = passwd::get()
+    if let Ok(pw) = passwd::get_os()
         && let Some(result) = pw.home
     {
         return check(result);
@@ -73,8 +88,7 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
     if let Ok(run) = run
         && run.status.success()
     {
-        let out = String::from_utf8_lossy(&run.stdout);
-        return check(trim_space(&out).to_owned());
+        return check(osbytes::os_from_bytes(trim_space(&run.stdout).to_vec()));
     }
 
     Ok(None)
@@ -83,12 +97,10 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
 /// Windows: `%HOMEDRIVE%%HOMEPATH%` (`homeWindows`). Returns `None` if
 /// either variable is missing.
 #[cfg(windows)]
-pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
-    home_windows(
-        std::env::var("HOMEDRIVE").ok().as_deref(),
-        std::env::var("HOMEPATH").ok().as_deref(),
-        cap,
-    )
+pub fn home_os_with_capacity(cap: usize) -> Result<Option<OsString>, Error> {
+    let drive = std::env::var_os("HOMEDRIVE").map(|v| v.to_string_lossy().into_owned());
+    let path = std::env::var_os("HOMEPATH").map(|v| v.to_string_lossy().into_owned());
+    Ok(home_windows(drive.as_deref(), path.as_deref(), cap)?.map(OsString::from))
 }
 
 /// Pure part of [`home_with_capacity`] on Windows.
@@ -108,8 +120,14 @@ fn home_windows(
 }
 
 #[cfg(unix)]
-fn trim_space(input: &str) -> &str {
-    input.trim_matches([' ', '\n', '\t'])
+fn trim_space(input: &[u8]) -> &[u8] {
+    let is_ws = |b: &u8| matches!(b, b' ' | b'\n' | b'\t');
+    let start = input.iter().position(|b| !is_ws(b)).unwrap_or(input.len());
+    let end = input
+        .iter()
+        .rposition(|b| !is_ws(b))
+        .map_or(start, |i| i + 1);
+    &input[start..end]
 }
 
 /// Expands a path that starts with a tilde (~) to the home directory of
@@ -121,31 +139,41 @@ pub fn expand_home(path: &str) -> Result<String, ExpandError> {
     expand_home_with_capacity(path, MAX_PATH_BYTES)
 }
 
+/// Byte-preserving [`expand_home`].
+pub fn expand_home_os(path: &OsStr) -> Result<OsString, ExpandError> {
+    expand_home_os_with_capacity(path, MAX_PATH_BYTES)
+}
+
 /// Like [`expand_home`] with an explicit output capacity (emulating the
 /// caller-provided buffer of the Zig version).
+pub fn expand_home_with_capacity(path: &str, cap: usize) -> Result<String, ExpandError> {
+    expand_home_os_with_capacity(&osbytes::config_str_to_os(path), cap)
+        .map(|p| osbytes::os_to_config_string(&p))
+}
+
+/// Windows: `~/` is not an idiom generally used on Windows.
 #[cfg(windows)]
-pub fn expand_home_with_capacity(path: &str, _cap: usize) -> Result<String, ExpandError> {
-    // `~/` is not an idiom generally used on Windows
+pub fn expand_home_os_with_capacity(path: &OsStr, _cap: usize) -> Result<OsString, ExpandError> {
     Ok(path.to_owned())
 }
 
 /// See the Windows variant above.
 #[cfg(unix)]
-pub fn expand_home_with_capacity(path: &str, cap: usize) -> Result<String, ExpandError> {
-    if !path.starts_with("~/") {
+pub fn expand_home_os_with_capacity(path: &OsStr, cap: usize) -> Result<OsString, ExpandError> {
+    let bytes = osbytes::os_bytes(path);
+    if !bytes.starts_with(b"~/") {
         return Ok(path.to_owned());
     }
-    let Ok(Some(home_dir)) = home_with_capacity(cap) else {
+    let Ok(Some(home_dir)) = home_os_with_capacity(cap) else {
         return Err(ExpandError::HomeDetectionFailed);
     };
-    let rest = &path[1..]; // Skip the ~
-    let expanded_len = home_dir.len() + rest.len();
-
-    if expanded_len > cap {
+    let mut out = osbytes::os_bytes(&home_dir);
+    let rest = &bytes[1..]; // Skip the ~
+    if out.len() + rest.len() > cap {
         return Err(ExpandError::BufferTooSmall);
     }
-
-    Ok(format!("{home_dir}{rest}"))
+    out.extend_from_slice(rest);
+    Ok(osbytes::os_from_bytes(out))
 }
 
 #[cfg(test)]
@@ -208,6 +236,20 @@ mod tests_unix {
             let result = home().unwrap();
             assert!(result.is_some());
             assert!(!result.unwrap().is_empty());
+        });
+    }
+
+    #[test]
+    fn home_preserves_non_utf8_env() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let h = OsString::from_vec(b"/home/\xffu".to_vec());
+        temp_env::with_var("HOME", Some(&h), || {
+            assert_eq!(home_os().unwrap().unwrap(), h);
+            let e = expand_home_os(OsStr::from_bytes(b"~/x\xfe")).unwrap();
+            assert_eq!(e.as_bytes(), b"/home/\xffu/x\xfe");
+            // The String API round-trips through the escape encoding.
+            let s = expand_home("~/y").unwrap();
+            assert_eq!(osbytes::config_str_to_bytes(&s), b"/home/\xffu/y");
         });
     }
 

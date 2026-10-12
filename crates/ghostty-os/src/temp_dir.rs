@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::file::alloc_tmp_dir;
+use crate::file::alloc_tmp_dir_os;
 
 // The amount of random bytes to get to determine our filename.
 const RANDOM_BYTES: usize = 16;
@@ -89,8 +89,8 @@ fn fill_random(buf: &mut [u8]) -> io::Result<()> {
 impl TempDir {
     /// Create the temporary directory.
     pub fn init() -> io::Result<TempDir> {
-        let parent = match alloc_tmp_dir() {
-            Some(p) => PathBuf::from(p),
+        let parent = match alloc_tmp_dir_os() {
+            Some(p) => p,
             None => std::env::current_dir()?,
         };
         // Verify the parent can be opened (Zig opens it as a Dir).

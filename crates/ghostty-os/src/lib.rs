@@ -30,6 +30,7 @@ pub mod file;
 pub mod file_type;
 #[cfg(unix)]
 pub mod flatpak;
+pub mod osbytes;
 #[cfg(windows)]
 pub mod flatpak {
     //! Flatpak does not exist on Windows.
@@ -45,6 +46,8 @@ pub mod homedir;
 pub mod hostname;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod i18n;
+#[cfg(not(target_arch = "wasm32"))]
+mod i18n_canon_table;
 pub mod i18n_locales;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod kernel_info;
@@ -73,9 +76,22 @@ pub mod passwd {
         pub name: Option<String>,
     }
 
+    /// Byte-preserving entry (same shape as the Unix one).
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct EntryOs {
+        pub shell: Option<std::ffi::OsString>,
+        pub home: Option<std::ffi::OsString>,
+        pub name: Option<std::ffi::OsString>,
+    }
+
     /// No passwd database on Windows: always an empty entry.
     pub fn get() -> std::io::Result<Entry> {
         Ok(Entry::default())
+    }
+
+    /// See [`get`].
+    pub fn get_os() -> std::io::Result<EntryOs> {
+        Ok(EntryOs::default())
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
@@ -123,13 +139,13 @@ pub use env::{
     get_env_map,
     getenv,
     getenv_not_empty,
+    getenv_not_empty_os,
+    getenv_os,
     prepend_env,
     prepend_env_os,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::alloc_tmp_dir;
-#[cfg(unix)]
-pub use file::{Rlimit, fix_max_files, restore_max_files};
+pub use file::{Rlimit, alloc_tmp_dir, alloc_tmp_dir_os, fix_max_files, restore_max_files};
 #[cfg(unix)]
 pub use flatpak::FlatpakHostCommand;
 #[cfg(not(target_arch = "wasm32"))]

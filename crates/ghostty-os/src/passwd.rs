@@ -1,5 +1,8 @@
+use std::ffi::OsString;
+
 #[cfg(any(target_os = "linux", target_os = "android"))]
 use crate::flatpak::is_flatpak;
+use crate::osbytes;
 
 /// Entry that is retrieved from the passwd API. This only contains the fields
 /// we care about.
@@ -10,19 +13,45 @@ pub struct Entry {
     pub name: Option<String>,
 }
 
-/// Get the passwd entry for the currently executing user.
+/// Byte-preserving [`Entry`] (Zig slices are arbitrary bytes).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EntryOs {
+    pub shell: Option<OsString>,
+    pub home: Option<OsString>,
+    pub name: Option<OsString>,
+}
+
+impl From<EntryOs> for Entry {
+    fn from(e: EntryOs) -> Self {
+        let f = |v: Option<OsString>| v.map(|v| osbytes::os_to_config_string(&v));
+        Entry {
+            shell: f(e.shell),
+            home: f(e.home),
+            name: f(e.name),
+        }
+    }
+}
+
+/// Get the passwd entry for the currently executing user. Non-UTF-8 bytes
+/// are carried via the reversible [`crate::osbytes`] encoding; see
+/// [`get_os`] for the raw bytes.
 pub fn get() -> std::io::Result<Entry> {
+    get_os().map(Entry::from)
+}
+
+/// Byte-preserving [`get`].
+pub fn get_os() -> std::io::Result<EntryOs> {
     let uid = nix::unistd::getuid();
     let user = match nix::unistd::User::from_uid(uid) {
         Ok(Some(user)) => user,
         Ok(None) => {
             // Future: let's check if a better shell is available like zsh
             log::warn!("no pw entry to detect default shell, will default to 'sh'");
-            return Ok(Entry::default());
+            return Ok(EntryOs::default());
         }
         Err(e) => {
             log::warn!("error retrieving pw entry code={e}");
-            return Ok(Entry::default());
+            return Ok(EntryOs::default());
         }
     };
 
@@ -35,10 +64,10 @@ pub fn get() -> std::io::Result<Entry> {
         return host_entry(&user.name);
     }
 
-    Ok(Entry {
-        shell: Some(user.shell.to_string_lossy().into_owned()),
-        home: Some(user.dir.to_string_lossy().into_owned()),
-        name: Some(user.name),
+    Ok(EntryOs {
+        shell: Some(user.shell.into_os_string()),
+        home: Some(user.dir.into_os_string()),
+        name: Some(OsString::from(user.name)),
     })
 }
 
@@ -49,7 +78,7 @@ pub fn get() -> std::io::Result<Entry> {
 /// `Pty`) depends on this crate, so a minimal openpt/ptsname pair is opened
 /// here with rustix instead. Like Zig, only `shell` and `home` are filled in.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn host_entry(name: &str) -> std::io::Result<Entry> {
+fn host_entry(name: &str) -> std::io::Result<EntryOs> {
     use std::io::Read;
 
     use rustix::{
@@ -112,17 +141,20 @@ fn host_entry(name: &str) -> std::io::Result<Entry> {
         }
     }
 
-    Ok(parse_getent(&String::from_utf8_lossy(&output)))
+    Ok(parse_getent(&output))
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
 /// Shell and home are the last two `:`-separated fields of the output.
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn parse_getent(output: &str) -> Entry {
-    let mut it = output.trim_end_matches([' ', '\r', '\n']).rsplit(':');
-    let shell = it.next().map(str::to_owned);
-    let home = it.next().map(str::to_owned);
-    Entry {
+fn parse_getent(output: &[u8]) -> EntryOs {
+    let end = output
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\r' | b'\n'))
+        .map_or(0, |i| i + 1);
+    let mut it = output[..end].rsplit(|&b| b == b':');
+    let shell = it.next().map(|b| osbytes::os_from_bytes(b.to_vec()));
+    let home = it.next().map(|b| osbytes::os_from_bytes(b.to_vec()));
+    EntryOs {
         shell,
         home,
         name: None,
@@ -136,10 +168,22 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn parse_getent_output() {
-        let e = parse_getent("mitchell:x:1000:1000:Mitchell:/home/mitchell:/bin/zsh\r\n");
-        assert_eq!(e.shell.as_deref(), Some("/bin/zsh"));
-        assert_eq!(e.home.as_deref(), Some("/home/mitchell"));
+        let e = parse_getent(b"mitchell:x:1000:1000:Mitchell:/home/mitchell:/bin/zsh\r\n");
+        assert_eq!(e.shell.as_deref(), Some(std::ffi::OsStr::new("/bin/zsh")));
+        assert_eq!(
+            e.home.as_deref(),
+            Some(std::ffi::OsStr::new("/home/mitchell"))
+        );
         assert_eq!(e.name, None);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn parse_getent_keeps_non_utf8() {
+        use std::os::unix::ffi::OsStrExt;
+        let e = parse_getent(b"u:x:1:1::/home/\xff:/bin/\xfesh\n");
+        assert_eq!(e.shell.unwrap().as_bytes(), b"/bin/\xfesh");
+        assert_eq!(e.home.unwrap().as_bytes(), b"/home/\xff");
     }
 
     #[test]

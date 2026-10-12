@@ -3877,7 +3877,7 @@ impl Config {
     ///
     /// `path` must be resolved and absolute.
     pub fn load_file(&mut self, path: &str) -> Result<(), Error> {
-        assert!(std::path::Path::new(path).is_absolute());
+        assert!(ghostty_os::osbytes::config_str_to_path(path).is_absolute());
         let file = match crate::file_load::open(path) {
             Ok(f) => f,
             Err(crate::file_load::OpenFileError::NotAFile) => {
@@ -3916,9 +3916,9 @@ impl Config {
         }
         let mut iter = cli_args::LineIterator::with_path(reader, path);
         self.load_iter(&mut iter)?;
-        let dir = std::path::Path::new(path)
+        let dir = ghostty_os::osbytes::config_str_to_path(path)
             .parent()
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(ghostty_os::osbytes::path_to_config_string)
             .unwrap_or_default();
         self.expand_paths(&dir)?;
         Ok(())
@@ -4067,7 +4067,7 @@ impl Config {
                 // a command to execute.
                 let mut builder: Vec<String> = Vec::new();
                 for arg in args {
-                    let copy = arg.to_string_lossy().into_owned();
+                    let copy = ghostty_os::osbytes::bytes_to_config_string(arg.to_bytes());
                     self.replay_steps.push(ReplayStep::Arg(copy.clone()));
                     builder.push(copy);
                 }
@@ -4126,7 +4126,7 @@ impl Config {
         // Any paths referenced from the CLI are relative to the current working
         // directory.
         let cwd = std::fs::canonicalize(".")?;
-        self.expand_paths(&cwd.to_string_lossy())?;
+        self.expand_paths(&ghostty_os::osbytes::path_to_config_string(&cwd))?;
         Ok(())
     }
 
@@ -4170,7 +4170,7 @@ impl Config {
 
             // All paths should already be absolute at this point because
             // they're fixed up after each load.
-            assert!(std::path::Path::new(&path).is_absolute());
+            assert!(ghostty_os::osbytes::config_str_to_path(&path).is_absolute());
 
             // We must only load a unique file once
             if !loaded.insert(path.clone()) {
@@ -4183,7 +4183,7 @@ impl Config {
                 continue;
             }
 
-            let file = match std::fs::File::open(&path) {
+            let file = match std::fs::File::open(ghostty_os::osbytes::config_str_to_path(&path)) {
                 Ok(f) => f,
                 Err(err) => {
                     if err.kind() != std::io::ErrorKind::NotFound || !optional {
