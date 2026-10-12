@@ -1,6 +1,6 @@
 # Status
 
-**Overall:** Linux/GTK port complete and verified (3038 tests). **Phase 8 in progress:** libghostty C API, libghostty-vt C API, WASM, macOS Zig paths, Windows, crash handling, GTK compat fallbacks, remaining verification + perf.
+**Overall: complete (2026-10-12).** Ghostty 1.3.1's Zig code is fully ported to Rust: Linux/GTK app (built, tested, verified at runtime, pixel-identical to the original), libghostty + libghostty-vt C APIs (ABI-checked), WASM (node-tested), macOS and Windows code paths (compile-checked with clippy -D warnings; not runnable here). 3584 tests; terminal core differentially fuzzed against Ghostty's Zig code (390k+ cases, 0 divergences); config/CLI output byte-identical to the installed Ghostty. Review rounds stopped after RV18 per the stopping criterion in PLAN.md. Intentional deviations: DEVIANT_FIXES.md; remaining minor differences: KNOWN_DIFFERENCES.md.
 
 Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠️ done with gaps
 
@@ -97,7 +97,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV17 | confirmation Codex verification (clean HEAD) | codex astra | ✅ | RV16 resolved; 6 P3 (Apple freetype, test defect, 3 inspector, Metal alloc register) → Z20 |
 | Z20 | RV17 P3 items | sonnet | ✅ | 3582 tests; fix-deviant(renderer) |
 | RV18 | FINAL audit round (stopping criterion) | codex astra | ✅ | RV17 6/6 resolved; fix: input-reachable assert (P2), FreeBSD build (P2), 2 resource-dir issues, 3 register rows; P3 nits → KNOWN_DIFFERENCES |
-| Z21 | final fix pass + KNOWN_DIFFERENCES.md | sonnet | 🟨 | last code change before close-out |
+| Z21 | final fix pass + KNOWN_DIFFERENCES.md | sonnet | ✅ | 3584 tests; fix-deviant(terminal) |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -151,3 +151,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: RV17 (Codex needed defensive framing after a false-positive cyber flag) → Z20.
 - 2026-10-12: Z20 committed (parity + fix-deviant(renderer)). RV18 running.
 - 2026-10-12: User: avoid endless review loop → stopping criterion: RV18 is the final audit; Z21 final fixes; P3 nits recorded, not chased.
+- 2026-10-12: Z21 committed; project closed out per stopping criterion.

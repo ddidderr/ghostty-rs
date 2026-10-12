@@ -10,8 +10,13 @@ actions; the same `ghostty +action` CLI; the same terminal emulation
 prompts, synchronized output, tmux control mode); the same shell
 integration, themes and terminfo.
 
-Out of scope: macOS, Windows, WASM, the embedded `libghostty` C API, and
-Sentry crash reporting (disabled by default on Linux upstream).
+All of Ghostty's Zig code is ported: the Linux GTK app (verified at runtime
+and pixel-identical to Ghostty 1.3.1), the `libghostty` and `libghostty-vt`
+C APIs (same headers/ABI), WASM, crash reporting, and the macOS
+(Metal/CoreText) and Windows (ConPTY) code paths. macOS and Windows are
+compile-checked on Linux (`just check-macos`, `just check-windows`) but have
+not been run natively. The Swift macOS app is not part of the port; it is a
+client of the libghostty C API.
 
 ## Building and running
 
@@ -26,8 +31,9 @@ cargo run -- +list-themes      # CLI actions work like Ghostty's
 cargo run --profile production # optimized build (LTO, no debug assertions)
 ```
 
-Development builds find `resources/` (shell integration, themes, terminfo)
-automatically. Your existing Ghostty config
+Dev-profile builds (`cargo run`) find `resources/` (shell integration,
+themes, terminfo) automatically; other profiles use the installed
+resources or `GHOSTTY_RESOURCES_DIR`. Your existing Ghostty config
 (`~/.config/ghostty/config[.ghostty]`) is used as-is.
 
 ## Installing
@@ -51,11 +57,22 @@ terminal and a real pty through a fake app runtime. `ghostty-bench` mirrors
 Ghostty's benchmark tool; terminal stream throughput is on par with the Zig
 build (see `docs/rewrite/notes/perf-P1.md`).
 
+## Verification
+
+- `just difftest` — differential fuzzing of the terminal core against
+  Ghostty's own Zig code (sets up Zig 0.15.2 under `target/`).
+- `just visual-parity` — pixel comparison against the installed Ghostty in a
+  headless nested weston.
+- `just check-all` — native gate plus macOS/Windows/WASM checks.
+
 ## Documentation
 
 - `docs/rewrite/ARCHITECTURE.md` – top-down decomposition, crate map, key
   design decisions, intentional omissions
 - `docs/rewrite/STATUS.md` – work package history
+- `docs/rewrite/DEVIANT_FIXES.md` – every intentional deviation from Ghostty
+  (upstream bugs fixed instead of replicated; commits titled `fix-deviant(...)`)
+- `docs/rewrite/KNOWN_DIFFERENCES.md` – remaining minor differences
 - `docs/rewrite/notes/` – per-crate porting notes, deviations from Zig,
   audits and verification reports
 
