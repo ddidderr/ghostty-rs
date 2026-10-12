@@ -520,6 +520,28 @@ fn selection_and_clipboard_round_trip() {
 const HEX_TWO: &str = "stty raw -echo; dd bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \\n'; printf '\\nHEX-DONE\\n'; sleep 5";
 
 #[test]
+fn key_text_and_preedit_are_bytes_not_lossy_utf8() {
+    // Key text is a byte slice (Zig `[]const u8`): non-UTF-8 text reaches
+    // the pty unchanged.
+    let h = host!("");
+    let s = h.surface(HEX_TWO);
+    let raw = CString::new(&b"\xff\xfe"[..]).unwrap();
+    assert!(unsafe { ghostty_surface_key(s, key(1, KEY_A, 0, Some(&raw))) });
+    h.wait_screen(s, "fffe");
+    unsafe { ghostty_surface_free(s) };
+
+    // Invalid preedit bytes are rejected like Zig (logged error, no panic).
+    let s = h.surface("printf 'READY\\n'; sleep 30");
+    h.wait_screen(s, "READY");
+    let p = b"a\xffb";
+    unsafe {
+        ghostty_surface_preedit(s, p.as_ptr().cast(), p.len());
+        ghostty_surface_preedit(s, ptr::null(), 0);
+        ghostty_surface_free(s);
+    }
+}
+
+#[test]
 fn clipboard_completion_and_binding_action_keep_raw_bytes() {
     // Clipboard contents are bytes: 0xFF must reach the child as 0xFF.
     let h = host!("");

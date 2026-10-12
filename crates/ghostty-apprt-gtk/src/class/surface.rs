@@ -1306,7 +1306,7 @@ impl Surface {
             mods,
             consumed_mods,
             composing: imp.im_composing.get(),
-            utf8: &utf8,
+            utf8: utf8.as_bytes(),
             unshifted_codepoint: keyval_unicode_unshifted,
         }) {
             Ok(e) => e,
@@ -3673,7 +3673,7 @@ mod imp {
             let (text, _, _) = ctx.preedit_string();
 
             // Update our preedit state in Ghostty core
-            if let Err(err) = surface.preedit_callback(Some(&text)) {
+            if let Err(err) = surface.preedit_callback(Some(text.as_bytes())) {
                 log::warn!("error in preedit callback err={err}");
             }
         }
@@ -3755,7 +3755,7 @@ mod imp {
                     mods: Mods::default(),
                     consumed_mods: Mods::default(),
                     composing: false,
-                    utf8: str,
+                    utf8: str.as_bytes(),
                     ..KeyEvent::default()
                 }) {
                     log::warn!("error in key callback err={err}");

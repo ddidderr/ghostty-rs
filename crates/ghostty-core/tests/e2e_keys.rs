@@ -250,7 +250,7 @@ fn key_release_without_press_is_ignored_in_legacy() {
     h.key_event(ghostty_input::KeyEvent {
         action: ghostty_input::key::Action::Release,
         key: Key::KeyA,
-        utf8: "a",
+        utf8: "a".as_bytes(),
         ..Default::default()
     });
     h.type_text("b");

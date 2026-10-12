@@ -27,8 +27,8 @@ pub struct KeyEventWrapper {
 }
 
 impl KeyEventWrapper {
-    /// Borrow as the Rust [`KeyEvent`]. Zig's `utf8` is a byte slice, ours is
-    /// `&str`: invalid UTF-8 is truncated to its longest valid prefix.
+    /// Borrow as the Rust [`KeyEvent`]. `utf8` is a byte slice (as in Zig) and is
+    /// passed through unchanged, even if it is not valid UTF-8.
     ///
     /// # Safety
     /// The caller-provided UTF-8 bytes must still be alive.
@@ -39,17 +39,13 @@ impl KeyEventWrapper {
             // SAFETY: per the contract of `ghostty_key_event_set_utf8`.
             unsafe { std::slice::from_raw_parts(self.utf8, self.utf8_len) }
         };
-        let text = match std::str::from_utf8(bytes) {
-            Ok(s) => s,
-            Err(e) => std::str::from_utf8(&bytes[..e.valid_up_to()]).unwrap_or(""),
-        };
         KeyEvent {
             action: self.action,
             key: self.key,
             mods: self.mods,
             consumed_mods: self.consumed_mods,
             composing: self.composing,
-            utf8: text,
+            utf8: bytes,
             unshifted_codepoint: self.unshifted_codepoint,
         }
     }

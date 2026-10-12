@@ -30,7 +30,8 @@ impl InputEvent {
             mods: ev.mods,
             consumed_mods: ev.consumed_mods,
             composing: ev.composing,
-            utf8: ev.utf8.to_owned(),
+            // Display only: invalid UTF-8 is shown as U+FFFD.
+            utf8: String::from_utf8_lossy(ev.utf8).into_owned(),
             unshifted_codepoint: ev.unshifted_codepoint,
         }
     }
@@ -494,7 +495,7 @@ mod tests {
         Event::new(&KeyEvent {
             action: Action::Press,
             key,
-            utf8,
+            utf8: utf8.as_bytes(),
             ..KeyEvent::default()
         })
     }

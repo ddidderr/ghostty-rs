@@ -164,7 +164,7 @@ pub trait CoreSurface {
     // ---- input -------------------------------------------------------
     fn key_callback(&self, event: KeyEvent<'_>) -> Result<InputEffect, CoreError>;
     /// `preeditCallback(null)` clears.
-    fn preedit_callback(&self, text: Option<&str>) -> Result<(), CoreError>;
+    fn preedit_callback(&self, text: Option<&[u8]>) -> Result<(), CoreError>;
     fn focus_callback(&self, focused: bool) -> Result<(), CoreError>;
     /// Returns true if the click was consumed.
     fn mouse_button_callback(

@@ -147,7 +147,7 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
                 if event.key == Key::Backspace {
                     return Ok(());
                 }
-                return writer.write_all(event.utf8.as_bytes());
+                return writer.write_all(event.utf8);
             }
         }
 
@@ -180,8 +180,12 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
                 // We only do this for printable characters. We should
                 // inspect the real unicode codepoint properties here but
                 // the real world issue is usually control characters.
-                if !event.utf8.chars().any(|c| is_control(u32::from(c))) {
-                    return writer.write_all(event.utf8.as_bytes());
+                // Invalid UTF-8 falls back to encoding the key press as if it
+                // didn't produce text (the bytes are never sent as plain text).
+                if let Some(mut chars) = utf8_chars(event.utf8)
+                    && !chars.any(|c| is_control(u32::from(c)))
+                {
+                    return writer.write_all(event.utf8);
                 }
             }
         }
@@ -192,7 +196,7 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
         // (e.g. composed/IME text), so send it as-is so programs can
         // still receive it.
         if !event.utf8.is_empty() {
-            return writer.write_all(event.utf8.as_bytes());
+            return writer.write_all(event.utf8);
         }
         return Ok(());
     };
@@ -209,7 +213,7 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
             mods: KittyMods::from_input(event.action, event.key, all_mods),
             event: KittyEvent::None,
             alternates: [None, None],
-            text: "",
+            text: b"",
         };
 
         if opts.kitty_flags.report_events {
@@ -230,7 +234,10 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
                 break 'alternates;
             }
 
-            let mut it = event.utf8.chars();
+            // Assume invalid UTF-8 means no UTF-8.
+            let Some(mut it) = utf8_chars(event.utf8) else {
+                break 'alternates;
+            };
 
             // If we have a codepoint in our UTF-8 sequence, then we can
             // report the shifted version.
@@ -376,7 +383,8 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
     // for any char with a modifier. Ctrl sequences like Ctrl+a
     // are already handled above.
     if opts.modify_other_keys_state_2 {
-        let mut it = utf8.chars();
+        // Assume invalid UTF-8 means we have no UTF-8.
+        let mut it = utf8_chars(utf8).unwrap_or_else(|| "".chars());
         // We only do this if we have a single codepoint. There shouldn't
         // ever be a multi-codepoint sequence that triggers this.
         if let (Some(codepoint), None) = (it.next().map(u32::from), it.clone().next()) {
@@ -449,7 +457,9 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
 
             // Get our codepoint. If we have more than one codepoint this
             // can't be valid CSIu.
-            let mut it = event.utf8.chars();
+            let Some(mut it) = utf8_chars(event.utf8) else {
+                break 'csiu;
+            };
             let Some(first) = it.next() else {
                 break 'csiu;
             };
@@ -501,7 +511,7 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
         return Ok(());
     }
 
-    writer.write_all(utf8.as_bytes())
+    writer.write_all(utf8)
 }
 
 fn legacy_alt_prefix(
@@ -536,7 +546,7 @@ fn legacy_alt_prefix(
     }
 
     // Otherwise, we require utf8 to already have the byte represented.
-    let utf8 = event.utf8.as_bytes();
+    let utf8 = event.utf8;
     if utf8.len() == 1 {
         return Some(utf8[0]);
     }
@@ -654,7 +664,12 @@ fn pc_style_function_key(
 /// This will return None if the key event should not be converted
 /// into a C0 byte. There are many cases for this and you should read
 /// the source code to understand them.
-fn ctrl_seq(logical_key: Key, utf8: &str, unshifted_codepoint: u32, mods: key::Mods) -> Option<u8> {
+fn ctrl_seq(
+    logical_key: Key,
+    utf8: &[u8],
+    unshifted_codepoint: u32,
+    mods: key::Mods,
+) -> Option<u8> {
     let ctrl_only = key::Mods {
         ctrl: true,
         ..key::Mods::default()
@@ -679,7 +694,7 @@ fn ctrl_seq(logical_key: Key, utf8: &str, unshifted_codepoint: u32, mods: key::M
         // If we have exactly one UTF8 byte, we assume that is the
         // character we want to convert to a C0 byte.
         if utf8.len() == 1 {
-            break 'ch utf8.as_bytes()[0];
+            break 'ch utf8[0];
         }
 
         // If we have a logical key that maps to a single byte
@@ -813,8 +828,14 @@ fn is_control(cp: u32) -> bool {
 
 /// Returns true if this string is comprised of a single
 /// control character. This returns false for multi-byte strings.
-fn is_control_utf8(s: &str) -> bool {
-    s.len() == 1 && is_control(u32::from(s.as_bytes()[0]))
+fn is_control_utf8(s: &[u8]) -> bool {
+    s.len() == 1 && is_control(u32::from(s[0]))
+}
+
+/// Strictly decode `bytes` as UTF-8 (Zig: `std.unicode.Utf8View.init`),
+/// returning `None` for invalid UTF-8.
+pub(crate) fn utf8_chars(bytes: &[u8]) -> Option<std::str::Chars<'_>> {
+    std::str::from_utf8(bytes).ok().map(str::chars)
 }
 
 /// This is the bitmask for fixterm CSI u modifiers.
@@ -926,7 +947,7 @@ struct KittySequence<'a> {
     mods: KittyMods,
     event: KittyEvent,
     alternates: [Option<u32>; 2],
-    text: &'a str,
+    text: &'a [u8],
 }
 
 impl KittySequence<'_> {
@@ -964,9 +985,10 @@ impl KittySequence<'_> {
         }
 
         // Text section
-        if !self.text.is_empty() {
+        // Assume invalid UTF-8 means we have no text.
+        if let Some(chars) = utf8_chars(self.text).filter(|_| !self.text.is_empty()) {
             let mut count = 0;
-            for c in self.text.chars() {
+            for c in chars {
                 let cp = u32::from(c);
                 // If the codepoint is non-printable ASCII character, skip.
                 if is_control(cp) {
@@ -1022,7 +1044,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::KeyA,
                     mods: Mods { ..Mods::default() },
-                    utf8: "abcd",
+                    utf8: "abcd".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1048,7 +1070,7 @@ mod tests {
                     key: Key::KeyA,
                     action: key::Action::Repeat,
                     mods: Mods { ..Mods::default() },
-                    utf8: "a",
+                    utf8: "a".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1073,7 +1095,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Enter,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1094,7 +1116,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Backspace,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1115,7 +1137,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Tab,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1137,7 +1159,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Enter,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1160,7 +1182,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Backspace,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1183,7 +1205,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Tab,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1206,7 +1228,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Enter,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1230,7 +1252,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Backspace,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1254,7 +1276,7 @@ mod tests {
                     action: key::Action::Release,
                     key: Key::Tab,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1284,7 +1306,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1312,7 +1334,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1340,7 +1362,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1365,7 +1387,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Enter,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1396,7 +1418,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1428,7 +1450,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1456,7 +1478,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Delete,
                     mods: Mods { ..Mods::default() },
-                    utf8: "\u{7f}",
+                    utf8: "\u{7f}".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1538,7 +1560,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Unidentified,
                     mods: Mods { ..Mods::default() },
-                    utf8: "\u{fb}",
+                    utf8: "\u{fb}".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1569,7 +1591,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 97,
                     ..KeyEvent::default()
                 },
@@ -1599,7 +1621,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 65,
                     ..KeyEvent::default()
                 },
@@ -1629,7 +1651,7 @@ mod tests {
                         caps_lock: true,
                         ..Mods::default()
                     },
-                    utf8: "J",
+                    utf8: "J".as_bytes(),
                     unshifted_codepoint: 106,
                     ..KeyEvent::default()
                 },
@@ -1661,7 +1683,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: ":",
+                    utf8: ":".as_bytes(),
                     unshifted_codepoint: u32::from(';'),
                     ..KeyEvent::default()
                 },
@@ -1690,7 +1712,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Semicolon,
                     mods: Mods { ..Mods::default() },
-                    utf8: "\u{447}",
+                    utf8: "\u{447}".as_bytes(),
                     unshifted_codepoint: 1095,
                     ..KeyEvent::default()
                 },
@@ -1722,7 +1744,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "\u{427}",
+                    utf8: "\u{427}".as_bytes(),
                     unshifted_codepoint: 1095,
                     ..KeyEvent::default()
                 },
@@ -1754,7 +1776,7 @@ mod tests {
                         caps_lock: true,
                         ..Mods::default()
                     },
-                    utf8: "\u{427}",
+                    utf8: "\u{427}".as_bytes(),
                     unshifted_codepoint: 1095,
                     ..KeyEvent::default()
                 },
@@ -1787,7 +1809,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     unshifted_codepoint: 337,
                     ..KeyEvent::default()
                 },
@@ -1816,7 +1838,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::ArrowUp,
                     mods: Mods { ..Mods::default() },
-                    utf8: "\u{1e}",
+                    utf8: "\u{1e}".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1844,7 +1866,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1870,7 +1892,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::ShiftLeft,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1896,7 +1918,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::ShiftLeft,
                     mods: Mods { ..Mods::default() },
-                    utf8: "",
+                    utf8: "".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -1925,7 +1947,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "j",
+                    utf8: "j".as_bytes(),
                     unshifted_codepoint: 106,
                     ..KeyEvent::default()
                 },
@@ -1957,7 +1979,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "J",
+                    utf8: "J".as_bytes(),
                     unshifted_codepoint: 106,
                     ..KeyEvent::default()
                 },
@@ -1990,7 +2012,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "J",
+                    utf8: "J".as_bytes(),
                     unshifted_codepoint: 106,
                     ..KeyEvent::default()
                 },
@@ -2019,7 +2041,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Delete,
                     mods: Mods { ..Mods::default() },
-                    utf8: "\u{7f}",
+                    utf8: "\u{7f}".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2045,7 +2067,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Enter,
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 0x0D,
                     ..KeyEvent::default()
                 },
@@ -2073,7 +2095,7 @@ mod tests {
                 &KeyEvent {
                     key: Key::Numpad1,
                     mods: Mods { ..Mods::default() },
-                    utf8: "1",
+                    utf8: "1".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2100,7 +2122,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Backspace,
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 0x0D,
                     ..KeyEvent::default()
                 },
@@ -2128,7 +2150,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Backspace,
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 0x0D,
                     ..KeyEvent::default()
                 },
@@ -2149,7 +2171,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Enter,
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 0x0D,
                     ..KeyEvent::default()
                 },
@@ -2170,7 +2192,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Escape,
-                    utf8: "A",
+                    utf8: "A".as_bytes(),
                     unshifted_codepoint: 0x0D,
                     ..KeyEvent::default()
                 },
@@ -2196,7 +2218,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "_",
+                    utf8: "_".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2221,7 +2243,7 @@ mod tests {
                         alt: true,
                         ..Mods::default()
                     },
-                    utf8: "c",
+                    utf8: "c".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2241,7 +2263,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::KeyC,
-                    utf8: "c",
+                    utf8: "c".as_bytes(),
                     mods: Mods {
                         alt: true,
                         ..Mods::default()
@@ -2293,7 +2315,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::KeyF,
-                    utf8: "\u{444}",
+                    utf8: "\u{444}".as_bytes(),
                     mods: Mods {
                         alt: true,
                         ..Mods::default()
@@ -2322,7 +2344,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "c",
+                    utf8: "c".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2346,7 +2368,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: " ",
+                    utf8: " ".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2395,7 +2417,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "H",
+                    utf8: "H".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2425,7 +2447,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "H",
+                    utf8: "H".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2451,7 +2473,7 @@ mod tests {
                         ..Mods::default()
                     },
                     consumed_mods: Mods { ..Mods::default() },
-                    utf8: "8",
+                    utf8: "8".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2477,7 +2499,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "i",
+                    utf8: "i".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2497,7 +2519,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "m",
+                    utf8: "m".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2517,7 +2539,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "[",
+                    utf8: "[".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2538,7 +2560,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "@",
+                    utf8: "@".as_bytes(),
                     unshifted_codepoint: u32::from('2'),
                     ..KeyEvent::default()
                 },
@@ -2564,7 +2586,7 @@ mod tests {
                         shift: true,
                         ..Mods::default()
                     },
-                    utf8: "M",
+                    utf8: "M".as_bytes(),
                     unshifted_codepoint: u32::from('m'),
                     ..KeyEvent::default()
                 },
@@ -2635,7 +2657,7 @@ mod tests {
                     key: Key::Numpad1,
                     mods: Mods { ..Mods::default() },
                     consumed_mods: Mods { ..Mods::default() },
-                    utf8: "1",
+                    utf8: "1".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2657,7 +2679,7 @@ mod tests {
                     key: Key::Numpad1,
                     mods: Mods { ..Mods::default() },
                     consumed_mods: Mods { ..Mods::default() },
-                    utf8: "1",
+                    utf8: "1".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2683,7 +2705,7 @@ mod tests {
                         ..Mods::default()
                     },
                     consumed_mods: Mods { ..Mods::default() },
-                    utf8: "1",
+                    utf8: "1".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2709,7 +2731,7 @@ mod tests {
                         ..Mods::default()
                     },
                     consumed_mods: Mods { ..Mods::default() },
-                    utf8: "1",
+                    utf8: "1".as_bytes(),
                     ..KeyEvent::default()
                 },
                 &Options {
@@ -2893,7 +2915,7 @@ mod tests {
                         ctrl: true,
                         ..Mods::default()
                     },
-                    utf8: "\u{151}",
+                    utf8: "\u{151}".as_bytes(),
                     unshifted_codepoint: 337,
                     ..KeyEvent::default()
                 },
@@ -2914,7 +2936,7 @@ mod tests {
                 &mut w,
                 &KeyEvent {
                     key: Key::Backspace,
-                    utf8: "\u{7f}",
+                    utf8: "\u{7f}".as_bytes(),
                     unshifted_codepoint: 0x08,
                     ..KeyEvent::default()
                 },
@@ -2939,7 +2961,7 @@ mod tests {
             mods: KittyMods::default(),
             event: KittyEvent::None,
             alternates: [None, None],
-            text: "",
+            text: b"",
         }
     }
 
@@ -3010,7 +3032,7 @@ mod tests {
     fn kitty_sequence_text() {
         assert_eq!(
             enc(KittySequence {
-                text: "A",
+                text: "A".as_bytes(),
                 ..seq(127, b'u')
             }),
             b"\x1B[127;;65u"
@@ -3018,7 +3040,7 @@ mod tests {
         assert_eq!(
             enc(KittySequence {
                 event: KittyEvent::Release,
-                text: "A",
+                text: "A".as_bytes(),
                 ..seq(127, b'u')
             }),
             b"\x1B[127;1:3;65u"
@@ -3029,7 +3051,7 @@ mod tests {
                     shift: true,
                     ..KittyMods::default()
                 },
-                text: "A",
+                text: "A".as_bytes(),
                 ..seq(127, b'u')
             }),
             b"\x1B[127;2;65u"
@@ -3040,14 +3062,14 @@ mod tests {
     fn kitty_sequence_text_with_control_characters() {
         assert_eq!(
             enc(KittySequence {
-                text: "\n",
+                text: "\n".as_bytes(),
                 ..seq(127, b'u')
             }),
             b"\x1b[127u"
         );
         assert_eq!(
             enc(KittySequence {
-                text: "A\n",
+                text: "A\n".as_bytes(),
                 ..seq(127, b'u')
             }),
             b"\x1b[127;;65u"
@@ -3102,7 +3124,7 @@ mod tests {
     #[test]
     fn ctrlseq_normal_ctrl_c() {
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "c", 'c' as u32, ctrl()),
+            ctrl_seq(Key::Unidentified, "c".as_bytes(), 'c' as u32, ctrl()),
             Some(0x03)
         );
     }
@@ -3110,7 +3132,7 @@ mod tests {
     #[test]
     fn ctrlseq_normal_ctrl_c_right_control() {
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "c", 'c' as u32, right_ctrl()),
+            ctrl_seq(Key::Unidentified, "c".as_bytes(), 'c' as u32, right_ctrl()),
             Some(0x03)
         );
     }
@@ -3123,7 +3145,7 @@ mod tests {
             ..Mods::default()
         };
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "c", 'c' as u32, mods),
+            ctrl_seq(Key::Unidentified, "c".as_bytes(), 'c' as u32, mods),
             Some(0x03)
         );
     }
@@ -3131,7 +3153,12 @@ mod tests {
     #[test]
     fn ctrlseq_no_ctrl_does_nothing() {
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "c", 'c' as u32, Mods::default()),
+            ctrl_seq(
+                Key::Unidentified,
+                "c".as_bytes(),
+                'c' as u32,
+                Mods::default()
+            ),
             None
         );
     }
@@ -3144,7 +3171,7 @@ mod tests {
             ..Mods::default()
         };
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "_", '-' as u32, mods),
+            ctrl_seq(Key::Unidentified, "_".as_bytes(), '-' as u32, mods),
             Some(0x1F)
         );
     }
@@ -3157,7 +3184,7 @@ mod tests {
             ..Mods::default()
         };
         assert_eq!(
-            ctrl_seq(Key::Unidentified, "C", 'c' as u32, mods),
+            ctrl_seq(Key::Unidentified, "C".as_bytes(), 'c' as u32, mods),
             Some(0x03)
         );
     }
@@ -3168,18 +3195,27 @@ mod tests {
             shift: true,
             ..Mods::default()
         };
-        assert_eq!(ctrl_seq(Key::Unidentified, "C", 'c' as u32, shift), None);
+        assert_eq!(
+            ctrl_seq(Key::Unidentified, "C".as_bytes(), 'c' as u32, shift),
+            None
+        );
         let both = Mods {
             shift: true,
             ctrl: true,
             ..Mods::default()
         };
-        assert_eq!(ctrl_seq(Key::Unidentified, "C", 'c' as u32, both), None);
+        assert_eq!(
+            ctrl_seq(Key::Unidentified, "C".as_bytes(), 'c' as u32, both),
+            None
+        );
     }
 
     #[test]
     fn ctrlseq_russian_ctrl_c() {
-        assert_eq!(ctrl_seq(Key::KeyC, "с", 0x0441, ctrl()), Some(0x03));
+        assert_eq!(
+            ctrl_seq(Key::KeyC, "с".as_bytes(), 0x0441, ctrl()),
+            Some(0x03)
+        );
     }
 
     #[test]
@@ -3189,7 +3225,7 @@ mod tests {
             shift: true,
             ..Mods::default()
         };
-        assert_eq!(ctrl_seq(Key::KeyC, "с", 0x0441, mods), None);
+        assert_eq!(ctrl_seq(Key::KeyC, "с".as_bytes(), 0x0441, mods), None);
     }
 
     #[test]
@@ -3199,15 +3235,53 @@ mod tests {
             alt: true,
             ..Mods::default()
         };
-        assert_eq!(ctrl_seq(Key::KeyC, "с", 0x0441, mods), Some(0x03));
+        assert_eq!(
+            ctrl_seq(Key::KeyC, "с".as_bytes(), 0x0441, mods),
+            Some(0x03)
+        );
     }
 
     #[test]
     fn ctrlseq_right_ctrl_c() {
         assert_eq!(
-            ctrl_seq(Key::KeyC, "с", 'c' as u32, right_ctrl()),
+            ctrl_seq(Key::KeyC, "с".as_bytes(), 'c' as u32, right_ctrl()),
             Some(0x03)
         );
+    }
+
+    #[test]
+    fn invalid_utf8_text_is_passed_through_or_ignored() {
+        let ev = KeyEvent {
+            key: Key::KeyA,
+            unshifted_codepoint: 'a' as u32,
+            utf8: b"\xff\xfe",
+            ..KeyEvent::default()
+        };
+        let mut out = Vec::new();
+        legacy_like(&mut out, &ev);
+        assert_eq!(out, b"\xff\xfe");
+
+        // Kitty associated text with invalid UTF-8 is dropped, not lossy.
+        let mut out = Vec::new();
+        encode(
+            &mut out,
+            &ev,
+            &Options {
+                kitty_flags: KittyFlags {
+                    disambiguate: true,
+                    report_all: true,
+                    report_associated: true,
+                    ..KittyFlags::default()
+                },
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(out, b"\x1b[97u");
+    }
+
+    fn legacy_like(out: &mut Vec<u8>, ev: &KeyEvent<'_>) {
+        encode(out, ev, &Options::default()).unwrap();
     }
 }
 
@@ -3255,7 +3329,7 @@ mod macos_tests {
                     alt: true,
                     ..Mods::default()
                 },
-                utf8: "∑",
+                utf8: "∑".as_bytes(),
                 unshifted_codepoint: 119,
                 ..KeyEvent::default()
             };
@@ -3276,7 +3350,7 @@ mod macos_tests {
                     alt: true,
                     ..Mods::default()
                 },
-                utf8: "∑",
+                utf8: "∑".as_bytes(),
                 unshifted_codepoint: 119,
                 ..KeyEvent::default()
             };
@@ -3288,7 +3362,7 @@ mod macos_tests {
             // Without Alt modifier
             let ev = KeyEvent {
                 key: Key::KeyW,
-                utf8: "∑",
+                utf8: "∑".as_bytes(),
                 unshifted_codepoint: 119,
                 ..KeyEvent::default()
             };
@@ -3304,7 +3378,7 @@ mod macos_tests {
         with_darwin(true, || {
             let ev = KeyEvent {
                 key: Key::KeyC,
-                utf8: "≈",
+                utf8: "≈".as_bytes(),
                 unshifted_codepoint: u32::from('c'),
                 mods: Mods {
                     alt: true,
@@ -3333,7 +3407,7 @@ mod macos_tests {
         with_darwin(true, || {
             let ev = KeyEvent {
                 key: Key::Period,
-                utf8: ">",
+                utf8: ">".as_bytes(),
                 unshifted_codepoint: u32::from('.'),
                 mods: Mods {
                     alt: true,
@@ -3365,7 +3439,7 @@ mod macos_tests {
                     ..Mods::default()
                 },
                 // common translation of option+8 with European keyboard layouts
-                utf8: "[",
+                utf8: "[".as_bytes(),
                 ..KeyEvent::default()
             };
             let opts = Options {
@@ -3382,7 +3456,7 @@ mod macos_tests {
         with_darwin(true, || {
             let ev = KeyEvent {
                 key: Key::KeyB,
-                utf8: "b",
+                utf8: "b".as_bytes(),
                 mods: Mods {
                     super_: true,
                     ..Mods::default()
@@ -3395,7 +3469,7 @@ mod macos_tests {
         with_darwin(false, || {
             let ev = KeyEvent {
                 key: Key::KeyB,
-                utf8: "b",
+                utf8: "b".as_bytes(),
                 mods: Mods {
                     super_: true,
                     ..Mods::default()
@@ -3411,7 +3485,7 @@ mod macos_tests {
         with_darwin(true, || {
             let ev = KeyEvent {
                 key: Key::KeyB,
-                utf8: "B",
+                utf8: "B".as_bytes(),
                 mods: Mods {
                     super_: true,
                     shift: true,

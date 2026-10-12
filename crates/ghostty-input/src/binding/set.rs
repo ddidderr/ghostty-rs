@@ -574,8 +574,9 @@ impl Set {
 
         // If our UTF-8 text is exactly one codepoint, we try to match that.
         if !event.utf8.is_empty() {
-            let mut it = event.utf8.chars();
-            // No codepoints or multiple codepoints drops to invalid format
+            // Invalid UTF-8, no codepoints or multiple codepoints drops to
+            // invalid format.
+            let mut it = crate::key_encode::utf8_chars(event.utf8).unwrap_or_else(|| "".chars());
             if let (Some(cp), None) = (it.next(), it.next()) {
                 trigger.key = TriggerKey::Unicode(cp as u32);
                 if let Some(v) = self.get_entry(trigger) {

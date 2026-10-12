@@ -92,7 +92,7 @@ pub struct OwnedKeyEvent {
     pub mods: Mods,
     pub consumed_mods: Mods,
     pub composing: bool,
-    pub utf8: String,
+    pub utf8: Vec<u8>,
     pub unshifted_codepoint: u32,
 }
 
@@ -112,7 +112,7 @@ impl OwnedKeyEvent {
             mods: e.mods,
             consumed_mods: e.consumed_mods,
             composing: e.composing,
-            utf8: e.utf8.to_owned(),
+            utf8: e.utf8.to_vec(),
             unshifted_codepoint: e.unshifted_codepoint,
         }
     }
@@ -1067,7 +1067,7 @@ mod tests {
                 ctrl: true,
                 ..Mods::default()
             },
-            utf8: "a",
+            utf8: "a".as_bytes(),
             unshifted_codepoint: 'a' as u32,
             ..KeyEvent::default()
         };

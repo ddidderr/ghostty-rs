@@ -486,7 +486,7 @@ impl Harness {
                 Mods::default()
             },
             composing: false,
-            utf8,
+            utf8: utf8.as_bytes(),
             unshifted_codepoint: unshifted,
         });
         // GTK reports the same text/codepoint on release.
@@ -496,7 +496,7 @@ impl Harness {
             mods,
             consumed_mods: Mods::default(),
             composing: false,
-            utf8,
+            utf8: utf8.as_bytes(),
             unshifted_codepoint: unshifted,
         });
         eff

@@ -1679,7 +1679,7 @@ impl Surface {
     /// The core surface will NOT reset the preedit state on charCallback or
     /// keyCallback and we rely completely on the apprt implementation to
     /// track the preedit state correctly.
-    pub fn preedit_callback(&self, preedit: Option<&str>) -> Result<(), CoreError> {
+    pub fn preedit_callback(&self, preedit: Option<&[u8]>) -> Result<(), CoreError> {
         let cfg = self.cfg();
         let mut st = self.lock_state();
 
@@ -1704,7 +1704,16 @@ impl Surface {
             return Ok(());
         };
 
-        // We convert the UTF-8 text to codepoints.
+        // We convert the UTF-8 text to codepoints. Like Zig's
+        // `Utf8View.init(text)`, invalid UTF-8 is an error: the prior preedit
+        // is already cleared and marked dirty, and no new preedit is set.
+        let text = match std::str::from_utf8(text) {
+            Ok(t) => t,
+            Err(e) => {
+                drop(st);
+                return Err(Box::new(e));
+            }
+        };
         let mut codepoints: Vec<PreeditCodepoint> = Vec::new();
         for cp in text.chars() {
             let width = usize::from(ghostty_unicode::table().get(u32::from(cp)).width);
@@ -1993,7 +2002,7 @@ impl CoreSurface for Surface {
         Surface::key_callback(self, event)
     }
 
-    fn preedit_callback(&self, text: Option<&str>) -> Result<(), CoreError> {
+    fn preedit_callback(&self, text: Option<&[u8]>) -> Result<(), CoreError> {
         let _crash = self.crash_guard();
         Surface::preedit_callback(self, text)
     }

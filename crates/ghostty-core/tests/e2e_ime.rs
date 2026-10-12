@@ -36,7 +36,7 @@ fn preedit_state_and_ime_point() {
     let h = harness!(Harness::recorder("", &[]));
     let before = h.surface.ime_point();
     h.surface
-        .preedit_callback(Some("\u{3042}\u{3044}"))
+        .preedit_callback(Some("\u{3042}\u{3044}".as_bytes()))
         .unwrap();
     {
         let st = h.surface.lock_state();
@@ -58,6 +58,20 @@ fn preedit_state_and_ime_point() {
 }
 
 #[test]
+fn preedit_with_invalid_utf8_is_an_error_and_clears_prior() {
+    let h = harness!(Harness::recorder("", &[]));
+    // Like Zig's preeditCallback (`try Utf8View.init(text)`): invalid UTF-8
+    // returns an error after the prior preedit has been cleared, and no new
+    // preedit is set. Nothing is written to the pty.
+    h.surface.preedit_callback(Some(b"ab")).unwrap();
+    assert!(h.surface.lock_state().preedit.is_some());
+    assert!(h.surface.preedit_callback(Some(b"a\xffb\xc3")).is_err());
+    assert!(h.surface.lock_state().preedit.is_none());
+    h.settle(50);
+    assert_eq!(h.recorded(), Vec::<u8>::new());
+}
+
+#[test]
 fn preedit_is_rendered_and_cleared() {
     let h = harness!(Harness::recorder("", &[]));
     // Cursor sits after "READY" at column 5, row 0. Disable blink noise by
@@ -71,7 +85,7 @@ fn preedit_is_rendered_and_cleared() {
         });
         b
     };
-    h.surface.preedit_callback(Some("abcd")).unwrap();
+    h.surface.preedit_callback(Some("abcd".as_bytes())).unwrap();
     h.wait("preedit visible", |h| {
         let r = region(h, cols.clone(), 0);
         !r.is_empty() && r != baseline
@@ -89,7 +103,7 @@ fn commit_sends_text_and_composing_keys_do_not() {
     h.key_event(KeyEvent {
         key: Key::KeyK,
         composing: true,
-        utf8: "k",
+        utf8: "k".as_bytes(),
         unshifted_codepoint: 'k' as u32,
         ..KeyEvent::default()
     });
@@ -98,12 +112,12 @@ fn commit_sends_text_and_composing_keys_do_not() {
 
     // Commit: preedit ends, committed text is sent with no key.
     h.surface
-        .preedit_callback(Some("\u{3053}\u{3093}"))
+        .preedit_callback(Some("\u{3053}\u{3093}".as_bytes()))
         .unwrap();
     h.surface.preedit_callback(None).unwrap();
     h.key_event(KeyEvent {
         key: Key::Unidentified,
-        utf8: "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}",
+        utf8: "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}".as_bytes(),
         ..KeyEvent::default()
     });
     h.expect_input("\u{3053}\u{3093}\u{306b}\u{3061}\u{306f}".as_bytes());
@@ -115,7 +129,7 @@ fn enter_with_committed_text_sends_text_not_cr() {
     let h = harness!(Harness::recorder("", &[]));
     h.key_event(KeyEvent {
         key: Key::Enter,
-        utf8: "\u{6f22}",
+        utf8: "\u{6f22}".as_bytes(),
         ..KeyEvent::default()
     });
     h.expect_input("\u{6f22}".as_bytes());

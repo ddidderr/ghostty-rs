@@ -170,7 +170,7 @@ mod tests {
         insp.record_key_event(crate::KeyEvent::new(&KeyEvent {
             action: Action::Press,
             key: Key::KeyA,
-            utf8: "a",
+            utf8: "a".as_bytes(),
             ..KeyEvent::default()
         }));
 

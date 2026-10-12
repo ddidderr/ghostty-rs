@@ -1097,7 +1097,7 @@ fn ev(key: Key, mods: Mods, utf8: &str, unshifted: u32) -> KeyEvent<'_> {
     KeyEvent {
         key,
         mods,
-        utf8,
+        utf8: utf8.as_bytes(),
         unshifted_codepoint: unshifted,
         ..KeyEvent::default()
     }

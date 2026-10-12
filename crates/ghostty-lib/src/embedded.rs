@@ -216,7 +216,7 @@ struct OwnedKey {
     mods: Mods,
     consumed_mods: Mods,
     composing: bool,
-    text: String,
+    text: Vec<u8>,
     unshifted_codepoint: u32,
 }
 
@@ -234,7 +234,7 @@ impl OwnedKey {
         };
         // SAFETY: per the function contract.
         let text = unsafe { cstr(e.text) }
-            .map(|c| c.to_string_lossy().into_owned())
+            .map(|c| c.to_bytes().to_vec())
             .unwrap_or_default();
 
         // We want to get the physical unmapped key to process keybinds.
@@ -1636,7 +1636,7 @@ pub unsafe extern "C" fn ghostty_surface_preedit(
     } else {
         // SAFETY: `text` points to `len` readable bytes.
         let bytes = unsafe { std::slice::from_raw_parts(text.cast::<u8>(), len) };
-        Some(String::from_utf8_lossy(bytes).into_owned())
+        Some(bytes.to_vec())
     };
     if let Err(err) = core.preedit_callback(preedit.as_deref()) {
         log::error!("error in preedit callback err={err}");

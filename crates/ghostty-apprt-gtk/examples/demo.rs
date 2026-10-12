@@ -149,7 +149,7 @@ impl CoreSurface for DemoSurface {
         }
     }
 
-    fn preedit_callback(&self, _text: Option<&str>) -> Result<(), CoreError> {
+    fn preedit_callback(&self, _text: Option<&[u8]>) -> Result<(), CoreError> {
         Ok(())
     }
     fn focus_callback(&self, focused: bool) -> Result<(), CoreError> {

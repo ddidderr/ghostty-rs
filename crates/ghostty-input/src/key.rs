@@ -43,7 +43,7 @@ pub struct KeyEvent<'a> {
     /// This will be an empty string if there is no text generated.
     /// If composing is true and this is non-empty, this is preedit
     /// text.
-    pub utf8: &'a str,
+    pub utf8: &'a [u8],
 
     /// The codepoint for this key when it is unshifted. For example,
     /// shift+a is "A" in UTF-8 but unshifted would provide 'a'.
@@ -58,7 +58,7 @@ impl Default for KeyEvent<'_> {
             mods: Mods::default(),
             consumed_mods: Mods::default(),
             composing: false,
-            utf8: "",
+            utf8: b"",
             unshifted_codepoint: 0,
         }
     }

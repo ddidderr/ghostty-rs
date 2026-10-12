@@ -282,7 +282,7 @@ fn wasm_key_encode_example() {
             action,
             key,
             mods,
-            utf8,
+            utf8: utf8.as_bytes(),
             unshifted_codepoint: unshifted as u32,
             ..KeyEvent::default()
         };
