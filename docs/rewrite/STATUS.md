@@ -75,7 +75,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV7 | final Codex verification of RV6 rows + sweep + verdict | codex astra | ✅ | all prior rows resolved; 9 narrow byte/Windows gaps → Z9 |
 | Z9 | RV7 gaps + systematic config-string consumer audit | sonnet | ✅ | 3405 tests; flaky TMPDIR test race fixed |
 | Z10 | byte-typed C API key/preedit text | sonnet | ✅ | 3407 tests; preedit error semantics aligned with Zig by orchestrator |
-| RV8 | final Codex verification (RV7 gaps, Z9/Z10) + sweep + verdict | codex astra | 🟨 | |
+| RV8 | final Codex verification (RV7 gaps, Z9/Z10) + sweep + verdict | codex astra | ✅ | 9 edge-case groups; root cause = escape-encoded config strings |
+| BX | structural: byte-faithful config value parsing (fields parse &[u8] like Zig) + RV8 findings | codex astra | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -107,3 +108,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Z8 committed (3390 tests, cross-checks green). RV7 running.
 - 2026-10-12: Z9 committed (audit table in notes/final-Z9.md). Z10 launched; RV8 after.
 - 2026-10-12: Z10 committed (3407 tests, all cross-checks green). RV8 running.
+- 2026-10-12: RV8: gap count stalled (escape design). Codex BX structural refactor launched.
