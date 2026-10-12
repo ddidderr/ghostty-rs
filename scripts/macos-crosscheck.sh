@@ -5,6 +5,8 @@
 # Usage: scripts/macos-crosscheck.sh [check|clippy] [target]
 # MACOS_CHECK_FEATURES="ghostty-font/font-backend-freetype" adds cargo features
 # (for example the FreeType-only font backend on Apple).
+# MACOS_CHECK_ONLY="ghostty-macos" restricts the check to the given crates
+# (space separated), for quick iteration.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE=${1:-clippy}
@@ -55,13 +57,20 @@ export GETTEXT_DIR=/nonexistent ZIG_GLOBAL_CACHE_DIR="$W/zig-cache" ZIG_LOCAL_CA
 CRATES=(-p ghostty-vt -p ghostty-unicode -p ghostty-datastruct -p ghostty-os -p ghostty-input
   -p ghostty-config -p ghostty-terminal -p ghostty-font -p ghostty-renderer -p ghostty-termio
   -p ghostty-core -p ghostty-apprt -p ghostty-inspector -p ghostty-lib -p ghostty-crash
-  -p ghostty-bench -p ghostty-vt-capi)
+  -p ghostty-bench -p ghostty-vt-capi -p ghostty-macos)
+if [ -n "${MACOS_CHECK_ONLY:-}" ]; then
+  CRATES=()
+  for c in $MACOS_CHECK_ONLY; do CRATES+=(-p "$c"); done
+fi
 FEATURES=()
 if [ -n "${MACOS_CHECK_FEATURES:-}" ]; then
   FEATURES=(--features "$MACOS_CHECK_FEATURES")
 fi
 if [ "$MODE" = clippy ]; then
   cargo clippy --target "$TARGET" "${CRATES[@]}" "${FEATURES[@]}" --lib --tests -- -D warnings
+  # The macOS app executable (an Apple-only binary).
+  cargo clippy --target "$TARGET" -p ghostty-macos --bins -- -D warnings
 else
   cargo check --target "$TARGET" "${CRATES[@]}" "${FEATURES[@]}" --lib --tests
+  cargo check --target "$TARGET" -p ghostty-macos --bins
 fi
