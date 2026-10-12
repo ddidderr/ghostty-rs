@@ -31,6 +31,8 @@ pub enum Error {
     UnsupportedAtlasFormat,
     #[error("invalid codepoint")]
     InvalidCodepoint,
+    #[error("canvas container not found")]
+    CanvasContainerNotFound,
     #[error(transparent)]
     Atlas(#[from] atlas::Error),
     #[cfg(target_arch = "wasm32")]
@@ -217,7 +219,7 @@ pub use face_js::Face;
 
 #[cfg(target_arch = "wasm32")]
 mod face_js {
-    use ghostty_os::wasm::js::{self, Arg, Object};
+    use ghostty_os::wasm::js::{self, Object};
 
     use super::{
         Error,
@@ -260,11 +262,11 @@ mod face_js {
 
     fn text_metrics(o: &Object) -> Result<TextMetrics, Error> {
         Ok(TextMetrics {
-            width: o.get_f32("width")?,
-            actual_bounding_box_left: o.get_f32("actualBoundingBoxLeft")?,
-            actual_bounding_box_right: o.get_f32("actualBoundingBoxRight")?,
-            actual_bounding_box_ascent: o.get_f32("actualBoundingBoxAscent")?,
-            actual_bounding_box_descent: o.get_f32("actualBoundingBoxDescent")?,
+            width: o.get::<f32>("width")?,
+            actual_bounding_box_left: o.get::<f32>("actualBoundingBoxLeft")?,
+            actual_bounding_box_right: o.get::<f32>("actualBoundingBoxRight")?,
+            actual_bounding_box_ascent: o.get::<f32>("actualBoundingBoxAscent")?,
+            actual_bounding_box_descent: o.get::<f32>("actualBoundingBoxDescent")?,
         })
     }
 
@@ -282,8 +284,8 @@ mod face_js {
             presentation: Presentation,
         ) -> Result<Face, Error> {
             // Create our canvas that we're going to continue to reuse.
-            let doc = js::global()?.get_object("document")?;
-            let canvas = doc.call("createElement", &[Arg::Str("canvas")])?;
+            let doc = js::global().get::<Object>("document")?;
+            let canvas = doc.call::<Object>("createElement", &[&js::string("canvas")])?;
 
             let mut result = Face {
                 font_str: raw.to_owned(),
@@ -369,11 +371,11 @@ mod face_js {
             let ctx = self.context()?;
 
             // Cell width is the width of our M text
-            let m = text_metrics(&ctx.call("measureText", &[Arg::Str("M")])?)?;
+            let m = text_metrics(&ctx.call::<Object>("measureText", &[&js::string("M")])?)?;
 
             // To get the cell height we render a high and low character and
             // get the total of the ascent and descent.
-            let hm = text_metrics(&ctx.call("measureText", &[Arg::Str("M_")])?)?;
+            let hm = text_metrics(&ctx.call::<Object>("measureText", &[&js::string("M_")])?)?;
 
             self.metrics = calc_metrics(m, hm);
             log::debug!("metrics font={} value={:?}", self.font_str, self.metrics);
@@ -384,31 +386,25 @@ mod face_js {
         fn context(&self) -> Result<Object, Error> {
             // This will return the same context on subsequent calls so it
             // is important to reset it.
-            let ctx = self.canvas.call("getContext", &[Arg::Str("2d")])?;
+            let ctx = self
+                .canvas
+                .call::<Object>("getContext", &[&js::string("2d")])?;
 
             // Clear the canvas
             {
-                let width = self.canvas.get_f64("width")?;
-                let height = self.canvas.get_f64("height")?;
-                ctx.call(
-                    "clearRect",
-                    &[
-                        Arg::Num(0.0),
-                        Arg::Num(0.0),
-                        Arg::Num(width),
-                        Arg::Num(height),
-                    ],
-                )?;
+                let width = self.canvas.get::<f64>("width")?;
+                let height = self.canvas.get::<f64>("height")?;
+                ctx.call::<()>("clearRect", &[&0.0_f64, &0.0_f64, &width, &height])?;
             }
 
             // Set our context font
             let font_val = format!("{}px {}", self.size.points, self.font_str);
-            ctx.set("font", Arg::Str(&font_val))?;
+            ctx.set("font", js::string(&font_val))?;
 
             // If the font property didn't change, then the font set didn't
             // work. We do this check because it is very easy to put an
             // invalid font in and this at least makes it show up in the logs.
-            let check = ctx.get_string("font")?;
+            let check = ctx.get::<String>("font")?;
             if font_val != check {
                 log::warn!(
                     "canvas font didn't set, fonts may be broken, expected={font_val} got={check}"
@@ -437,17 +433,19 @@ mod face_js {
 
             // Get our drawing context and the size of the render
             let measure_ctx = self.context()?;
-            let m = text_metrics(&measure_ctx.call("measureText", &[Arg::Str(&glyph_str)])?)?;
+            let m = text_metrics(
+                &measure_ctx.call::<Object>("measureText", &[&js::string(&glyph_str)])?,
+            )?;
             let (width, height, broken_bbox) = glyph_size(m);
 
             // Resize canvas to match the glyph size exactly
             {
-                self.canvas.set("width", Arg::from(width))?;
-                self.canvas.set("height", Arg::from(height))?;
+                self.canvas.set("width", width)?;
+                self.canvas.set("height", height)?;
 
-                let style = self.canvas.get_object("style")?;
-                style.set("width", Arg::Str(&format!("{width}px")))?;
-                style.set("height", Arg::Str(&format!("{height}px")))?;
+                let style = self.canvas.get::<Object>("style")?;
+                style.set("width", js::string(&format!("{width}px")))?;
+                style.set("height", js::string(&format!("{height}px")))?;
             }
 
             // Reload our context since we resized the canvas
@@ -457,50 +455,50 @@ mod face_js {
             // baselines so that we just render the glyph fully in the box
             // with no offsets.
             if broken_bbox {
-                ctx.set("textBaseline", Arg::Str("ideographic"))?;
+                ctx.set("textBaseline", js::string("ideographic"))?;
             }
 
             // Draw background
-            ctx.set("fillStyle", Arg::Str("transparent"))?;
-            ctx.call(
-                "fillRect",
-                &[
-                    Arg::Num(0.0),
-                    Arg::Num(0.0),
-                    Arg::from(width),
-                    Arg::from(height),
-                ],
-            )?;
+            ctx.set("fillStyle", js::string("transparent"))?;
+            ctx.call::<()>("fillRect", &[&0.0_f64, &0.0_f64, &width, &height])?;
 
             // Draw glyph
-            ctx.set("fillStyle", Arg::Str("black"))?;
-            ctx.call(
+            ctx.set("fillStyle", js::string("black"))?;
+            ctx.call::<()>(
                 "fillText",
                 &[
-                    Arg::Str(&glyph_str),
-                    Arg::from(m.actual_bounding_box_left + 1.0),
-                    if broken_bbox {
-                        Arg::from(height)
+                    &js::string(&glyph_str),
+                    &(m.actual_bounding_box_left + 1.0),
+                    &if broken_bbox {
+                        height as f32
                     } else {
-                        Arg::from(m.actual_bounding_box_ascent + 1.0)
+                        m.actual_bounding_box_ascent + 1.0
                     },
                 ],
             )?;
 
             // Read the image data and get it into a Vec<u8> on our side
-            let data = ctx.call(
-                "getImageData",
-                &[
-                    Arg::Num(0.0),
-                    Arg::Num(0.0),
-                    Arg::from(width),
-                    Arg::from(height),
-                ],
-            )?;
-            let src_array = data.get_object("data")?;
-            let len = src_array.get_f64("length")? as usize;
+            let data =
+                ctx.call::<Object>("getImageData", &[&0.0_f64, &0.0_f64, &width, &height])?;
+            let src_array = data.get::<Object>("data")?;
+
+            // Allocate our local memory to copy the data to.
+            let len = src_array.get::<u32>("length")? as usize;
             let mut bitmap = vec![0u8; len];
-            src_array.copy_bytes_to(&mut bitmap)?;
+
+            // Create our target Uint8Array that we can use to copy from src.
+            let mem_array = {
+                // Get our runtime memory
+                let mem = js::runtime().get::<Object>("memory")?;
+                let buf = mem.get::<Object>("buffer")?;
+
+                // Construct our array to peer into our memory
+                let uint8_array = js::global().get::<Object>("Uint8Array")?;
+                uint8_array.new_instance(&[&buf, &(bitmap.as_mut_ptr() as usize)])?
+            };
+
+            // Copy
+            mem_array.call::<()>("set", &[&src_array])?;
 
             Ok(RenderedGlyph {
                 width,
@@ -512,12 +510,11 @@ mod face_js {
         /// Appends our canvas to the element with id `face-canvas` (the
         /// debugging hook behind the `face_debug_canvas` export).
         pub fn debug_canvas(&self) -> Result<(), Error> {
-            let doc = js::global()?.get_object("document")?;
-            let elem = doc.call("getElementById", &[Arg::Str("face-canvas")])?;
-            if elem.is_nullish() {
-                return Err(js::Error::Nullish.into());
-            }
-            elem.call("append", &[Arg::Object(&self.canvas)])?;
+            let doc = js::global().get::<Object>("document")?;
+            let elem = doc
+                .call::<Option<Object>>("getElementById", &[&js::string("face-canvas")])?
+                .ok_or(Error::CanvasContainerNotFound)?;
+            elem.call::<()>("append", &[&self.canvas])?;
             Ok(())
         }
     }

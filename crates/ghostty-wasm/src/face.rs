@@ -53,7 +53,10 @@ pub extern "C" fn face_new(ptr: *const u8, len: usize, pts: u16, p: u16) -> *mut
     };
     match Face::init_named(raw, DesiredSize::new(f32::from(pts)), p) {
         Ok(face) => Box::into_raw(Box::new(face)),
-        Err(_) => std::ptr::null_mut(),
+        Err(err) => {
+            log::warn!("error creating face err={err}");
+            std::ptr::null_mut()
+        }
     }
 }
 

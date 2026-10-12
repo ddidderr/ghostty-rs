@@ -1,13 +1,31 @@
 //! Builds the wasm module and runs `tests/node_test.js` against it with
-//! node, using stub JS imports (a fake canvas measuring API). Skipped when
+//! node, with zig-js's own JS host and a fake `document`/canvas. Skipped when
 //! node or the `wasm32-unknown-unknown` target is not available.
 
 use std::{path::PathBuf, process::Command};
 
 #[test]
 fn wasm_module_runs_under_node() {
-    if Command::new("node").arg("--version").output().is_err() {
+    // zig-js's host is TypeScript; node must be able to strip types (>= 23.6).
+    let Some(major) = Command::new("node")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .trim_start_matches('v')
+                .split('.')
+                .next()?
+                .parse::<u32>()
+                .ok()
+        })
+    else {
         eprintln!("skipping: node not found");
+        return;
+    };
+    if major < 24 {
+        eprintln!("skipping: node {major} cannot load the zig-js TypeScript host");
         return;
     }
 

@@ -10,7 +10,7 @@ unchanged.
 | `main_wasm.zig` | `crates/ghostty-wasm` (new, `cdylib`; empty on native) |
 | `config/Wasm.zig` | `ghostty-wasm/src/config.rs` |
 | `os/wasm.zig`, `os/wasm/target.zig`, `os/wasm/log.zig` | `ghostty-os/src/wasm/{mod,target,log}.rs` |
-| zig-js (`js.*` used by Atlas/web_canvas) | `ghostty-os/src/wasm/js.rs` + host `ghostty-wasm/js/ghostty_host.js` |
+| zig-js (`js.*` used by Atlas/web_canvas) | `ghostty-os/src/wasm/js.rs` + vendored zig-js host `ghostty-wasm/js/zig-js/` |
 | `font/face/web_canvas.zig` | `ghostty-font/src/face/web_canvas.rs` (+ exports in `ghostty-wasm/src/face.rs`) |
 | `font/shaper/web_canvas.zig` | `ghostty-font/src/shaper/web_canvas.rs` (+ `ghostty-wasm/src/shaper.rs`) |
 | `font/DeferredFace.zig` (`wc` variant, `Wasm`) | `ghostty-font/src/deferred_face_web_canvas.rs` |
@@ -38,13 +38,39 @@ unchanged.
   and `shaper::{run,cache,noop}` modules are compiled out.
 - Builds: `cargo build --target wasm32-unknown-unknown -p ghostty-font -p ghostty-config -p ghostty-terminal -p ghostty-vt -p ghostty-wasm` passes (debug + release); clippy `-D warnings` clean on both targets.
 
-## JS protocol (deviation)
-`zig-js` (mitchellh/zig-js) is **not vendored** in the Ghostty tree, so its
-import names could not be mirrored. `js.rs` documents a small handle-based
-ABI in import module `ghostty_js` (`global/get/set/call/new/string/number/
-boolean/to_f64/string_len/string_copy/is_nullish/bytes/copy_bytes/release`)
-plus `env.log(ptr,len)` (same as Zig's log). The Rust-side API mirrors
-`js.Object`. `ghostty-wasm/js/ghostty_host.js` is a reference host.
+## JS protocol (zig-js, W1b)
+The wasm module now speaks **exactly zig-js's ABI** (mitchellh/zig-js @
+04db83c): import module `"zig-js"` with `valueGet/valueSet/valueObjectCreate/
+valueStringCreate/valueStringLen/valueStringCopy/valueDeinit/valueNew/
+funcApply`, 64-bit NaN-boxed refs (f64 for numbers; NaN head `0x7FF8_0000`,
+bits 0-31 id, bits 32-34 type id; predefined ids nan/null/true/false/
+undefined/global/runtime = 0..6) and the same get/set/apply/new/deinit
+semantics. `ghostty-os/src/wasm/js.rs` is a Rust port of zig-js's Zig side:
+`Ref`, `Type`, `Value` (low level), `Object` (`get::<T>`, `set`, `call::<T>`,
+`new_instance`), `global()`, `runtime()`, `string()`, `Undefined`. `Object` has
+`Drop` (= `deinit`); `Object::into_id` hands the ref id to the host (as
+`atlas_debug_canvas` does). Result conversion mirrors `Object.convertValue`
+(`Option<T>` for null/undefined, `()` = void, `Object/Value` retain,
+others release). Deviation: a raw `Value` call argument is caller-owned.
+The vendored host is zig-js's own `js/` (`crates/ghostty-wasm/js/zig-js/`,
+unmodified TypeScript + MIT LICENSE; the lockfile, jest config are omitted).
+The earlier invented `ghostty_js` ABI and `ghostty_host.js` are gone. `env.log`
+(Zig's `os/wasm/log.zig`) is still a separate import.
+
+`web_canvas` face and `atlas_debug_canvas` now call JS like the Zig code:
+`document.createElement("canvas")`, `getContext`, `measureText`, `set("font")`,
+`getImageData`, then `Uint8Array(runtime.memory.buffer, ptr).set(imageData.data)`
+to copy pixels (no host-specific `copy_bytes`/`bytes`), and
+`Uint8ClampedArray(memory.buffer, ptr, len)` (+ `.slice()` under
+`wasm-shared`) + `ImageData` for the atlas. `face_debug_canvas` returns
+`CanvasContainerNotFound` like Zig. `atlas_debug_canvas` returns the zig-js
+ref id; free with `zigjs.deleteValue(id)`.
+Remaining small deviation: `text_metrics` reads all five TextMetrics fields
+instead of only the ones needed.
+
+Host usage: `const zigjs = new ZigJS(); instantiate(bytes, {...zigjs.
+importObject(), env: {log}}); zigjs.memory = instance.exports.memory;`
+`globalThis` must provide `document`/`ImageData` (the host binds `globalThis`).
 Allocation helpers `wasm_alloc/wasm_free` (host-owned buffers) replace the
 stale `toHostOwned` (does not exist in current `os/wasm.zig`).
 
@@ -84,3 +110,10 @@ Differences/extras: `region_free`/`glyph_free` (Zig: "global free"),
 ## Known gaps
 - `ghostty-os/tests/common/flatpak_mock.rs` (another agent's, untracked) fails
   `clippy --all-targets -D warnings` (needless_pass_by_value); unrelated.
+
+- Node test (`tests/node_test.js`) now loads zig-js's `ZigJS` straight from the
+  vendored `.ts` (needs node >= 24 type stripping; skipped otherwise), uses a
+  fake `document`/canvas on `globalThis`, asserts the import names are zig-js's,
+  and checks the host value table has no leaked entries at the end.
+- Native clippy of ghostty-os currently fails in `our_hostname` and wasm builds
+  warn on `SEP` unused in `ghostty-os/src/lib.rs` (other agents' areas).

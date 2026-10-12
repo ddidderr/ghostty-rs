@@ -4,7 +4,8 @@
 const fs = require('fs');
 const assert = require('assert');
 const path = require('path');
-const { createHost } = require(path.join(__dirname, '..', 'js', 'ghostty_host.js'));
+// zig-js's own JS host (vendored, unmodified TypeScript; node strips types).
+const { ZigJS } = require(path.join(__dirname, '..', 'js', 'zig-js', 'src', 'zigjs.ts'));
 
 // A fake canvas: every glyph is a 7px wide, 12px ascent, 4px descent box
 // (emoji are 14px wide and "colored"). measureText records the font in use.
@@ -19,8 +20,12 @@ class FakeCanvas {
       font: '',
       textBaseline: 'alphabetic',
       fillStyle: '',
-      clearRect: (...a) => self.calls.push(['clearRect', ...a]),
-      fillRect: (...a) => self.calls.push(['fillRect', ...a]),
+      clearRect: (...a) => {
+        self.calls.push(['clearRect', ...a]);
+      },
+      fillRect: (...a) => {
+        self.calls.push(['fillRect', ...a]);
+      },
       fillText: (t, x, y) => {
         self.lastText = { t, x, y };
         self.calls.push(['fillText', t, x, y]);
@@ -51,7 +56,9 @@ class FakeCanvas {
         }
         return { data };
       },
-      putImageData: (...a) => self.calls.push(['putImageData', ...a]),
+      putImageData: (...a) => {
+        self.calls.push(['putImageData', ...a]);
+      },
     };
   }
   getContext(kind) {
@@ -67,25 +74,52 @@ class FakeImageData {
   }
 }
 const canvases = [];
-const fakeGlobal = {
-  document: {
-    createElement: (tag) => {
-      assert.strictEqual(tag, 'canvas');
-      const c = new FakeCanvas();
-      canvases.push(c);
-      return c;
-    },
-    getElementById: () => null,
+// zig-js reads `globalThis` directly (predefined ref 5).
+globalThis.document = {
+  createElement: (tag) => {
+    assert.strictEqual(tag, 'canvas');
+    const c = new FakeCanvas();
+    canvases.push(c);
+    return c;
   },
-  ImageData: FakeImageData,
+  getElementById: () => null,
 };
+globalThis.ImageData = FakeImageData;
+
+// Live (non-predefined) entries in the zig-js value table, to catch leaks.
+const liveValues = (zigjs) => zigjs.values.slice(7).filter((v) => v !== null).length;
 
 (async () => {
   const logs = [];
-  const host = createHost({ global: fakeGlobal, log: (s) => logs.push(s) });
+  const zigjs = new ZigJS();
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+  let instance;
+  const mem = () => new Uint8Array(instance.exports.memory.buffer);
+  const readString = (ptr, len) => dec.decode(mem().subarray(ptr, ptr + len));
+  const imports = {
+    ...zigjs.importObject(),
+    env: { log: (ptr, len) => logs.push(readString(ptr, len)) },
+  };
+  // The import module must be exactly zig-js's.
+  assert.deepStrictEqual(Object.keys(imports).sort(), ['env', 'zig-js']);
   const bytes = fs.readFileSync(process.argv[2]);
-  const { instance } = await WebAssembly.instantiate(bytes, host.imports);
-  host.setInstance(instance);
+  ({ instance } = await WebAssembly.instantiate(bytes, imports));
+  zigjs.memory = instance.exports.memory;
+  const wanted = Object.keys(zigjs.importObject()['zig-js']).sort();
+  const got = WebAssembly.Module.imports(new WebAssembly.Module(bytes))
+    .filter((i) => i.module === 'zig-js')
+    .map((i) => i.name);
+  assert.ok(got.every((n) => wanted.includes(n)), `unexpected zig-js imports: ${got}`);
+  const host = {
+    writeString(s) {
+      const b = enc.encode(s);
+      const ptr = instance.exports.wasm_alloc(b.length);
+      mem().set(b, ptr);
+      return { ptr, len: b.length, free: () => instance.exports.wasm_free(ptr, b.length) };
+    },
+    readString,
+  };
   const x = instance.exports;
   x.ghostty_wasm_init();
 
@@ -117,7 +151,7 @@ const fakeGlobal = {
   // ---- face ----
   const f = host.writeString('monospace');
   const face = x.face_new(f.ptr, f.len, 12, 0);
-  assert.ok(face, 'face_new');
+  assert.ok(face, 'face_new ' + logs.join('|'));
   const m = x.wasm_alloc(12);
   x.face_metrics(face, m);
   const metrics = new Uint32Array(instance.exports.memory.buffer, m, 3).slice();
@@ -184,7 +218,7 @@ const fakeGlobal = {
   // ---- atlas debug canvas ----
   const h = x.atlas_debug_canvas(atlas);
   assert.ok(h > 0);
-  const dc = host.value(h);
+  const dc = zigjs.deleteValue(h);
   assert.strictEqual(dc.width, 64);
   assert.ok(dc.calls.some((c) => c[0] === 'putImageData'));
 
@@ -193,6 +227,7 @@ const fakeGlobal = {
   x.face_free(face);
   x.face_free(eface);
   x.atlas_free(atlas);
+  assert.strictEqual(liveValues(zigjs), 0, 'leaked zig-js values');
   f.free();
   ef.free();
   st.free();

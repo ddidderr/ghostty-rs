@@ -11,7 +11,7 @@
 //! - module `config`, `config/Wasm.zig` (`config_*`)
 //! - module `app`, `App.zig` `Wasm` (commented out upstream, nothing exported)
 //!
-//! The host provides the `ghostty_js` imports (see
+//! The host provides the `zig-js` imports (see
 //! `ghostty_os::wasm::js`) and `env.log`. Strings are passed as
 //! pointer+length pairs into wasm memory allocated by the host with
 //! [`wasm_alloc`] / released with [`wasm_free`].

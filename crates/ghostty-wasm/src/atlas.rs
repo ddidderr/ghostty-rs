@@ -1,7 +1,7 @@
 //! `font/Atlas.zig` `Wasm`: the wasm-compatible atlas API.
 
 use ghostty_font::atlas::{Atlas, Format, Region};
-use ghostty_os::wasm::js::{self, Arg, Object};
+use ghostty_os::wasm::js::{self, Object};
 
 use crate::{ensure_init, host_bytes};
 
@@ -120,40 +120,42 @@ pub extern "C" fn atlas_size(atlas: *const Atlas) -> u32 {
     unsafe { &*atlas }.size
 }
 
-/// This creates a Canvas element identified by the handle returned that the
-/// caller can draw into the DOM to visualize the atlas. The returned handle
-/// must be released from the JS runtime (`ghostty_js` release / zigjs
-/// `deleteValue`). Returns 0 on error.
+/// This creates a Canvas element identified by the id returned that the
+/// caller can draw into the DOM to visualize the atlas. The returned ID must
+/// be freed from the JS runtime by calling `zigjs.deleteValue`. Returns 0 on
+/// error (that is also never a valid id: 0 is the predefined `NaN`).
 #[unsafe(no_mangle)]
 pub extern "C" fn atlas_debug_canvas(atlas: *const Atlas) -> u32 {
     // SAFETY: live pointer from `atlas_new`.
     let atlas = unsafe { &*atlas };
     match debug_canvas(atlas) {
-        Ok(c) => c.into_raw(),
+        Ok(id) => id,
         Err(err) => {
-            log::warn!("error dumping atlas canvas err={err}");
+            log::warn!("error dumping atlas canvas err={err:?}");
             0
         }
     }
 }
 
-fn debug_canvas(atlas: &Atlas) -> Result<Object, js::Error> {
+fn debug_canvas(atlas: &Atlas) -> Result<u32, DebugCanvasError> {
     // Create our canvas
-    let doc = js::global()?.get_object("document")?;
-    let canvas = doc.call("createElement", &[Arg::Str("canvas")])?;
+    let doc = js::global().get::<Object>("document")?;
+    let canvas = doc.call::<Object>("createElement", &[&js::string("canvas")])?;
 
     // Setup our canvas size
     {
-        canvas.set("width", Arg::from(atlas.size))?;
-        canvas.set("height", Arg::from(atlas.size))?;
-        let style = canvas.get_object("style")?;
-        let px = format!("{}px", atlas.size);
-        style.set("width", Arg::Str(&px))?;
-        style.set("height", Arg::Str(&px))?;
+        canvas.set("width", atlas.size)?;
+        canvas.set("height", atlas.size)?;
+
+        let width_str = format!("{}px", atlas.size);
+        let style = canvas.get::<Object>("style")?;
+        style.set("width", js::string(&width_str))?;
+        style.set("height", js::string(&width_str))?;
     }
 
-    // This will return the same context on subsequent calls.
-    let ctx = canvas.call("getContext", &[Arg::Str("2d")])?;
+    // This will return the same context on subsequent calls so it is
+    // important to reset it.
+    let ctx = canvas.call::<Object>("getContext", &[&js::string("2d")])?;
 
     // We need to draw pixels so this is format dependent.
     let buf: Vec<u8> = match atlas.format {
@@ -173,24 +175,51 @@ fn debug_canvas(atlas: &Atlas) -> Result<Object, js::Error> {
             }
             buf
         }
-        Format::Bgr => {
-            log::warn!("error dumping atlas canvas err=UnsupportedAtlasFormat");
-            return Err(js::Error::Js);
-        }
+        Format::Bgr => return Err(DebugCanvasError::UnsupportedAtlasFormat),
     };
 
     // Create an ImageData from our buffer and then write it to the canvas
-    let arr = Object::clamped_array(&buf)?;
-    let image_data_ctor = js::global()?.get_object("ImageData")?;
-    let image_data = image_data_ctor.new_instance(&[
-        Arg::Object(&arr),
-        Arg::from(atlas.size),
-        Arg::from(atlas.size),
-    ])?;
-    ctx.call(
-        "putImageData",
-        &[Arg::Object(&image_data), Arg::Num(0.0), Arg::Num(0.0)],
-    )?;
+    let image_data = {
+        // Get our runtime memory
+        let mem = js::runtime().get::<Object>("memory")?;
+        let mem_buf = mem.get::<Object>("buffer")?;
 
-    Ok(canvas)
+        // Create an array that points to our buffer
+        let arr = {
+            let uint8_clamped_array = js::global().get::<Object>("Uint8ClampedArray")?;
+            let arr = uint8_clamped_array.new_instance(&[
+                &mem_buf,
+                &(buf.as_ptr() as usize),
+                &buf.len(),
+            ])?;
+            if ghostty_os::wasm::SHARED_MEM {
+                // If we're sharing memory then we have to copy the data since
+                // we can't set ImageData directly using a SharedArrayBuffer.
+                arr.call::<Object>("slice", &[])?
+            } else {
+                arr
+            }
+        };
+
+        // Create the image data from our array
+        let image_data = js::global().get::<Object>("ImageData")?;
+        image_data.new_instance(&[&arr, &atlas.size, &atlas.size])?
+    };
+
+    // Draw it
+    ctx.call::<()>("putImageData", &[&image_data, &0, &0])?;
+
+    Ok(canvas.into_id())
+}
+
+#[derive(Debug)]
+enum DebugCanvasError {
+    Js(js::Error),
+    UnsupportedAtlasFormat,
+}
+
+impl From<js::Error> for DebugCanvasError {
+    fn from(e: js::Error) -> Self {
+        DebugCanvasError::Js(e)
+    }
 }
