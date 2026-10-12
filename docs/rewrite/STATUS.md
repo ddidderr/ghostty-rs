@@ -65,7 +65,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z4 | final gaps: webdata mdx, xcframework, lib install + pc, app id, i18n extract, dist, win resources | sonnet | ✅ | |
 
 | XC | cross-check scripts: macOS (2 targets), Windows, wasm — all clippy -D warnings clean | opus | ✅ | just check-all |
-| RV4 | targeted Codex re-audit of RV3 rows | codex astra | 🟨 | |
+| RV4 | targeted Codex re-audit of RV3 rows | codex astra | ✅ | 26/39 resolved, 13 tail items → Z5 |
+| Z5 | close RV4 tail items (encoded paths at OS boundaries, osbytes non-unix, shader arrays, C alloc, crash aarch64/Darwin, tripwire test, vt soname) | sonnet | 🟨 | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
