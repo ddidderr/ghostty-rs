@@ -153,6 +153,8 @@ pub struct PageList {
     nodes: Vec<Option<Node>>,
     free_nodes: Vec<usize>,
     page_pool: Vec<Page>,
+    /// Never-written pages (all cells zero) that need no `reinit` memset.
+    clean_pool: Vec<Page>,
     /// Oldest page.
     pub first: Option<NodeId>,
     /// Last active page.
@@ -211,6 +213,7 @@ impl PageList {
             nodes: Vec::new(),
             free_nodes: Vec::new(),
             page_pool: Vec::new(),
+            clean_pool: Vec::new(),
             first: None,
             last: None,
             page_serial: 0,
@@ -257,7 +260,13 @@ impl PageList {
             return Err(Error::OutOfSpace);
         }
         self.nodes.try_reserve(1).map_err(|_| Error::OutOfMemory)?;
-        let mut data = if let Some(pos) = self.page_pool.iter().position(|p| p.capacity == cap) {
+        let mut data = if let Some(mut p) = self.clean_pool.pop().filter(|p| p.capacity == cap) {
+            p.size = page::Size {
+                cols: cap.cols,
+                rows: cap.rows,
+            };
+            p
+        } else if let Some(pos) = self.page_pool.iter().position(|p| p.capacity == cap) {
             let mut p = self.page_pool.swap_remove(pos);
             p.reinit()?;
             p
@@ -2737,7 +2746,8 @@ impl PageList {
         let mut result = Self::init(self.cols, self.rows, Some(self.explicit_max_size))?;
         while let Some(id) = result.first {
             let node = result.detach(id).ok_or(Error::InvalidId)?;
-            result.recycle(node);
+            // Freshly initialised and never written: reuse without re-zeroing.
+            result.clean_pool.push(node.data);
         }
         result.page_serial = 0;
         result.total_rows = 0;

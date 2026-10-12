@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive", "extern_crate_alloc"] }
 crossbeam-channel = "0.5.17"
 flate2 = "1.1.10"
 ghostty-datastruct.workspace = true

@@ -231,9 +231,7 @@ impl Benchmark for OscParser {
                 Ok(_) => return Ok(()),
                 Err(_) => return Err(BenchmarkFailed),
             }
-            for &c in &osc_buf[..len] {
-                self.parser.next(c);
-            }
+            self.parser.next_slice(&osc_buf[..len]);
             black_box(self.parser.end(Some(0x07)));
             self.parser.reset();
         }

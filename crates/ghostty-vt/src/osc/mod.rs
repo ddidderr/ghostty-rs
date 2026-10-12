@@ -496,6 +496,37 @@ impl Parser {
         self.next_state(c);
     }
 
+    /// Consume a run of characters; exactly equivalent to calling
+    /// [`Parser::next`] for each byte, but payload bytes are appended in bulk.
+    pub fn next_slice(&mut self, mut bytes: &[u8]) {
+        while let Some((&c, rest)) = bytes.split_first() {
+            if self.state == State::Invalid {
+                return;
+            }
+            match self.writer {
+                Writer::None => {
+                    self.next_state(c);
+                    bytes = rest;
+                }
+                Writer::Allocating => {
+                    self.buffer.extend_from_slice(bytes);
+                    return;
+                }
+                Writer::Fixed => {
+                    let room = Self::MAX_BUF.saturating_sub(self.buffer.len());
+                    if bytes.len() <= room {
+                        self.buffer.extend_from_slice(bytes);
+                    } else {
+                        // Overflow: keep what fits, discard the rest.
+                        self.buffer.extend_from_slice(&bytes[..room]);
+                        self.state = State::Invalid;
+                    }
+                    return;
+                }
+            }
+        }
+    }
+
     #[inline(never)]
     fn next_state(&mut self, c: u8) {
         #[allow(clippy::enum_glob_use)]
@@ -746,6 +777,34 @@ impl Parser {
             S1337 => parsers::iterm2::parse(self, terminator_ch),
 
             S5522 => parsers::kitty_clipboard_protocol::parse(self, terminator_ch),
+        }
+    }
+}
+
+#[cfg(test)]
+mod next_slice_tests {
+    use super::*;
+
+    #[test]
+    fn next_slice_matches_next() {
+        for alloc in [false, true] {
+            for prefix in ["0;", "52;c;", "4;", "7;", "8;;", "99;", "x"] {
+                for n in [0usize, 1, 5, 2040, 2046, 2047, 2048, 2049, 2050, 3000] {
+                    let mut input = prefix.as_bytes().to_vec();
+                    input.extend((0..n).map(|i| b'a' + (i % 26) as u8));
+                    let mut a = Parser::init(alloc);
+                    let mut b = Parser::init(alloc);
+                    for &c in &input {
+                        a.next(c);
+                    }
+                    let mid = input.len() / 2;
+                    b.next_slice(&input[..mid]);
+                    b.next_slice(&input[mid..]);
+                    assert_eq!(a.state, b.state);
+                    assert_eq!(a.buffer, b.buffer);
+                    assert_eq!(a.writer, b.writer);
+                }
+            }
         }
     }
 }

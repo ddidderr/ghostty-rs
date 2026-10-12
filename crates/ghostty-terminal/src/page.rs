@@ -76,7 +76,7 @@ pub enum SemanticPrompt {
     PromptContinuation = 2,
 }
 /// Eight-byte terminal cell; all-zero bits describe an empty cell.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, bytemuck::Zeroable)]
 #[repr(transparent)]
 pub struct Cell(u64);
 impl Cell {
@@ -744,12 +744,10 @@ impl Page {
             row.set_cells(usize::from(y) * usize::from(cap.cols));
             rows.push(row);
         }
-        let mut cells = Vec::new();
         let count = usize::from(cap.cols) * usize::from(cap.rows);
-        cells
-            .try_reserve_exact(count)
-            .map_err(|_| Error::OutOfMemory)?;
-        cells.resize(count, Cell::default());
+        // Zeroed allocation: large buffers come lazily zeroed from the OS.
+        let cells: Vec<Cell> =
+            bytemuck::allocation::try_zeroed_vec(count).map_err(|()| Error::OutOfMemory)?;
         let grapheme_alloc = ChunkAlloc::new(l.grapheme_alloc_layout, 16)?;
         let mut grapheme_data = Vec::new();
         let codepoints = grapheme_alloc.chunks * 4;
@@ -1486,15 +1484,18 @@ impl Page {
             // Row metadata/cell indices were validated above (`get_row`).
             let from = source_row.cells() + src_x;
             let to = original_row.cells() + dst_x;
-            for n in 0..len {
-                let cell = src.cells[from + n];
+            let src_cells = &src.cells[from..from + len];
+            let mut run = 0;
+            for (n, cell) in src_cells.iter().enumerate() {
                 if !cell.has_grapheme() && !cell.hyperlink() && !cell.has_styling() {
-                    // Plain cell: no managed memory to copy.
-                    self.cells[to + n] = cell;
-                } else {
-                    self.clone_cell_from_cleared(src, from + n, dst_x + n, dst_y)?;
+                    continue;
                 }
+                // Bulk-copy the preceding run of plain cells (no managed memory).
+                self.cells[to + run..to + n].copy_from_slice(&src_cells[run..n]);
+                self.clone_cell_from_cleared(src, from + n, dst_x + n, dst_y)?;
+                run = n + 1;
             }
+            self.cells[to + run..to + len].copy_from_slice(&src_cells[run..len]);
         } else {
             let from = source_row.cells() + src_x;
             let to = original_row.cells() + dst_x;

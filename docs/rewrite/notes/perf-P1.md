@@ -76,3 +76,23 @@ utf8 0.85 s, sgr 1.6 s (no Zig counterpart; profile shows no pathology).
   buffer); `Parser::data()` also clones the buffer.
 - terminal-parser sgr (1.5x): moving the 64-byte `Option<Action>` array out of the
   parser; real stream path (`terminal-stream sgr`) is at parity.
+
+## P2: screen-clone and osc-parser (production profile, min-of-20 wall, same data/machine)
+| benchmark | Zig ms | before ms | after ms | after/Zig |
+|---|---|---|---|---|
+| screen-clone clone (1000x) | 27.1 | 78 | 28.2 | 1.04 |
+| screen-clone render (1000x) | 4.5 | 11.7 | 11.5 | 2.5 (unchanged) |
+| osc-parser (50 MB) | 27.9 | 54.5 | 31.3 | 1.12 |
+
+- `PageList::clone_range` built a throwaway page via `Self::init`, recycled it into the pool, then
+  `create_node` re-memset the whole page in `Page::reinit` (page-faulting every cell). Now the
+  never-written pages go to `clean_pool`, which `create_node` reuses without re-zeroing (this
+  was the bulk of the win, 78 -> 28 ms).
+- `Page::init` allocates cells with `bytemuck::allocation::try_zeroed_vec` (calloc; `Cell` derives
+  `bytemuck::Zeroable`; no unsafe in our crate), so fresh large pages are lazily zeroed.
+- `clone_partial_row_from` bulk-copies runs of plain cells even for rows with managed memory.
+- `osc::Parser::next_slice(&[u8])`: exact equivalent of per-byte `next` (incl. 2048 fixed-buffer
+  overflow semantics, test `next_slice_matches_next`) that appends payload bytes in bulk; the
+  `osc-parser` bench uses it (the VT stream parser still feeds OSC bytes one at a time).
+- Remaining: render (2.5x): `RenderState::update` per-row `Vec<Style>` resize (84 B/cell, every
+  row is styled in this benchmark) and cell copy; a lazy style vec did not help here, so reverted.
