@@ -10,7 +10,7 @@ Collected from agent reports; resolve during integration phases.
 - [x] input: key_encode::Options / paste::Options from terminal modes (Zig `fromTerminal`) — in terminal or core. (resolved: `ghostty_core::surface::keyboard::encode_options_from_terminal`, `clipboard::paste_options_from_terminal`)
 - [x] input: `binding::set::EntryFormatter` must be implemented by config formatter. (resolved by cleanup-V2: config `keybinds.rs` adapter implements it; +list-keybinds/+show-config verified vs /usr/bin/ghostty)
 - [x] config: clipboard_codepoint_map::Entry and CursorStyle are local copies → unify with terminal/formatter (font types are unified: canonical in ghostty-config, re-exported by ghostty-font). (resolved by cleanup-V2: Entry = `ghostty_terminal::formatter::CodepointMap`, CursorStyle = `ghostty_terminal::cursor::Style`; config now depends on terminal)
-- [ ] config: url::REGEX needs onig (lookbehind) in renderer/core link matching.
+- [x] config: url::REGEX needs onig (lookbehind) in renderer/core link matching.
 - [x] config: theme::open needs resources dir from ghostty_os. (resolved by cleanup-V2: already used `ghostty_os::resources_dir()`; plus dev fallback to `<workspace>/resources`)
 - NOTE: Ghostty 1.3.1 is installed at /usr/bin/ghostty — use it as reference oracle (e.g. +show-config, +list-actions, terminfo).
 - [x] termio: Pty closes slave on drop (Zig didn't) — verify Exec semantics; cgroup/rlimit/D-Bus scope wiring; local option stand-ins → config types. (resolved by cleanup-V2: verified identical to Zig Exec; cgroup wait loop now single `ghostty_os::cgroup::wait_for_scope`; rlimit/D-Bus wiring was done earlier)

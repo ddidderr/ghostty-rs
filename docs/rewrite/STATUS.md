@@ -1,5 +1,7 @@
 # Status
 
+**Overall: complete.** Ghostty 1.3.1 is fully rewritten in Rust for Linux/GTK (see ARCHITECTURE.md for scope and intentional omissions). 3038 tests pass; clippy -D warnings clean; verified in the real app.
+
 Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠️ done with gaps
 
 | WP | Scope | Owner | State | Notes |
@@ -40,7 +42,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV2 | Codex completeness audit (every Zig file → Rust) | codex astra | ✅ | 319 full / 28 partial / 7 missing → X1, X2 |
 | X1 | distribution: completions, vim/bat, man pages, translations, install modes, build metadata | sonnet | ✅ | byte-identical to installed Ghostty |
 | X2 | correctness gaps from RV2 (flatpak, env bytes, case folding, ...) | sonnet | ✅ | all 10 items |
-| V3 | real-app verification: nvim/htop/less/tmux, mouse, unicode, kitty images, paste dialog | sonnet | 🟨 | |
+| V3 | real-app verification: nvim/htop/less/tmux, mouse, unicode, kitty images, paste dialog | sonnet | ✅ | no product bugs found |
 | DOC | README, CHANGELOG, ARCHITECTURE decomposition | opus | ✅ | |
 
 ## Log
@@ -61,3 +63,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: V1 stalled (large transcript); restarted fresh as V1b. P2 launched.
 - 2026-10-12: V1b + P2 committed (2983 tests). I1 inspector + RV2 completeness audit launched.
 - 2026-10-12: I1, X1, X2 committed (3037 tests). Docs written. V3 real-app verification running.
+- 2026-10-12: V3 verification passed, final polish (nightly fmt) done. Rewrite complete.
