@@ -16,7 +16,7 @@ const CSS: &[&str] = &[
     "style-hc.css",
     "style-hc-dark.css",
 ];
-// (major, minor, name). The inspector / imgui blueprints are deferred.
+// (major, minor, name).
 const BLUEPRINTS: &[(u32, u32, &str)] = &[
     (1, 0, "clipboard-confirmation-dialog"),
     (1, 4, "clipboard-confirmation-dialog"),
@@ -36,9 +36,31 @@ const BLUEPRINTS: &[(u32, u32, &str)] = &[
     (1, 5, "title-dialog"),
     (1, 5, "window"),
     (1, 5, "command-palette"),
+    (1, 5, "imgui-widget"),
+    (1, 5, "inspector-widget"),
+    (1, 5, "inspector-window"),
 ];
 
+/// Emits `GHOSTTY_<name>_VERSION` with the version of a library as reported
+/// by pkg-config (the headers we compile against; Zig reads the same values
+/// from the C headers). Falls back to the feature level we require.
+fn emit_pkg_version(env_name: &str, pkg: &str, fallback: &str) {
+    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
+    let version = Command::new("pkg-config")
+        .args(["--modversion", pkg])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| fallback.to_string());
+    println!("cargo:rustc-env={env_name}={version}");
+}
+
 fn main() {
+    emit_pkg_version("GHOSTTY_GTK_VERSION", "gtk4", "4.14.0");
+    emit_pkg_version("GHOSTTY_ADW_VERSION", "libadwaita-1", "1.5.0");
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let res = manifest.join("resources");

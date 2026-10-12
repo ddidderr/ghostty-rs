@@ -1,0 +1,23 @@
+[package]
+name = "ghostty-build-data"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Generates build data (completions, editor syntax, man page markdown, terminfo) like Ghostty's main_build_data.zig"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "ghostty-build-data"
+path = "src/main.rs"
+
+[dependencies]
+ghostty-cli.workspace = true
+ghostty-config.workspace = true
+ghostty-input.workspace = true
+ghostty-os.workspace = true
+ghostty-termio.workspace = true
+
+[lints]
+workspace = true

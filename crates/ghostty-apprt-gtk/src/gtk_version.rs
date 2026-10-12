@@ -1,15 +1,35 @@
 //! GTK version helpers (port of `apprt/gtk/gtk_version.zig`).
 //!
 //! Zig reads the compile-time version from the headers; here it is the
-//! version of the gtk4-rs `v4_*` feature level this crate is compiled against
-//! (see `Cargo.toml`) combined with the system library detected at runtime.
+//! version of the GTK development files reported by pkg-config at build time
+//! (see `build.rs`) combined with the system library detected at runtime.
 
 /// A (major, minor, micro) version triple.
 pub type Version = (u32, u32, u32);
 
-/// The minimum GTK version this crate is compiled against (feature level
-/// `v4_14`). Newer symbols must be guarded with [`at_least`]/feature flags.
-pub const COMPTIME_VERSION: Version = (4, 14, 0);
+/// The GTK version this crate is compiled against (pkg-config `gtk4`).
+/// Newer symbols must still be guarded with [`at_least`]/feature flags.
+pub const COMPTIME_VERSION: Version = parse_version(env!("GHOSTTY_GTK_VERSION"));
+
+/// Parses a `major.minor[.micro]` string at compile time.
+pub(crate) const fn parse_version(s: &str) -> (u32, u32, u32) {
+    let b = s.as_bytes();
+    let mut parts = [0u32; 3];
+    let mut idx = 0;
+    let mut i = 0;
+    while i < b.len() && idx < 3 {
+        let c = b[i];
+        if c == b'.' {
+            idx += 1;
+        } else if c.is_ascii_digit() {
+            parts[idx] = parts[idx] * 10 + (c - b'0') as u32;
+        } else {
+            break;
+        }
+        i += 1;
+    }
+    (parts[0], parts[1], parts[2])
+}
 
 /// Returns the runtime GTK version.
 pub fn get_runtime_version() -> Version {

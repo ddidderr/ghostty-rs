@@ -2,8 +2,10 @@
 
 use crate::gtk_version::Version;
 
-/// The libadwaita feature level this crate is compiled against (`v1_5`).
-pub const COMPTIME_VERSION: Version = (1, 5, 0);
+/// The libadwaita version this crate is compiled against (pkg-config
+/// `libadwaita-1`, see `build.rs`).
+pub const COMPTIME_VERSION: Version =
+    crate::gtk_version::parse_version(env!("GHOSTTY_ADW_VERSION"));
 
 /// Returns the runtime libadwaita version.
 #[allow(unsafe_code)]
