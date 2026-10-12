@@ -76,3 +76,11 @@ WASM, Windows and the embedded C API (`libghostty`) are out of scope.
 
 - macOS (Swift app, Metal, CoreText), Windows, WASM, libghostty C API.
 - The ImGui inspector is deferred until everything else works (Phase 7).
+
+## Intentional omissions (decided by the orchestrator)
+
+- Sentry crash reporting (`crash/*`): optional and disabled by default in
+  upstream Linux builds; `+crash-report` listing is ported.
+- GTK < 4.14 / libadwaita < 1.5 compatibility fallbacks (MessageDialog,
+  pre-Banner widgets, old about dialog, 1.0–1.3 blueprint variants): the
+  Rust port requires GTK ≥ 4.14 and libadwaita ≥ 1.5.
