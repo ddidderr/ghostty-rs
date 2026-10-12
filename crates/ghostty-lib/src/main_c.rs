@@ -84,6 +84,7 @@ pub(crate) fn alloc_c_text(bytes: &[u8]) -> *const c_char {
 /// `argv` must be null or point to `argc` valid NUL terminated strings.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ghostty_init(argc: usize, argv: *mut *mut c_char) -> c_int {
+    ghostty_config::config::set_app_runtime(ghostty_config::config::AppRuntime::None);
     // Raw argument bytes (Zig: `std.os.argv = argv[0..argc]`).
     let mut raw: Vec<OsString> = Vec::with_capacity(argc);
     if !argv.is_null() {

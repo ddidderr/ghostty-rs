@@ -839,9 +839,8 @@ impl StreamHandler<'_> {
     //-------------------------------------------------------------------------
     // OSC
 
-    fn window_title(&mut self, title: &str) {
+    fn window_title(&mut self, title: &[u8]) {
         let mut buf = [0u8; SET_TITLE_LEN];
-        let title = title.as_bytes();
         if title.len() >= buf.len() {
             log::warn!("change title requested larger than our buffer size, ignoring");
             return;
@@ -949,7 +948,7 @@ impl StreamHandler<'_> {
             // If we haven't seen a title, we're using the pwd as our title.
             // Set it to blank which will reset our title behavior.
             if !self.st.seen_title {
-                self.window_title("");
+                self.window_title(b"");
                 debug_assert!(!self.st.seen_title);
             }
 
@@ -1015,8 +1014,7 @@ impl StreamHandler<'_> {
 
         // If we haven't seen a title, use our pwd as the title.
         if !self.st.seen_title {
-            // Titles are text; only the title is lossy.
-            self.window_title(&String::from_utf8_lossy(&path));
+            self.window_title(&path);
             self.st.seen_title = false;
         }
         Ok(())
@@ -1501,7 +1499,7 @@ impl stream::Handler for StreamHandler<'_> {
             Action::EndHyperlink => self.terminal.screen_mut().end_hyperlink(),
             Action::ActiveStatusDisplay(v) => self.terminal.status_display = v,
             Action::Decaln => self.terminal.decaln()?,
-            Action::WindowTitle(v) => self.window_title(v.title),
+            Action::WindowTitle(v) => self.window_title(v.title.as_bytes()),
             Action::ReportPwd(v) => self.report_pwd(v.url)?,
             Action::ShowDesktopNotification(v) => self.show_desktop_notification(v.title, v.body),
             Action::ProgressReport(v) => self.progress_report(v),
@@ -1982,6 +1980,17 @@ mod tests {
         assert!(matches!(&msgs[1], SurfaceMessage::SetTitle(t) if t.starts_with(b"/tmp/a b\0")));
         assert_eq!(Some(b"/tmp/a b".as_slice()), h.term.get_pwd());
         assert!(!h.stream.state.seen_title);
+    }
+
+    #[test]
+    fn report_pwd_title_keeps_raw_bytes() {
+        let mut h = Harness::new();
+        h.feed(b"\x1b]7;file://localhost/tmp/%FF\x1b\\");
+        let msgs = h.surface_msgs();
+        assert!(
+            matches!(msgs.last(), Some(SurfaceMessage::SetTitle(t)) if t.starts_with(b"/tmp/\xff\0")),
+            "{msgs:?}"
+        );
     }
 
     #[test]

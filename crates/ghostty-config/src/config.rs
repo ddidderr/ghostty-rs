@@ -3818,6 +3818,47 @@ fn shell_from_env(value: &std::ffi::OsStr) -> Command {
     Command::Shell(ghostty_os::osbytes::EncodedOs::from_os(value))
 }
 
+/// The application runtime (Zig `build_config.app_runtime`). It only
+/// affects finalization (GTK-only defaults).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppRuntime {
+    /// No apprt: the embedded library (and wasm).
+    None,
+    /// GTK, the default on Linux and BSD.
+    Gtk,
+}
+
+const RUNTIME_DEFAULT: u8 = if cfg!(all(
+    unix,
+    not(target_vendor = "apple"),
+    not(target_family = "wasm")
+)) {
+    1
+} else {
+    0
+};
+
+static APP_RUNTIME: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(RUNTIME_DEFAULT);
+
+/// The process-wide runtime used by [`Config::finalize`] (and by the
+/// load/reload paths which finalize internally).
+#[must_use]
+pub fn app_runtime() -> AppRuntime {
+    match APP_RUNTIME.load(std::sync::atomic::Ordering::Relaxed) {
+        1 => AppRuntime::Gtk,
+        _ => AppRuntime::None,
+    }
+}
+
+/// Select the process-wide runtime. The embedded library selects
+/// [`AppRuntime::None`] so `gtk-single-instance = detect` stays `detect`.
+pub fn set_app_runtime(runtime: AppRuntime) {
+    APP_RUNTIME.store(
+        u8::from(runtime == AppRuntime::Gtk),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 impl Config {
     /// The value of the config key in the form the C API exposes it (Zig:
     /// `c_get.get`). `None` if there is no such key.
@@ -4478,6 +4519,12 @@ impl Config {
     /// Call this once after you are done setting configuration. This
     /// is idempotent but will waste memory if called multiple times.
     pub fn finalize(&mut self) -> Result<(), Error> {
+        self.finalize_for(app_runtime())
+    }
+
+    /// [`Config::finalize`] for an explicit application runtime (Zig's
+    /// `build_config.app_runtime`, a build option there).
+    pub fn finalize_for(&mut self, runtime: AppRuntime) -> Result<(), Error> {
         // We always load the theme first because it may set other fields
         // in our config.
         if let Some(theme) = self.theme.clone() {
@@ -4543,19 +4590,22 @@ impl Config {
         wd.finalize();
         self.working_directory = Some(wd);
 
-        // Apprt-specific defaults (GTK)
-        match self.gtk_single_instance {
-            GtkSingleInstance::True | GtkSingleInstance::False => {}
+        // Apprt-specific defaults
+        match runtime {
+            AppRuntime::None => {}
+            AppRuntime::Gtk => match self.gtk_single_instance {
+                GtkSingleInstance::True | GtkSingleInstance::False => {}
 
-            // For detection, we assume single instance unless we're
-            // in a CLI environment, then we disable single instance.
-            GtkSingleInstance::Detect => {
-                self.gtk_single_instance = if probable_cli {
-                    GtkSingleInstance::False
-                } else {
-                    GtkSingleInstance::True
-                };
-            }
+                // For detection, we assume single instance unless we're
+                // in a CLI environment, then we disable single instance.
+                GtkSingleInstance::Detect => {
+                    self.gtk_single_instance = if probable_cli {
+                        GtkSingleInstance::False
+                    } else {
+                        GtkSingleInstance::True
+                    };
+                }
+            },
         }
 
         // Default our click interval
@@ -5431,6 +5481,19 @@ mod tests {
 
         assert_eq!(cfg.window_theme, WindowTheme::System);
         assert!(cfg.conditional_set.contains(&conditional::Key::Theme));
+    }
+
+    #[test]
+    fn gtk_single_instance_detect_only_finalizes_for_gtk() {
+        let mut cfg = Config::default();
+        cfg.load_iter(&mut it(&["--gtk-single-instance=detect"]))
+            .unwrap();
+        let mut none = cfg.clone();
+        none.finalize_for(AppRuntime::None).unwrap();
+        assert_eq!(none.gtk_single_instance, GtkSingleInstance::Detect);
+        let mut gtk = cfg;
+        gtk.finalize_for(AppRuntime::Gtk).unwrap();
+        assert_ne!(gtk.gtk_single_instance, GtkSingleInstance::Detect);
     }
 
     #[test]

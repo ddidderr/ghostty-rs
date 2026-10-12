@@ -38,11 +38,13 @@ impl ZigArg for f32 {
     }
 }
 
-/// Parsed `--key[=value]` arguments.
+/// Parsed `--key[=value]` arguments, in command line order.
 #[derive(Debug, Default)]
 pub struct Args {
     // Values are OS strings: file names (`--data=...`) need not be UTF-8.
-    map: HashMap<String, Option<OsString>>,
+    // Every occurrence is kept: like `cli/args.zig` each one is applied in
+    // order when the field is taken.
+    map: HashMap<String, Vec<Option<OsString>>>,
 }
 
 /// The action name of a `+action` argument, if `arg` is one.
@@ -60,7 +62,7 @@ impl Args {
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
     {
-        let mut map = HashMap::new();
+        let mut map: HashMap<String, Vec<Option<OsString>>> = HashMap::new();
         for arg in iter {
             let bytes = os_bytes(&arg.into());
             if bytes.starts_with(b"+") {
@@ -78,57 +80,69 @@ impl Args {
             };
             let key = String::from_utf8(key.to_vec())
                 .map_err(|_| "option names must be valid UTF-8".to_owned())?;
-            map.insert(key, value);
+            map.entry(key).or_default().push(value);
         }
         Ok(Args { map })
     }
 
-    fn take_os(&mut self, key: &str) -> Result<Option<OsString>, String> {
-        match self.map.remove(key) {
-            None => Ok(None),
-            Some(None) => Err(format!("option --{key} requires a value")),
-            Some(Some(v)) => Ok(Some(v)),
+    /// Apply every occurrence of `key` in order (Zig `parseIntoField`): an
+    /// empty value resets to the default, otherwise `set` parses the value
+    /// (`None` = no `=value`). The first error wins.
+    fn apply<T: Clone>(
+        &mut self,
+        key: &str,
+        default: T,
+        mut set: impl FnMut(Option<&OsStr>) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let mut cur = default.clone();
+        for v in self.map.remove(key).unwrap_or_default() {
+            cur = match v.as_deref() {
+                Some(v) if v.is_empty() => default.clone(),
+                v => set(v)?,
+            };
         }
+        Ok(cur)
     }
 
     /// Take a typed value, falling back to `default`.
-    pub fn take<T: ZigArg>(&mut self, key: &str, default: T) -> Result<T, String> {
-        match self.take_os(key)? {
-            None => Ok(default),
-            Some(v) => T::parse_zig(&os_bytes(&v))
-                .ok_or_else(|| format!("invalid value for --{key}: {}", v.to_string_lossy())),
-        }
+    pub fn take<T: ZigArg + Clone>(&mut self, key: &str, default: T) -> Result<T, String> {
+        self.apply(key, default, |v| {
+            let v = v.ok_or_else(|| format!("option --{key} requires a value"))?;
+            T::parse_zig(&os_bytes(v))
+                .ok_or_else(|| format!("invalid value for --{key}: {}", v.to_string_lossy()))
+        })
     }
 
     pub fn take_opt_string(&mut self, key: &str) -> Result<Option<String>, String> {
-        match self.take_os(key)? {
-            None => Ok(None),
-            Some(v) => v
-                .into_string()
-                .map(Some)
-                .map_err(|v| format!("invalid value for --{key}: {}", v.to_string_lossy())),
-        }
+        self.apply(key, None, |v| {
+            let v = v.ok_or_else(|| format!("option --{key} requires a value"))?;
+            v.to_str()
+                .map(|s| Some(s.to_owned()))
+                .ok_or_else(|| format!("invalid value for --{key}: {}", v.to_string_lossy()))
+        })
     }
 
     /// Take a file path value (any bytes are allowed).
     pub fn take_opt_path(&mut self, key: &str) -> Result<Option<PathBuf>, String> {
-        Ok(self.take_os(key)?.map(PathBuf::from))
+        self.apply(key, None, |v| {
+            let v = v.ok_or_else(|| format!("option --{key} requires a value"))?;
+            Ok(Some(PathBuf::from(v)))
+        })
     }
 
-    /// Take a boolean flag (`--key`, `--key=true`, `--key=false`).
+    /// Take a boolean flag (`--key`, `--key=true`, `--key=false`; `parseBool`).
     pub fn take_flag(&mut self, key: &str) -> Result<bool, String> {
-        match self.map.remove(key) {
-            None => Ok(false),
-            Some(None) => Ok(true),
-            Some(Some(v)) => match v.to_str().unwrap_or_default() {
-                "true" | "t" | "1" | "yes" => Ok(true),
-                "false" | "f" | "0" | "no" => Ok(false),
+        self.apply(key, false, |v| match v.map(os_bytes) {
+            None => Ok(true),
+            Some(v) => match v.as_slice() {
+                b"1" | b"t" | b"T" | b"true" => Ok(true),
+                b"0" | b"f" | b"F" | b"false" => Ok(false),
                 _ => Err(format!(
                     "invalid value for --{key}: {}",
-                    v.to_string_lossy()
+                    String::from_utf8_lossy(&v)
                 )),
             },
-        }
+        })
     }
 
     /// Error on any unconsumed option.
@@ -181,6 +195,53 @@ mod tests {
         assert_eq!(a.take("n", 0u16).unwrap(), 5);
         let mut a = Args::parse([OsString::from("--n=-1")]).unwrap();
         assert!(a.take("n", 0u16).is_err());
+    }
+
+    #[test]
+    fn duplicates_apply_in_order_and_first_error_wins() {
+        let a = |v: &[&str]| Args::parse(v.iter().map(OsString::from)).unwrap();
+        // A bad value earlier is an error even if a later one is fine.
+        assert!(
+            a(&["--terminal-rows=bad", "--terminal-rows=10"])
+                .take("terminal-rows", 80u16)
+                .is_err()
+        );
+        // The last good value wins.
+        assert_eq!(
+            a(&["--terminal-rows=5", "--terminal-rows=10"])
+                .take("terminal-rows", 80u16)
+                .unwrap(),
+            10
+        );
+        // An empty value resets to the default.
+        assert_eq!(
+            a(&["--terminal-rows=5", "--terminal-rows="])
+                .take("terminal-rows", 80u16)
+                .unwrap(),
+            80
+        );
+        assert_eq!(
+            a(&["--terminal-rows="])
+                .take("terminal-rows", 80u16)
+                .unwrap(),
+            80
+        );
+        // Missing value is still an error.
+        assert!(
+            a(&["--terminal-rows"])
+                .take("terminal-rows", 80u16)
+                .is_err()
+        );
+        // Optional path: empty resets to unset.
+        assert_eq!(
+            a(&["--data=/x", "--data="]).take_opt_path("data").unwrap(),
+            None
+        );
+        assert_eq!(a(&["--data="]).take_opt_path("data").unwrap(), None);
+        // Flags: empty resets, parseBool spellings only.
+        assert!(!a(&["--time", "--time="]).take_flag("time").unwrap());
+        assert!(a(&["--time=T"]).take_flag("time").unwrap());
+        assert!(a(&["--time=yes"]).take_flag("time").is_err());
     }
 
     #[test]

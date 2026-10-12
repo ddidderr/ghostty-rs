@@ -738,7 +738,7 @@ impl ConfigField for RepeatableFontVariation {
                 &format!(
                     "{}={}",
                     ghostty_os::osbytes::bytes_to_config_string(&id),
-                    v.value
+                    ghostty_os::zig_fmt::format_float_d(v.value)
                 ),
             )?;
         }
@@ -1506,6 +1506,13 @@ mod tests {
             parse(&mut list, "wght =200").unwrap();
             parse(&mut list, "slnt= -15").unwrap();
             assert_eq!(list.list, vec![v(b"wght", 200.0), v(b"slnt", -15.0)]);
+        }
+
+        #[test]
+        fn format_nan_like_zig() {
+            let mut list = RepeatableFontVariation::default();
+            parse(&mut list, "wght=NaN").unwrap();
+            assert_eq!(fe(&list), "a = wght=nan\n");
         }
 
         #[test]

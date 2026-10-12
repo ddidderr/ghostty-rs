@@ -67,6 +67,8 @@ struct GetCache {
 
 impl CConfig {
     pub fn new(config: Config) -> CConfig {
+        // The embedded library has no apprt (Zig `app_runtime = .none`).
+        ghostty_config::config::set_app_runtime(ghostty_config::config::AppRuntime::None);
         CConfig {
             config,
             cache: RefCell::default(),
@@ -302,7 +304,10 @@ pub unsafe extern "C" fn ghostty_config_finalize(ptr: ghostty_config_t) {
     let Some(c) = (unsafe { cconfig(ptr) }) else {
         return;
     };
-    if let Err(err) = c.config.finalize() {
+    if let Err(err) = c
+        .config
+        .finalize_for(ghostty_config::config::AppRuntime::None)
+    {
         log::error!("error finalizing config err={err}");
     }
 }
@@ -575,7 +580,7 @@ pub unsafe extern "C" fn ghostty_config_get_diagnostic(
     while msgs.len() < items.len() {
         let mut text = String::new();
         let _ = items[msgs.len()].format(&mut text);
-        msgs.push(cstring(&text));
+        msgs.push(cstring_value(&text));
     }
     ghostty_diagnostic_s {
         message: msgs[idx].as_ptr(),
@@ -772,5 +777,57 @@ mod tests {
         assert_eq!(a.commands, b.commands);
         // SAFETY: valid handle.
         unsafe { ghostty_config_free(h) };
+    }
+}
+
+#[cfg(all(test, unix))]
+mod runtime_and_diag_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_config_keeps_gtk_single_instance_detect() {
+        let h = ghostty_config_new();
+        // SAFETY: just created.
+        let c = unsafe { cconfig(h) }.unwrap();
+        c.config.gtk_single_instance = ghostty_config::types_b::GtkSingleInstance::Detect;
+        // SAFETY: valid handle.
+        unsafe { ghostty_config_finalize(h) };
+        let mut out: *const c_char = std::ptr::null();
+        let key = "gtk-single-instance";
+        // SAFETY: the key's C type is a C string.
+        assert!(unsafe {
+            ghostty_config_get(h, (&raw mut out).cast(), key.as_ptr().cast(), key.len())
+        });
+        // SAFETY: valid NUL terminated string owned by the config.
+        assert_eq!(unsafe { CStr::from_ptr(out) }.to_bytes(), b"detect");
+        // SAFETY: valid handle.
+        unsafe { ghostty_config_free(h) };
+    }
+
+    #[test]
+    fn diagnostic_getter_exports_original_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = std::env::temp_dir().join(format!("ghostty-z13-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("cfg");
+        std::fs::write(&file, b"font-size = \xff\n").unwrap();
+        let path = CString::new(file.as_os_str().as_bytes()).unwrap();
+        let h = ghostty_config_new();
+        // SAFETY: valid handle and NUL terminated path.
+        unsafe { ghostty_config_load_file(h, path.as_ptr()) };
+        // SAFETY: valid handle.
+        assert!(unsafe { ghostty_config_diagnostics_count(h) } >= 1);
+        // SAFETY: valid handle, index in range.
+        let d = unsafe { ghostty_config_get_diagnostic(h, 0) };
+        // SAFETY: NUL terminated string owned by the config.
+        let msg = unsafe { CStr::from_ptr(d.message) }.to_bytes().to_vec();
+        assert!(msg.windows(1).any(|w| w == [0xff]), "{msg:?}");
+        assert!(
+            !msg.windows(5).any(|w| w == [0xef, 0xb7, 0x90, 0xc3, 0xbf]),
+            "{msg:?}"
+        );
+        // SAFETY: valid handle.
+        unsafe { ghostty_config_free(h) };
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1801,7 +1801,9 @@ impl Surface {
                         trim: false,
                     });
                     (
-                        Some(MouseOverLink { url: str }),
+                        Some(MouseOverLink {
+                            url: ghostty_os::osbytes::EncodedOs::from_plain_text(&str),
+                        }),
                         cfg.link_previews == LinkPreviews::True,
                     )
                 }
@@ -1814,9 +1816,8 @@ impl Surface {
                         break 'link (None, false);
                     };
                     (
-                        // Display-only text for the status bar.
                         Some(MouseOverLink {
-                            url: String::from_utf8_lossy(&uri).into_owned(),
+                            url: ghostty_os::osbytes::EncodedOs::from_bytes(&uri),
                         }),
                         cfg.link_previews != LinkPreviews::False,
                     )
@@ -1848,7 +1849,7 @@ impl Surface {
             out.actions
                 .push(RtAction::MouseShape(st.terminal.mouse_shape));
             out.actions.push(RtAction::MouseOverLink(MouseOverLink {
-                url: String::new(),
+                url: ghostty_os::osbytes::EncodedOs::new(),
             }));
             out.render = true;
         }
@@ -1930,7 +1931,7 @@ impl Surface {
                 let shape = self.lock_terminal().mouse_shape;
                 self.perform(RtAction::MouseShape(shape));
                 self.perform(RtAction::MouseOverLink(MouseOverLink {
-                    url: String::new(),
+                    url: ghostty_os::osbytes::EncodedOs::new(),
                 }));
                 self.queue_render();
             }

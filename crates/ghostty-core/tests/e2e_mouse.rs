@@ -302,7 +302,7 @@ fn osc8_link_hover_and_ctrl_click_opens() {
     // hover with ctrl over "here" (cols 3..6)
     h.move_to(4, 0, Some(ctrl()));
     let url = h.wait_action("mouse over link", |a| match a {
-        Action::MouseOverLink(l) if !l.url.is_empty() => Some(l.url.clone()),
+        Action::MouseOverLink(l) if !l.url.is_empty() => Some(l.url.to_text_lossy()),
         _ => None,
     });
     assert_eq!(url, "http://osc8.example/x");
@@ -324,7 +324,7 @@ fn regex_url_ctrl_click_opens_and_plain_click_does_not() {
     h.move_to(30, 2, Some(none()));
     h.move_to(20, 0, Some(ctrl()));
     h.wait_action("hover", |a| match a {
-        Action::MouseOverLink(l) if l.url.contains("ghostty.org") => Some(()),
+        Action::MouseOverLink(l) if l.url.to_text_lossy().contains("ghostty.org") => Some(()),
         _ => None,
     });
     h.click(20, 0, L, ctrl());

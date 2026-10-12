@@ -14,6 +14,7 @@ use crate::{ensure_init, host_bytes};
 #[unsafe(no_mangle)]
 pub extern "C" fn config_new() -> *mut Config {
     ensure_init();
+    ghostty_config::config::set_app_runtime(ghostty_config::config::AppRuntime::None);
     Box::into_raw(Box::new(Config::new_default()))
 }
 

@@ -514,7 +514,9 @@ impl Surface {
             // we reset state
             self.perform(RtAction::MouseShape(mouse_shape));
             self.perform(RtAction::MouseOverLink(
-                ghostty_apprt::action::MouseOverLink { url: String::new() },
+                ghostty_apprt::action::MouseOverLink {
+                    url: ghostty_os::osbytes::EncodedOs::new(),
+                },
             ));
             self.queue_render();
         }

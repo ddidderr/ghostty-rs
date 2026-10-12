@@ -568,7 +568,9 @@ impl QuickTerminalSizeValue {
 
     fn format(self, out: &mut String) {
         match self {
-            Self::Percentage(v) => out.push_str(&format!("{v}%")),
+            Self::Percentage(v) => {
+                out.push_str(&format!("{}%", ghostty_os::zig_fmt::format_float_d(v)));
+            }
             Self::Pixels(v) => out.push_str(&format!("{v}px")),
         }
     }
@@ -1287,6 +1289,13 @@ config_packed! {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::approx_constant)]
 mod tests {
+    #[test]
+    fn quick_terminal_size_value_formats_nan_like_zig() {
+        let mut out = String::new();
+        QuickTerminalSizeValue::Percentage(f32::NAN).format(&mut out);
+        assert_eq!(out, "nan%");
+    }
+
     use super::*;
     use crate::formatter::format_entry;
 

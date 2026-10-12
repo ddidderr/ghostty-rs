@@ -1286,8 +1286,9 @@ impl Application {
                 })
             }
             Action::MouseOverLink(v) => {
+                let url = v.url.to_text_lossy();
                 tgt.with_surface_void("mouse over link", |s| {
-                    s.set_mouse_hover_url(if v.url.is_empty() { None } else { Some(&v.url) });
+                    s.set_mouse_hover_url(if url.is_empty() { None } else { Some(&url) });
                 });
                 true
             }
@@ -1585,26 +1586,28 @@ impl Application {
 
     fn desktop_notification(&self, tgt: &Tgt, n: &action::DesktopNotification) {
         if let Some(s) = &tgt.surface {
-            s.send_desktop_notification(&n.title, &n.body);
+            s.send_desktop_notification(&n.title.to_text_lossy(), &n.body.to_text_lossy());
             return;
         }
 
         // Set a default title if we don't already have one
-        let title = if n.title.is_empty() {
+        let n_title = n.title.to_text_lossy();
+        let n_body = n.body.to_text_lossy();
+        let title = if n_title.is_empty() {
             "Ghostty"
         } else {
-            n.title.as_str()
+            n_title.as_str()
         };
 
         let notification = gio::Notification::new(title);
-        notification.set_body(Some(&n.body));
+        notification.set_body(Some(&n_body));
         notification.set_icon(&gio::ThemedIcon::new("com.mitchellh.ghostty"));
         notification
             .set_default_action_and_target_value("app.present-surface", Some(&0u64.to_variant()));
 
         // We set the notification ID to the body content. If the content is
         // the same, this notification may replace a previous notification.
-        self.send_notification(Some(&n.body), &notification);
+        self.send_notification(Some(&n_body), &notification);
     }
 
     fn goto_split(surface: &Surface, to: action::GotoSplit) -> bool {

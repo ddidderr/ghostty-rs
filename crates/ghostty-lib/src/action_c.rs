@@ -30,6 +30,7 @@ use crate::{
 #[derive(Default)]
 pub struct Keep {
     strings: Vec<CString>,
+    counted: Vec<Box<[u8]>>,
     config: Option<ghostty_config_t>,
 }
 
@@ -46,6 +47,20 @@ impl Keep {
         let ptr = c.as_ptr();
         // The heap buffer of a CString doesn't move when the Vec grows.
         self.strings.push(c);
+        ptr
+    }
+
+    /// The complete `s` (interior NULs included) followed by a NUL, for
+    /// pointer + length pairs: the advertised length is always `s.len()` and
+    /// the allocation holds at least that many bytes (Zig passes the whole
+    /// backing slice).
+    fn counted_bytes(&mut self, s: &[u8]) -> *const c_char {
+        let mut v = Vec::with_capacity(s.len() + 1);
+        v.extend_from_slice(s);
+        v.push(0);
+        let b = v.into_boxed_slice();
+        let ptr = b.as_ptr().cast::<c_char>();
+        self.counted.push(b);
         ptr
     }
 }
@@ -123,8 +138,8 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         }
         Action::Inspector(i) => v.inspector = *i as c_int,
         Action::DesktopNotification(n) => {
-            v.desktop_notification.title = keep.cstr(&n.title);
-            v.desktop_notification.body = keep.cstr(&n.body);
+            v.desktop_notification.title = keep.cstr_bytes(&n.title.to_bytes());
+            v.desktop_notification.body = keep.cstr_bytes(&n.body.to_bytes());
         }
         Action::SetTitle(t) => v.set_title.title = keep.cstr_bytes(&t.title.to_bytes()),
         Action::SetTabTitle(t) => v.set_tab_title.title = keep.cstr_bytes(&t.title.to_bytes()),
@@ -135,8 +150,9 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         Action::MouseShape(s) => v.mouse_shape = *s as c_int,
         Action::MouseVisibility(m) => v.mouse_visibility = *m as c_int,
         Action::MouseOverLink(l) => {
-            v.mouse_over_link.url = keep.cstr(&l.url);
-            v.mouse_over_link.len = l.url.len();
+            let url = l.url.to_bytes();
+            v.mouse_over_link.url = keep.counted_bytes(&url);
+            v.mouse_over_link.len = url.len();
         }
         Action::RendererHealth(h) => {
             v.renderer_health = match h {
@@ -158,7 +174,7 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         Action::KeyTable(KeyTable::Activate(name)) => {
             v.key_table.tag = 0;
             let bytes = name.to_bytes();
-            v.key_table.value.activate.name = keep.cstr_bytes(&bytes);
+            v.key_table.value.activate.name = keep.counted_bytes(&bytes);
             v.key_table.value.activate.len = bytes.len();
         }
         Action::KeyTable(KeyTable::Deactivate) => v.key_table.tag = 1,
@@ -186,7 +202,7 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
             // The URL may be the escaped form of a non-UTF-8 path; hand the
             // embedder the real bytes.
             let url = u.url.to_bytes();
-            v.open_url.url = keep.cstr_bytes(&url);
+            v.open_url.url = keep.counted_bytes(&url);
             v.open_url.len = url.len();
         }
         Action::ShowChildExited(c) => {
@@ -294,6 +310,78 @@ mod tests {
     }
 
     #[test]
+    fn counted_buffers_hold_exactly_len_bytes() {
+        use ghostty_os::osbytes::EncodedOs;
+        let mut keep = Keep::default();
+        let raw = b"a\0b";
+        let c = action_to_c(
+            &Action::KeyTable(KeyTable::Activate(EncodedOs::from_bytes(raw))),
+            &mut keep,
+        );
+        // SAFETY: tag is key_table.activate; keep owns len + 1 bytes.
+        let (p, n) = unsafe {
+            (
+                c.action.key_table.value.activate.name.cast::<u8>(),
+                c.action.key_table.value.activate.len,
+            )
+        };
+        assert_eq!(n, 3);
+        // SAFETY: the allocation holds `n` bytes plus a NUL.
+        assert_eq!(unsafe { std::slice::from_raw_parts(p, n + 1) }, b"a\0b\0");
+
+        let c = action_to_c(
+            &Action::MouseOverLink(MouseOverLink {
+                url: EncodedOs::from_bytes(b"u\0v"),
+            }),
+            &mut keep,
+        );
+        // SAFETY: tag is mouse_over_link.
+        let (p, n) = unsafe {
+            (
+                c.action.mouse_over_link.url.cast::<u8>(),
+                c.action.mouse_over_link.len,
+            )
+        };
+        assert_eq!(n, 3);
+        // SAFETY: as above.
+        assert_eq!(unsafe { std::slice::from_raw_parts(p, n + 1) }, b"u\0v\0");
+
+        let c = action_to_c(
+            &Action::OpenUrl(ghostty_apprt::action::OpenUrl {
+                kind: ghostty_apprt::action::OpenUrlKind::default(),
+                url: EncodedOs::from_bytes(b"x\0y"),
+            }),
+            &mut keep,
+        );
+        // SAFETY: tag is open_url.
+        let (p, n) = unsafe { (c.action.open_url.url.cast::<u8>(), c.action.open_url.len) };
+        assert_eq!(n, 3);
+        // SAFETY: as above.
+        assert_eq!(unsafe { std::slice::from_raw_parts(p, n + 1) }, b"x\0y\0");
+    }
+
+    #[test]
+    fn notification_forwards_raw_bytes() {
+        use ghostty_os::osbytes::EncodedOs;
+        let mut keep = Keep::default();
+        let c = action_to_c(
+            &Action::DesktopNotification(ghostty_apprt::action::DesktopNotification {
+                title: EncodedOs::from_bytes(b"t\xff"),
+                body: EncodedOs::from_bytes(b"b\xff"),
+            }),
+            &mut keep,
+        );
+        // SAFETY: tag is desktop_notification; keep owns the strings.
+        let (t, b) = unsafe {
+            (
+                std::ffi::CStr::from_ptr(c.action.desktop_notification.title),
+                std::ffi::CStr::from_ptr(c.action.desktop_notification.body),
+            )
+        };
+        assert_eq!((t.to_bytes(), b.to_bytes()), (&b"t\xff"[..], &b"b\xff"[..]));
+    }
+
+    #[test]
     fn target_cval() {
         let t = target_to_c(&Target::App);
         assert_eq!(t.tag, 0);
@@ -380,7 +468,7 @@ mod tests {
 
         let a = action_to_c(
             &Action::MouseOverLink(MouseOverLink {
-                url: "https://x".into(),
+                url: ghostty_os::osbytes::EncodedOs::from_bytes(b"https://x"),
             }),
             &mut keep,
         );

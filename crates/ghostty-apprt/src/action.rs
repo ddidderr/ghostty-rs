@@ -613,7 +613,8 @@ pub enum PromptTitle {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseOverLink {
-    pub url: String,
+    /// Raw bytes (Zig `[]const u8`), in the reversible byte encoding.
+    pub url: ghostty_os::osbytes::EncodedOs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -664,8 +665,10 @@ impl std::fmt::Display for Pwd {
 /// The desktop notification to show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopNotification {
-    pub title: String,
-    pub body: String,
+    /// Raw bytes (Zig `[:0]const u8`), in the reversible byte encoding.
+    pub title: ghostty_os::osbytes::EncodedOs,
+    /// Raw bytes, like `title`.
+    pub body: ghostty_os::osbytes::EncodedOs,
 }
 
 impl std::fmt::Display for DesktopNotification {
@@ -673,7 +676,8 @@ impl std::fmt::Display for DesktopNotification {
         write!(
             f,
             "DesktopNotification{{ title: {}, body: {} }}",
-            self.title, self.body
+            self.title.to_text_lossy(),
+            self.body.to_text_lossy()
         )
     }
 }

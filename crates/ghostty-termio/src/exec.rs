@@ -1066,6 +1066,7 @@ impl Subprocess {
         let pre_info = self.rt_pre_exec_info;
         let post_info = self.rt_post_fork_info;
         let create_scope = self.create_scope.clone();
+        let gtk = ghostty_config::config::app_runtime() == ghostty_config::config::AppRuntime::Gtk;
         let mut cmd = Command {
             path: self.args[0].clone(),
             args: self.args.clone(),
@@ -1081,15 +1082,19 @@ impl Subprocess {
                 let _ = pty::child_pre_exec(master_raw, slave_raw);
                 None
             })),
-            rt_pre_exec: Some(Box::new(move || linux_cgroup_pre_exec(&pre_info))),
-            rt_post_fork: Some(Box::new(move |c: &Command| {
-                let create = |pid, mem, tasks| match &create_scope {
-                    Some(f) => f(pid, mem, tasks),
-                    None => None,
-                };
-                linux_cgroup_post_fork(c, &post_info, create)
-                    .map_err(|_: PostForkError| PostForkError)
-            })),
+            // Zig installs these only when the apprt declares them
+            // (`@hasDecl(apprt.runtime, "pre_exec")`): GTK.
+            rt_pre_exec: gtk.then(|| Box::new(move || linux_cgroup_pre_exec(&pre_info)) as Box<_>),
+            rt_post_fork: gtk.then(|| {
+                Box::new(move |c: &Command| {
+                    let create = |pid, mem, tasks| match &create_scope {
+                        Some(f) => f(pid, mem, tasks),
+                        None => None,
+                    };
+                    linux_cgroup_post_fork(c, &post_info, create)
+                        .map_err(|_: PostForkError| PostForkError)
+                }) as Box<_>
+            }),
             pid: None,
         };
 

@@ -230,10 +230,23 @@ fn osc52_read_allow_and_deny() {
 }
 
 #[test]
+fn desktop_notification_keeps_invalid_utf8_bytes() {
+    let h = harness!(Harness::recorder(r"\033]777;notify;T\377;B\377\007", &[]));
+    let (t, b) = h.wait_action("osc777", |a| match a {
+        Action::DesktopNotification(n) => Some((n.title.to_bytes(), n.body.to_bytes())),
+        _ => None,
+    });
+    assert_eq!(
+        (t.as_slice(), b.as_slice()),
+        (b"T\xff".as_slice(), b"B\xff".as_slice())
+    );
+}
+
+#[test]
 fn desktop_notifications() {
     let h = harness!(Harness::recorder(r"\033]9;just a body\007", &[]));
     let (t, b) = h.wait_action("osc9", |a| match a {
-        Action::DesktopNotification(n) => Some((n.title.clone(), n.body.clone())),
+        Action::DesktopNotification(n) => Some((n.title.to_text_lossy(), n.body.to_text_lossy())),
         _ => None,
     });
     assert_eq!(b, "just a body");
@@ -244,7 +257,7 @@ fn desktop_notifications() {
         &[]
     ));
     let (t, b) = h.wait_action("osc777", |a| match a {
-        Action::DesktopNotification(n) => Some((n.title.clone(), n.body.clone())),
+        Action::DesktopNotification(n) => Some((n.title.to_text_lossy(), n.body.to_text_lossy())),
         _ => None,
     });
     assert_eq!((t.as_str(), b.as_str()), ("My Title", "My Body"));

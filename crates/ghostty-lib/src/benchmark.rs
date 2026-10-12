@@ -5,42 +5,16 @@ use std::ffi::{CStr, c_char};
 
 use ghostty_bench::{args::Args, benches};
 
-/// Split the argument string like `std.process.ArgIteratorGeneral(.{})`:
-/// whitespace separated, with double quotes grouping and backslash
-/// escapes inside quotes. Works on raw bytes: file names need not be UTF-8.
+/// Split the argument string like `std.process.ArgIteratorGeneral(.{})`
+/// (backslashes are only special before a double quote). Works on raw bytes:
+/// file names need not be UTF-8.
 fn split_args(s: &[u8]) -> Vec<std::ffi::OsString> {
-    let mut out = Vec::new();
-    let mut cur: Vec<u8> = Vec::new();
-    let mut have = false;
-    let mut in_quote = false;
-    let mut bytes = s.iter().copied();
-    while let Some(c) = bytes.next() {
-        match c {
-            b'"' => {
-                in_quote = !in_quote;
-                have = true;
-            }
-            b'\\' if in_quote => {
-                if let Some(n) = bytes.next() {
-                    cur.push(n);
-                }
-            }
-            c if c.is_ascii_whitespace() && !in_quote => {
-                if have {
-                    out.push(ghostty_os::osbytes::os_from_bytes(std::mem::take(&mut cur)));
-                    have = false;
-                }
-            }
-            c => {
-                cur.push(c);
-                have = true;
-            }
-        }
-    }
-    if have {
-        out.push(ghostty_os::osbytes::os_from_bytes(cur));
-    }
-    out
+    ghostty_os::arg_iterator::ArgIteratorGeneral::new(
+        ghostty_os::arg_iterator::Options::default(),
+        s,
+    )
+    .map(ghostty_os::osbytes::os_from_bytes)
+    .collect()
 }
 
 /// Run the Ghostty benchmark CLI with the given action and arguments.
@@ -88,6 +62,27 @@ mod tests {
         assert_eq!(split_args(b"a b  c"), ["a", "b", "c"]);
         assert_eq!(split_args(b"--x=\"a b\" c"), ["--x=a b", "c"]);
         assert_eq!(split_args(b"   ").len(), 0);
+    }
+
+    #[test]
+    fn split_args_backslashes_are_literal_except_before_quotes() {
+        assert_eq!(
+            split_args(br#"--terminal-rows="1\0""#),
+            [r"--terminal-rows=1\0"]
+        );
+        assert_eq!(split_args(b"a\\ b"), [r"a\", "b"]);
+        assert_eq!(split_args(br#""a\"b""#), ["a\"b"]);
+    }
+
+    #[test]
+    fn backslash_zero_row_count_fails_like_zig() {
+        // SAFETY: valid NUL terminated strings.
+        assert!(!unsafe {
+            ghostty_benchmark_cli(
+                c"terminal-stream".as_ptr(),
+                c"--terminal-rows=\"1\\0\"".as_ptr(),
+            )
+        });
     }
 
     #[cfg(unix)]

@@ -960,9 +960,7 @@ impl Surface {
                     return Ok(());
                 }
 
-                let title = String::from_utf8_lossy(notification.title()).into_owned();
-                let body = String::from_utf8_lossy(notification.body()).into_owned();
-                self.show_desktop_notification(&title, &body);
+                self.show_desktop_notification(notification.title(), notification.body());
             }
 
             Message::RendererHealth(health) => self.update_renderer_health(health),

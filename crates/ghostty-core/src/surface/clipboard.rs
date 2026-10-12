@@ -358,7 +358,7 @@ impl Surface {
 
     /// Show a desktop notification, rate limited (Zig
     /// `showDesktopNotification`).
-    pub(crate) fn show_desktop_notification(&self, title: &str, body: &str) {
+    pub(crate) fn show_desktop_notification(&self, title: &[u8], body: &[u8]) {
         let now = Instant::now();
 
         // Set a limit of one desktop notification per second so that the OS
@@ -391,8 +391,8 @@ impl Surface {
         self.app.last_notification_time.set(Some(now));
         self.app.last_notification_digest.set(new_digest);
         self.perform(RtAction::DesktopNotification(DesktopNotification {
-            title: title.to_owned(),
-            body: body.to_owned(),
+            title: ghostty_os::osbytes::EncodedOs::from_bytes(title),
+            body: ghostty_os::osbytes::EncodedOs::from_bytes(body),
         }));
     }
 

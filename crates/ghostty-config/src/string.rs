@@ -4,11 +4,16 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StringError {
     InvalidString,
+    /// `std.unicode.utf8Encode` of an escaped surrogate half.
+    Utf8CannotEncodeSurrogateHalf,
 }
 
 impl std::fmt::Display for StringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("InvalidString")
+        f.write_str(match self {
+            StringError::InvalidString => "InvalidString",
+            StringError::Utf8CannotEncodeSurrogateHalf => "Utf8CannotEncodeSurrogateHalf",
+        })
     }
 }
 
@@ -88,7 +93,11 @@ pub fn parse_bytes(input: impl AsRef<[u8]>) -> Result<Vec<u8>, StringError> {
             continue;
         }
         let cp = parse_escape_sequence(bytes, &mut i).ok_or(StringError::InvalidString)?;
-        let ch = char::from_u32(cp).ok_or(StringError::InvalidString)?;
+        let ch = char::from_u32(cp).ok_or(if (0xd800..=0xdfff).contains(&cp) {
+            StringError::Utf8CannotEncodeSurrogateHalf
+        } else {
+            StringError::InvalidString
+        })?;
         out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
     }
     Ok(out)
@@ -200,6 +209,14 @@ mod tests {
 
     #[test]
     fn parse_invalid() {
+        assert_eq!(
+            parse("\\u{d800}"),
+            Err(StringError::Utf8CannotEncodeSurrogateHalf)
+        );
+        assert_eq!(
+            crate::cli_args::ArgError::from(StringError::Utf8CannotEncodeSurrogateHalf),
+            crate::cli_args::ArgError::other("Utf8CannotEncodeSurrogateHalf")
+        );
         assert_eq!(parse("\\q"), Err(StringError::InvalidString));
         assert_eq!(parse("\\"), Err(StringError::InvalidString));
         assert_eq!(parse("\\u{}"), Err(StringError::InvalidString));
