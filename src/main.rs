@@ -22,7 +22,10 @@ fn main() -> ExitCode {
     let action_requested = !matches!(ghostty_cli::ghostty::detect(&args), Ok(None));
     global::init(InitOptions {
         action: action_requested,
+        resources_dir: Some(ghostty_apprt_gtk::flatpak::resources_dir),
     });
+    // Zig `global.init` runs `ensureLocale` before anything locale dependent.
+    ghostty_apprt_gtk::class::application::init_locale();
     build_info::set(build_info());
 
     // Execute our action if we have one.

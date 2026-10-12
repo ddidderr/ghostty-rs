@@ -101,11 +101,19 @@ pub fn keyval_unicode_unshifted(
     event: &gdk::KeyEvent,
     keycode: u32,
 ) -> u32 {
-    let display = widget.as_ref().display();
-
     // We need the currently active keyboard layout so we know what group to
     // look at.
-    let layout = event.layout();
+    keyval_unicode_unshifted_for_layout(widget, event.layout(), keycode)
+}
+
+/// Like [`keyval_unicode_unshifted`] with an explicit keyboard layout (group)
+/// instead of a `GdkKeyEvent`; used by the debug input replay.
+pub fn keyval_unicode_unshifted_for_layout(
+    widget: &impl IsA<gtk::Widget>,
+    layout: u32,
+    keycode: u32,
+) -> u32 {
+    let display = widget.as_ref().display();
 
     // All possible keyboard mappings for this keycode (the physical key).
     let Some(entries) = display.map_keycode(keycode) else {
@@ -132,10 +140,25 @@ pub fn event_mods(
     action: Action,
     winproto_event_mods: impl FnOnce(Option<&gdk::Device>, gdk::ModifierType) -> Mods,
 ) -> Mods {
-    let device = event.device();
+    event_mods_for_device(
+        event.device().as_ref(),
+        physical_key,
+        gtk_mods,
+        action,
+        winproto_event_mods,
+    )
+}
 
-    let mut mods = winproto_event_mods(device.as_ref(), gtk_mods);
-    mods.num_lock = device.as_ref().is_some_and(DeviceExt::is_num_locked);
+/// Like [`event_mods`] but with the (optional) device instead of the event.
+pub fn event_mods_for_device(
+    device: Option<&gdk::Device>,
+    physical_key: K,
+    gtk_mods: gdk::ModifierType,
+    action: Action,
+    winproto_event_mods: impl FnOnce(Option<&gdk::Device>, gdk::ModifierType) -> Mods,
+) -> Mods {
+    let mut mods = winproto_event_mods(device, gtk_mods);
+    mods.num_lock = device.is_some_and(DeviceExt::is_num_locked);
 
     // We use the physical key to determine sided modifiers. As far as I can
     // tell there's no other way to reliably determine this.

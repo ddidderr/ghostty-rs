@@ -35,7 +35,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV1 | Codex read-only audit core Surface vs Zig | codex astra | ✅ | 9 findings (notes/review-core-codex.md) → handed to V1 |
 | P1 | ghostty-bench port, Zig baseline, perf tuning | sonnet | ✅ | stream at Zig parity; screen-clone 2.6x |
 | V1b | finish V1: clippy, audit fixes, GTK replay check | sonnet | 🟨 | |
-| P2 | perf: screen-clone, osc-parser | sonnet | 🟨 | |
+| P2 | perf: screen-clone, osc-parser | sonnet | ✅ | clone at parity; render 2.4x |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.

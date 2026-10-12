@@ -731,12 +731,9 @@ impl Surface {
             BindingAction::Redo => RtAction::Redo,
             _ => return,
         };
-        let target = if matches!(rt, RtAction::NewWindow) {
-            Target::Surface(self.id)
-        } else {
-            Target::App
-        };
-        self.rt_app.perform_action(target, rt);
+        // Zig `App.performAction`: new_window is created with parent = null,
+        // so it never inherits from the invoking surface.
+        self.rt_app.perform_action(Target::App, rt);
     }
 
     /// Deactivate every key table. Returns whether any was active.

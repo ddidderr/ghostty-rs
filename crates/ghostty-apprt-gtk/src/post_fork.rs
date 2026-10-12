@@ -1,15 +1,12 @@
 //! Parent post-fork hook creating the transient scope (port of
 //! `apprt/gtk/post_fork.zig`).
 
-use std::time::{Duration, Instant};
-
 use ghostty_config::config::Config;
 use ghostty_config::types_b::{GtkSingleInstance, LinuxCgroup};
 use gtk::gio;
 use gtk::prelude::*;
 
 use crate::cgroup;
-use crate::pre_exec::current_scope_matches;
 
 /// Allowable error from a post-fork hook; fails surface creation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -87,25 +84,16 @@ pub fn post_fork(info: &PostForkInfo, pid: Option<u32>) -> Result<(), PostForkEr
         return Ok(());
     }
 
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_millis(250) {
-            // Zig checks `rt_pre_exec_info.linux_cgroup_hard_fail` here;
-            // both infos come from the same config so they're identical.
-            if info.linux_cgroup_hard_fail {
-                log::error!("transition to new transient systemd scope {expected} took too long");
-                return Err(PostForkError);
-            }
-            log::warn!("transition to transient systemd scope {expected} took too long");
-            break;
+    if ghostty_os::cgroup::wait_for_scope(pid, &expected) {
+        log::debug!("transition to transient systemd scope {expected} complete");
+    } else {
+        // Zig checks `rt_pre_exec_info.linux_cgroup_hard_fail` here;
+        // both infos come from the same config so they're identical.
+        if info.linux_cgroup_hard_fail {
+            log::error!("transition to new transient systemd scope {expected} took too long");
+            return Err(PostForkError);
         }
-
-        if current_scope_matches(pid, &expected) {
-            log::debug!("transition to transient systemd scope {expected} complete");
-            break;
-        }
-
-        std::thread::sleep(Duration::from_millis(25));
+        log::warn!("transition to transient systemd scope {expected} took too long");
     }
 
     Ok(())

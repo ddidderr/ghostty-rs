@@ -92,8 +92,13 @@ pub enum Error {
 /// A pty master/slave pair.
 ///
 /// Deviation from Zig: both fds are `OwnedFd` and are closed on drop (the Zig
-/// struct never closes the slave automatically). To close the slave early
-/// (as Exec does after the fork) use [`Pty::close_slave`] or destructure.
+/// struct never closes the slave automatically). This is behaviour-preserving:
+/// Zig's `Exec.Subprocess.start` closes the slave explicitly in exactly two
+/// places (in the parent right after the child was started successfully, and
+/// in the start error path before `pty.deinit()`), and `Pty.deinit` is only
+/// reached afterwards. The Rust `Exec` calls [`Pty::close_slave`] after a
+/// successful start and drops the whole `Pty` on error, so the slave fd lives
+/// exactly as long as in Zig.
 #[derive(Debug)]
 pub struct Pty {
     pub master: OwnedFd,

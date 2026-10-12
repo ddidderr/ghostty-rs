@@ -43,13 +43,19 @@ impl Surface {
             return;
         }
 
-        // Decode. Zig tolerates a missing-padding error ("It is possible to
-        // actually have valid data and get this error, so we allow it"), so
-        // decode leniently without requiring padding.
+        // Zig validates the size first (`calcSizeForSlice` on the padded
+        // standard alphabet rejects lengths that aren't a multiple of 4),
+        // then decodes ignoring only the `InvalidPadding` error (e.g. nonzero
+        // trailing bits as in "YR==", which still decodes to "a").
+        if !data.len().is_multiple_of(4) {
+            log::info!("application sent invalid base64 data for OSC 52");
+            return;
+        }
         let lenient = base64::engine::GeneralPurpose::new(
             &base64::alphabet::STANDARD,
             base64::engine::GeneralPurposeConfig::new()
-                .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+                .with_decode_padding_mode(base64::engine::DecodePaddingMode::RequireCanonical)
+                .with_decode_allow_trailing_bits(true),
         );
         let Ok(decoded) = lenient.decode(data) else {
             log::info!("application sent invalid base64 data for OSC 52");
@@ -78,23 +84,8 @@ impl Surface {
 
         // The options we'll use for all formatting. We'll just override the
         // emit format.
-        let codepoint_map: Vec<formatter::CodepointMap> = cfg
-            .clipboard_codepoint_map
-            .map
-            .list
-            .iter()
-            .map(|e| formatter::CodepointMap {
-                range: e.range,
-                replacement: match &e.replacement {
-                    ghostty_config::clipboard_codepoint_map::Replacement::Codepoint(c) => {
-                        formatter::Replacement::Codepoint(*c)
-                    }
-                    ghostty_config::clipboard_codepoint_map::Replacement::String(s) => {
-                        formatter::Replacement::String(s.clone())
-                    }
-                },
-            })
-            .collect();
+        let codepoint_map: Vec<formatter::CodepointMap> =
+            cfg.clipboard_codepoint_map.map.list.clone();
         let opts = formatter::Options {
             emit: Format::Plain, // We'll override this below
             unwrap: true,

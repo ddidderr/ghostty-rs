@@ -1663,7 +1663,7 @@ impl Surface {
         Ok(true)
     }
 
-    fn open_url(&self, action: OpenUrl) -> Result<(), CoreError> {
+    pub(crate) fn open_url(&self, action: OpenUrl) -> Result<(), CoreError> {
         // If the apprt handles it then we're done.
         let kind = action.kind;
         let url = action.url.clone();

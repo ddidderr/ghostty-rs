@@ -40,7 +40,7 @@ Wiring details: renderer->app via `Host` (scrollbar/health/redraw as app mailbox
 apprt-gtk got `RtSurface::gl_proc_address` (libepoxy `epoxy_*` pointer variables) and `create_scope_fn` (cgroup scope over D-Bus from the IO thread).
 Deviations/stubs: inspector no-op; locale only via GTK's setlocale (no unsafe in core/root); crash reporting (sentry) not ported; `Rust version` row of `+version` empty;
 default DPI 96 (Zig linux).
-How to run: `GSETTINGS_BACKEND=memory GHOSTTY_RESOURCES_DIR=/usr/share/ghostty cargo run -- -e sh -c '...'` (debug builds only find resources via the env var here).
+How to run (resources are found automatically via `<workspace>/resources`, see notes/cleanup-V2.md): `GSETTINGS_BACKEND=memory cargo run -- -e sh -c '...'`.
 Dev screenshot: `GHOSTTY_DEBUG_SCREENSHOT=/abs/out.png [GHOSTTY_DEBUG_SCREENSHOT_MS=2500]` dumps the renderer's last frame (compositor screenshots under niri come out black / are blocked).
 Verified manually: window opens on Wayland and X11, shell prompt and SGR colored output render (target/screenshots/frame.png, shell.png), child exit closes window, clean shutdown.
 NOT verified: keyboard input end-to-end (no way to inject keys into the window here; xdotool/niri did not deliver), mouse, clipboard, IME, splits/tabs.

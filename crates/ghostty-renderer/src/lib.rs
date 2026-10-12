@@ -15,6 +15,7 @@ pub mod backend;
 pub mod cell;
 pub mod cursor;
 pub mod generic;
+pub mod headless;
 pub mod image;
 pub mod link;
 pub mod math;

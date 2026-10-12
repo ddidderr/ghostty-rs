@@ -570,30 +570,6 @@ impl Surface {
         Ok(Text { text, viewport })
     }
 
-    /// Open a URL through the runtime, falling back to the default opener
-    /// (Zig: `openUrl`).
-    pub(crate) fn open_url_with_fallback(&self, action: OpenUrl) {
-        // If the apprt handles it then we're done.
-        let kind = action.kind;
-        let url = action.url.clone();
-        if self.perform(RtAction::OpenUrl(action)) {
-            return;
-        }
-
-        // apprt didn't handle it, fallback to our simple cross-platform URL
-        // opener. We log a warning because we want well-behaved apprts to
-        // handle this themselves.
-        log::warn!("apprt did not handle open URL action, falling back to default opener");
-        let kind = match kind {
-            OpenUrlKind::Unknown => ghostty_os::open::OpenUrlKind::Unknown,
-            OpenUrlKind::Text => ghostty_os::open::OpenUrlKind::Text,
-            OpenUrlKind::Html => ghostty_os::open::OpenUrlKind::Html,
-        };
-        if let Err(err) = ghostty_os::open::open(kind, &url) {
-            log::warn!("failed to open url err={err}");
-        }
-    }
-
     /// Write the screen/history/selection to a temp file and paste/copy/open
     /// the path (Zig: `writeScreenFile`).
     fn write_screen_file(
@@ -620,13 +596,13 @@ impl Surface {
                     false,
                 );
             }
-            WriteScreenAction::Open => self.open_url_with_fallback(OpenUrl {
+            WriteScreenAction::Open => self.open_url(OpenUrl {
                 kind: match write_screen.emit {
                     WriteScreenFormat::Plain | WriteScreenFormat::Vt => OpenUrlKind::Text,
                     WriteScreenFormat::Html => OpenUrlKind::Html,
                 },
                 url: path,
-            }),
+            })?,
             WriteScreenAction::Paste => self.queue_io(IoMessage::write_req(path.as_bytes())),
         }
         Ok(())
@@ -700,6 +676,10 @@ impl Surface {
                 } else {
                     format!("\x1b{data}")
                 };
+                // Zig formats into a fixed 128 byte buffer (`NoSpaceLeft`).
+                if full.len() > 128 {
+                    return Err("csi/esc binding sequence too long (max 128 bytes)".into());
+                }
                 self.queue_io(IoMessage::write_req(full.as_bytes()));
 
                 // CSI/ESC triggers a scroll.

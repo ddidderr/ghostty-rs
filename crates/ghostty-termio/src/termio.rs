@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use ghostty_config::conditional;
 use ghostty_config::config::Config;
 use ghostty_config::io::ReadableIO;
-use ghostty_config::types_a::{Color, CursorStyle as ConfigCursorStyle, TerminalColor};
+use ghostty_config::types_a::{Color, CursorStyle, TerminalColor};
 use ghostty_config::types_b::{ClipboardAccess, GraphemeWidthMethod, OSCColorReportFormat};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::message::Message as RendererMessage;
@@ -52,9 +52,7 @@ use crate::message::{Message, SizeReport};
 use crate::options::Options;
 use crate::sinks::{RendererMailbox, SurfaceMailbox};
 use crate::state::{SharedState, SharedStateExt, State};
-use crate::stream_handler::{
-    HandlerOptions, HandlerState, TerminalStream, cursor_style_from_config,
-};
+use crate::stream_handler::{HandlerOptions, HandlerState, TerminalStream};
 use crate::wakeup::Wakeup;
 
 /// Errors from termio initialization and thread setup.
@@ -95,7 +93,7 @@ pub enum MutexState {
 pub struct DerivedConfig {
     pub palette: Palette,
     pub image_storage_limit: usize,
-    pub cursor_style: ConfigCursorStyle,
+    pub cursor_style: CursorStyle,
     pub cursor_blink: Option<bool>,
     pub cursor_color: Option<TerminalColor>,
     pub foreground: Color,
@@ -376,7 +374,7 @@ impl Termio {
         set_image_limits(&mut term, config.image_storage_limit);
 
         // Set our default cursor style
-        term.screen_mut().cursor.cursor_style = cursor_style_from_config(config.cursor_style);
+        term.screen_mut().cursor.cursor_style = config.cursor_style;
 
         // Setup our terminal size in pixels for certain requests.
         term.width_px = u32::from(term.cols) * size.cell.width;
@@ -391,7 +389,7 @@ impl Termio {
             termio_mailbox: mailbox.clone(),
             surface_mailbox: Arc::clone(&surface_mailbox),
             renderer_wakeup: renderer_wakeup.clone(),
-            default_cursor_style: cursor_style_from_config(config.cursor_style),
+            default_cursor_style: config.cursor_style,
             default_cursor_blink: config.cursor_blink,
             enquiry_response: config.enquiry_response.clone().into_bytes(),
             osc_color_report_format: config.osc_color_report_format,

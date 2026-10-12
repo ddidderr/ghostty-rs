@@ -192,16 +192,63 @@ fn set_gtk_env(config: &CoreConfig) {
     set_env("GDK_DISABLE", &gdk_disable);
 }
 
-/// Call `setlocale(LC_ALL, "")` like Ghostty's `global.zig` does at startup
-/// (see docs/rewrite/INTEGRATION_TODO.md). Idempotent.
+/// Port of Ghostty's `os/locale.zig` `ensureLocale` (called from
+/// `global.zig` at startup): set the process locale from the environment and,
+/// if that fails (usually an invalid `LANG`), retry with `LANG` unset, then fall
+/// back to `en_US.UTF-8` (updating `LANG` on success). Idempotent. This must
+/// run before GTK initializes and before the child environment is captured.
 #[allow(unsafe_code)]
 pub fn init_locale() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // SAFETY: called with a valid NUL-terminated empty string at startup
-        // before other threads depend on the locale.
+        // SAFETY: all strings are valid NUL-terminated C strings; this runs at
+        // startup before other threads read the environment or locale.
         unsafe {
-            libc::setlocale(libc::LC_ALL, c"".as_ptr());
+            fn show(p: *const libc::c_char) -> String {
+                // SAFETY: setlocale returns a valid C string when non-null.
+                unsafe { std::ffi::CStr::from_ptr(p) }
+                    .to_string_lossy()
+                    .into_owned()
+            }
+
+            // Set the locale to whatever is set in env vars.
+            let r = libc::setlocale(libc::LC_ALL, c"".as_ptr());
+            if !r.is_null() {
+                log::info!("setlocale from env result={}", show(r));
+                return;
+            }
+
+            // setlocale failed, probably because LANG is invalid. Try again
+            // without LANG to use the system default.
+            if std::env::var_os("LANG").is_some_and(|v| !v.is_empty()) {
+                // Both so that LANG is either empty or unset completely.
+                libc::setenv(c"LANG".as_ptr(), c"".as_ptr(), 1);
+                libc::unsetenv(c"LANG".as_ptr());
+
+                let r = libc::setlocale(libc::LC_ALL, c"".as_ptr());
+                if !r.is_null() {
+                    let v = show(r);
+                    log::info!("setlocale after unset lang result={v}");
+
+                    // An unsupported locale yields the "C" fallback; we
+                    // prefer moving on to en_US.UTF-8 in that case.
+                    if v != "C" {
+                        return;
+                    }
+                }
+            }
+
+            // Failure again... fallback to en_US.UTF-8
+            log::warn!(
+                "setlocale failed with LANG and system default. Falling back to en_US.UTF-8"
+            );
+            let r = libc::setlocale(libc::LC_ALL, c"en_US.UTF-8".as_ptr());
+            if r.is_null() {
+                log::warn!("setlocale failed even with the fallback, uncertain results");
+            } else {
+                libc::setenv(c"LANG".as_ptr(), c"en_US.UTF-8".as_ptr(), 1);
+                log::info!("setlocale default result={}", show(r));
+            }
         }
     });
 }
@@ -604,6 +651,9 @@ impl Application {
 
         // Tell systemd that we are ready.
         ghostty_os::systemd::notify::ready();
+
+        // Developer aid: replay synthesized input (GHOSTTY_DEBUG_INPUT_SCRIPT).
+        crate::debug_input::start(self);
 
         log::debug!("entering runloop");
         let imp = self.imp();

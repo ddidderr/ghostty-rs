@@ -235,6 +235,13 @@ pub trait CoreSurface {
         }
     }
 
+    /// Debug aid: write the last presented frame as a PNG (GL context must be
+    /// current). Used by the apprt's `GHOSTTY_DEBUG_INPUT_SCRIPT` replay.
+    fn write_screenshot(&self, path: &str) -> Result<(), CoreError> {
+        let _ = path;
+        Err("screenshots are not supported".into())
+    }
+
     // ---- inspector (deferred) -------------------------------------------
     fn activate_inspector(&self) -> Result<(), CoreError> {
         Ok(())

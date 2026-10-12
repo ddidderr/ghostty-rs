@@ -940,18 +940,36 @@ mod split_imp {
     #[gtk::template_callbacks]
     impl SplitTreeSplit {
         #[template_callback]
-        fn notify_max_position(&self, _pspec: glib::ParamSpec) {
-            self.obj().refresh();
+        fn notify_max_position(
+            _paned: &gtk::Paned,
+            _pspec: glib::ParamSpec,
+            this: &super::SplitTreeSplit,
+        ) {
+            // The emitter is the child `Paned`; the template instance is the
+            // trailing user-data argument.
+            this.refresh();
         }
 
         #[template_callback]
-        fn notify_min_position(&self, _pspec: glib::ParamSpec) {
-            self.obj().refresh();
+        fn notify_min_position(
+            _paned: &gtk::Paned,
+            _pspec: glib::ParamSpec,
+            this: &super::SplitTreeSplit,
+        ) {
+            // The emitter is the child `Paned`; the template instance is the
+            // trailing user-data argument.
+            this.refresh();
         }
 
         #[template_callback]
-        fn notify_position(&self, _pspec: glib::ParamSpec) {
-            self.obj().refresh();
+        fn notify_position(
+            _paned: &gtk::Paned,
+            _pspec: glib::ParamSpec,
+            this: &super::SplitTreeSplit,
+        ) {
+            // The emitter is the child `Paned`; the template instance is the
+            // trailing user-data argument.
+            this.refresh();
         }
     }
 

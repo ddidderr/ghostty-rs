@@ -17,7 +17,6 @@ use std::{
     ffi::{CString, NulError, c_char},
     os::fd::OwnedFd,
     panic::{AssertUnwindSafe, catch_unwind},
-    time::{Duration, Instant},
 };
 
 use ghostty_os::file::Rlimit;
@@ -497,23 +496,7 @@ pub fn fmt_scope(pid: u32) -> String {
     format!("app-ghostty-surface-transient-{pid}.scope")
 }
 
-/// Wait for the current process' cgroup to end in `expected`. Returns true if
-/// seen, false on timeout (250ms).
-fn wait_for_cgroup(pid: u32, expected: &str) -> bool {
-    let start = Instant::now();
-    loop {
-        if start.elapsed() > Duration::from_millis(250) {
-            return false;
-        }
-        if let Some(raw) = ghostty_os::cgroup::current(pid)
-            && let Some(idx) = raw.rfind('/')
-            && &raw[idx + 1..] == expected
-        {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
+use ghostty_os::cgroup::wait_for_scope as wait_for_cgroup;
 
 /// If we are expecting to be moved to a transient systemd scope, wait to see
 /// if that happens by checking for the correct name of the current cgroup.

@@ -1334,7 +1334,14 @@ impl Surface {
         t: &mut ghostty_terminal::terminal::Terminal,
         sel: Option<Selection>,
     ) -> Result<(), ghostty_terminal::page::Error> {
-        let prev = t.screen().selection;
+        // Compare against the previous selection BEFORE replacing it:
+        // `select` releases the previous selection's tracked pins, after
+        // which they can no longer be resolved (Zig compares through raw
+        // pointers that happen to stay readable).
+        let unchanged = match (sel, t.screen().selection) {
+            (Some(sel), Some(prev)) => sel.eql(&t.screen().pages, &prev),
+            _ => false,
+        };
         t.screen_mut().select(sel)?;
 
         let cfg = self.cfg();
@@ -1352,9 +1359,7 @@ impl Surface {
         let Some(sel) = sel else {
             return Ok(());
         };
-        if let Some(prev) = prev
-            && sel.eql(&t.screen().pages, &prev)
-        {
+        if unchanged {
             return Ok(());
         }
 
@@ -1708,28 +1713,40 @@ impl Surface {
         if self.debug_shot_done.get() || self.created.elapsed().as_millis() < u128::from(delay) {
             return;
         }
-        let Some((w, h, mut px)) = self.renderer.last_frame_pixels() else {
-            return;
+        if self
+            .write_screenshot_png(std::path::Path::new(&path))
+            .is_ok()
+        {
+            self.debug_shot_done.set(true);
+        }
+    }
+
+    /// Write the last presented frame as a PNG. Requires the GL context to be
+    /// current.
+    pub fn write_screenshot_png(&self, path: &std::path::Path) -> Result<(), CoreError> {
+        let Some((w, h, px)) = self.renderer.last_frame_pixels() else {
+            return Err("no frame has been presented yet".into());
         };
-        self.debug_shot_done.set(true);
         // Bottom-up RGBA -> top-down.
         let stride = w * 4;
         let mut flipped = Vec::with_capacity(px.len());
-        for row in px.chunks_exact_mut(stride).rev() {
+        for row in px.chunks_exact(stride).rev() {
             flipped.extend_from_slice(row);
         }
-        let write = || -> Result<(), Box<dyn std::error::Error>> {
-            let file = std::io::BufWriter::new(std::fs::File::create(&path)?);
-            let mut enc = png::Encoder::new(file, w as u32, h as u32);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            enc.write_header()?.write_image_data(&flipped)?;
-            Ok(())
-        };
-        match write() {
-            Ok(()) => log::info!("wrote debug screenshot to {}", path.to_string_lossy()),
-            Err(err) => log::warn!("debug screenshot failed: {err}"),
-        }
+        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        let mut enc = png::Encoder::new(file, w as u32, h as u32);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&flipped)?;
+        log::info!("wrote screenshot to {}", path.display());
+        Ok(())
+    }
+
+    /// The pixels of the last presented frame (`width`, `height`, RGBA8,
+    /// bottom-up). Test/debug hook for headless integration tests; requires
+    /// the GL context to be current on the calling thread.
+    pub fn frame_pixels(&self) -> Option<(usize, usize, Vec<u8>)> {
+        self.renderer.last_frame_pixels()
     }
 
     /// The GLArea was (re)realized; the GL context is current.
@@ -1777,15 +1794,16 @@ impl Drop for Surface {
     }
 }
 
-/// The environment for the child: whatever the runtime wants plus the
-/// process environment (Zig: `rt_surface.defaultTermioEnv()` falling back to
-/// `getEnvMap`).
+/// The environment for the child: exactly what the runtime provides
+/// (`rt_surface.defaultTermioEnv()`, which already removed the variables it
+/// does not want to leak); only if it provides nothing (the Zig error path)
+/// do we fall back to the process environment (`getEnvMap`).
 fn rt_surface_env(rt: &dyn RtSurface) -> std::collections::HashMap<String, String> {
-    let mut env = ghostty_os::env::get_env_map();
-    for (k, v) in rt.default_termio_env() {
-        env.insert(k, v);
+    let rt_env = rt.default_termio_env();
+    if rt_env.is_empty() {
+        return ghostty_os::env::get_env_map();
     }
-    env
+    rt_env.into_iter().collect()
 }
 
 // ----------------------------------------------------------------------
@@ -1915,6 +1933,10 @@ impl CoreSurface for Surface {
         self.renderer.draw_frame(false)?;
         self.debug_screenshot();
         Ok(())
+    }
+
+    fn write_screenshot(&self, path: &str) -> Result<(), CoreError> {
+        self.write_screenshot_png(std::path::Path::new(path))
     }
 
     fn id(&self) -> Option<SurfaceId> {

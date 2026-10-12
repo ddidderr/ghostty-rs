@@ -771,10 +771,20 @@ impl Subprocess {
 
             // Assume that the resources directory is adjacent to the terminfo
             // database
-            let parent = std::path::Path::new(base)
-                .parent()
-                .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
-            env.insert("TERMINFO".into(), format!("{parent}/terminfo"));
+            //
+            // Rust-specific: the in-repo dev resources dir (`<ws>/resources`)
+            // carries its compiled terminfo inside itself, so prefer that
+            // when present.
+            let own = format!("{base}/terminfo");
+            let terminfo = if std::path::Path::new(&format!("{own}/x/xterm-ghostty")).exists() {
+                own
+            } else {
+                let parent = std::path::Path::new(base)
+                    .parent()
+                    .map_or_else(String::new, |p| p.to_string_lossy().into_owned());
+                format!("{parent}/terminfo")
+            };
+            env.insert("TERMINFO".into(), terminfo);
         } else {
             env.insert("TERM".into(), "xterm-256color".into());
             env.insert("COLORTERM".into(), "truecolor".into());

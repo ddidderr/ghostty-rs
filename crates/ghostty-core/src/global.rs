@@ -26,21 +26,29 @@ impl Default for Logging {
 }
 
 impl Logging {
-    /// Parse the `GHOSTTY_LOG` value (comma separated field names, an
-    /// optional `no-` prefix disables; Zig: `cli.args.parsePackedStruct`).
-    /// Invalid values yield the default.
+    /// Parse the `GHOSTTY_LOG` value (Zig: `cli.args.parsePackedStruct`):
+    /// a standalone boolean (`1/t/T/true/0/f/F/false`) sets every field,
+    /// otherwise a comma separated list of field names where a `no-` prefix
+    /// disables. Fields not mentioned keep their default (stderr on). Any
+    /// invalid value (including an empty part) yields the default.
     #[must_use]
     pub fn parse(v: &str) -> Logging {
-        let mut out = Logging { stderr: false };
+        match v {
+            "1" | "t" | "T" | "true" => return Logging { stderr: true },
+            "0" | "f" | "F" | "false" => return Logging { stderr: false },
+            _ => {}
+        }
+        let mut out = Logging::default();
         for part in v.split(',') {
-            let part = part.trim();
+            let part = part.trim_matches([' ', '\t']);
             let (name, value) = match part.strip_prefix("no-") {
                 Some(n) => (n, false),
                 None => (part, true),
             };
             match name {
                 "stderr" => out.stderr = value,
-                "macos" | "" => {}
+                // The only other field (macOS unified logging) is a no-op.
+                "macos" => {}
                 _ => return Logging::default(),
             }
         }
@@ -87,11 +95,16 @@ pub struct GlobalState {
 static STATE: OnceLock<GlobalState> = OnceLock::new();
 
 /// Options for [`init`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct InitOptions {
     /// A CLI action is being executed: disable stderr logging by default
     /// since the action writes to stderr/stdout itself.
     pub action: bool,
+
+    /// The runtime-specific resources directory discovery (Zig:
+    /// `apprt.runtime.resourcesDir`, e.g. GTK's Flatpak host path lookup).
+    /// `None` uses the generic `ghostty_os::resourcesdir::resources_dir`.
+    pub resources_dir: Option<fn() -> std::io::Result<ResourcesDir>>,
 }
 
 /// The global state. If [`init`] was never called, a default state (no
@@ -132,7 +145,10 @@ pub fn init(opts: InitOptions) -> &'static GlobalState {
 
         // Find our resources directory once for the app so every launch
         // hereafter can use this cached value.
-        let resources_dir = match ghostty_os::resourcesdir::resources_dir() {
+        let discover = opts
+            .resources_dir
+            .unwrap_or(ghostty_os::resourcesdir::resources_dir);
+        let resources_dir = match discover() {
             Ok(d) => d,
             Err(err) => {
                 log::warn!("failed to find resources dir err={err}");
@@ -224,7 +240,14 @@ mod tests {
     fn logging_parse() {
         assert!(Logging::parse("stderr").stderr);
         assert!(!Logging::parse("no-stderr").stderr);
-        assert!(!Logging::parse("macos").stderr);
+        // Unmentioned fields keep their default (stderr on).
+        assert!(Logging::parse("macos").stderr);
+        assert!(!Logging::parse("false").stderr);
+        assert!(!Logging::parse("0").stderr);
+        assert!(Logging::parse("true").stderr);
+        // Empty / invalid values yield the default.
+        assert!(Logging::parse("").stderr);
+        assert!(Logging::parse("stderr,").stderr);
         assert_eq!(Logging::parse("garbage"), Logging::default());
     }
 }

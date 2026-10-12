@@ -31,7 +31,6 @@ use ghostty_apprt::structs::Clipboard;
 use ghostty_apprt::surface::{
     DesktopNotification, Message as SurfaceMessage, ReportTitleStyle, SET_TITLE_LEN, WriteReq,
 };
-use ghostty_config::types_a::CursorStyle as ConfigCursorStyle;
 use ghostty_config::types_b::{ClipboardAccess, OSCColorReportFormat};
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::size::Size;
@@ -65,16 +64,6 @@ use crate::wakeup::Wakeup;
 
 /// `build_config.version_string`.
 pub const VERSION_STRING: &str = "1.3.1";
-
-/// The DECSCUSR style the config/default maps to.
-pub fn cursor_style_from_config(style: ConfigCursorStyle) -> CursorStyle {
-    match style {
-        ConfigCursorStyle::Bar => CursorStyle::Bar,
-        ConfigCursorStyle::Block => CursorStyle::Block,
-        ConfigCursorStyle::Underline => CursorStyle::Underline,
-        ConfigCursorStyle::BlockHollow => CursorStyle::BlockHollow,
-    }
-}
 
 /// The long-lived state of the handler (everything but the terminal).
 pub struct HandlerState {
@@ -119,6 +108,10 @@ pub struct HandlerState {
     /// but requires more stateful parsing. This is used by functionality
     /// such as XTGETTCAP.
     pub dcs: dcs::Handler,
+
+    /// The tmux control mode viewer state (`tmux_viewer`). Dropping it is
+    /// the equivalent of Zig's `viewer.deinit()` + `destroy`.
+    pub tmux_viewer: Option<Box<ghostty_terminal::tmux::Viewer>>,
 
     /// This is set to true when a message was written to the termio
     /// mailbox. This can be used by callers to determine if they need
@@ -189,6 +182,7 @@ impl HandlerState {
             clipboard_write: opts.clipboard_write,
             apc: apc::Handler::default(),
             dcs: dcs::Handler::default(),
+            tmux_viewer: None,
             termio_messaged: false,
             seen_title: false,
             outbox_termio: VecDeque::new(),
@@ -332,7 +326,7 @@ impl TerminalStream {
         st.osc_color_report_format = config.osc_color_report_format;
         st.clipboard_write = config.clipboard_write;
         st.enquiry_response = config.enquiry_response.clone().into_bytes();
-        st.default_cursor_style = cursor_style_from_config(config.cursor_style);
+        st.default_cursor_style = config.cursor_style;
         st.default_cursor_blink = config.cursor_blink;
 
         let mut h = StreamHandler { terminal, st };
@@ -653,11 +647,56 @@ impl StreamHandler<'_> {
 
     fn dcs_command(&mut self, cmd: dcs::Command) {
         match cmd {
-            // TODO(integration): tmux control mode viewer
-            // (`terminal.tmux.Viewer`) is not ported in ghostty-terminal
-            // yet; the events are ignored.
             dcs::Command::Tmux(tmux) => {
-                log::info!("tmux control mode event ignored (viewer not ported): {tmux:?}");
+                use ghostty_terminal::tmux::control::Notification;
+                use ghostty_terminal::tmux::viewer::{Action as ViewerAction, Input};
+
+                log::info!("tmux control mode event cmd={tmux:?}");
+
+                match tmux {
+                    Notification::Enter => {
+                        // Setup our viewer state
+                        assert!(self.st.tmux_viewer.is_none());
+                        self.st.tmux_viewer = Some(Box::new(ghostty_terminal::tmux::Viewer::new()));
+                        return;
+                    }
+
+                    Notification::Exit => {
+                        // Free our viewer state if we have one
+                        self.st.tmux_viewer = None;
+                        return;
+                    }
+
+                    _ => {}
+                }
+
+                let Some(viewer) = self.st.tmux_viewer.as_mut() else {
+                    // This can only really happen if we failed to
+                    // initialize the viewer on enter.
+                    log::info!("received tmux control mode command without viewer: {tmux:?}");
+                    return;
+                };
+
+                let actions = viewer.next(Input::Tmux(tmux));
+                for action in actions {
+                    log::info!("tmux viewer action={action:?}");
+                    match action {
+                        // We ignore this because we will fully exit when
+                        // our DCS connection ends. We may want to handle
+                        // this in the future to notify our GUI we're
+                        // disconnected though.
+                        ViewerAction::Exit => {}
+
+                        ViewerAction::Command(command) => {
+                            assert_eq!(command.last(), Some(&b'\n'));
+                            self.write_req(&command);
+                        }
+
+                        // TODO (Zig has the same TODO): windows are not
+                        // surfaced to the GUI yet.
+                        ViewerAction::Windows(_) => {}
+                    }
+                }
             }
 
             dcs::Command::Xtgettcap(mut gettcap) => {
@@ -2127,7 +2166,7 @@ mod tests {
     fn change_config_updates_default_cursor_and_requests_scheme_report() {
         let mut h = Harness::new();
         let mut cfg = crate::termio::DerivedConfig::new(&ghostty_config::config::Config::default());
-        cfg.cursor_style = ConfigCursorStyle::Underline;
+        cfg.cursor_style = CursorStyle::Underline;
         cfg.cursor_blink = Some(false);
         cfg.enquiry_response = "hi".into();
         h.stream.change_config(&mut h.term, &cfg);
@@ -2168,6 +2207,16 @@ mod tests {
         assert!(h.term.plain_string().unwrap().starts_with('E'));
         h.feed(b"\x1b[2J");
         assert_eq!("", h.term.plain_string().unwrap());
+    }
+
+    #[test]
+    fn dcs_tmux_enter_creates_viewer_and_exit_drops_it() {
+        let mut h = Harness::new();
+        h.feed(b"\x1bP1000p%begin 1 2 3\n%end 1 2 3\n");
+        assert!(h.stream.state.tmux_viewer.is_some());
+        h.feed(b"%exit\n\x1b\\after");
+        assert!(h.stream.state.tmux_viewer.is_none());
+        assert!(h.term.plain_string().unwrap().contains("after"));
     }
 
     #[test]

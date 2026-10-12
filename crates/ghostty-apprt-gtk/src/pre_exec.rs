@@ -1,9 +1,8 @@
 //! Child pre-exec hook for cgroup transitions (port of `apprt/gtk/pre_exec.zig`).
 //!
 //! Runs in the child between fork and exec, so it only reads procfs and
-//! sleeps. The logic is also mirrored by `ghostty-termio`'s `Command`.
-
-use std::time::{Duration, Instant};
+//! sleeps. The wait loop is shared with `ghostty-termio` via
+//! `ghostty_os::cgroup::wait_for_scope`.
 
 use ghostty_config::config::Config;
 use ghostty_config::types_b::{GtkSingleInstance, LinuxCgroup};
@@ -46,34 +45,11 @@ pub fn pre_exec(info: &PreExecInfo) -> Option<u8> {
 
     let pid = std::process::id();
     let expected = cgroup::fmt_scope(pid);
-    let start = Instant::now();
-
-    loop {
-        if start.elapsed() > Duration::from_millis(250) {
-            if info.linux_cgroup_hard_fail {
-                log::error!("transition to new transient systemd scope took too long");
-                return Some(127);
-            }
-            break;
-        }
-
-        if current_scope_matches(pid, &expected) {
-            return None;
-        }
-
-        std::thread::sleep(Duration::from_millis(25));
+    if !ghostty_os::cgroup::wait_for_scope(pid, &expected) && info.linux_cgroup_hard_fail {
+        log::error!("transition to new transient systemd scope took too long");
+        return Some(127);
     }
-
     None
-}
-
-/// True if the final path component of `pid`'s cgroup equals `expected`.
-pub(crate) fn current_scope_matches(pid: u32, expected: &str) -> bool {
-    let Some(raw) = ghostty_os::cgroup::current(pid) else {
-        return false;
-    };
-    raw.rsplit_once('/')
-        .is_some_and(|(_, last)| last == expected)
 }
 
 #[cfg(test)]

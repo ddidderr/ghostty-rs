@@ -128,13 +128,16 @@ mod imp {
         }
 
         #[template_callback]
-        fn reveal_clicked(&self, _button: &gtk::Button) {
-            self.set_blurred(false, false, true);
+        fn reveal_clicked(_button: &gtk::Button, this: &super::ClipboardConfirmationDialog) {
+            // The signal emitter is the button, so the dialog arrives as the
+            // trailing user-data argument (a `&self` receiver would be
+            // matched against the button and panic).
+            this.imp().set_blurred(false, false, true);
         }
 
         #[template_callback]
-        fn hide_clicked(&self, _button: &gtk::Button) {
-            self.set_blurred(true, true, false);
+        fn hide_clicked(_button: &gtk::Button, this: &super::ClipboardConfirmationDialog) {
+            this.imp().set_blurred(true, true, false);
         }
     }
 

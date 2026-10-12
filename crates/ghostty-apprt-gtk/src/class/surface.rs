@@ -32,6 +32,7 @@ use ghostty_input::{Action as KeyAction, Key, KeyEvent, Mods, MouseButton, Mouse
 use ghostty_vt::mouse_shape::MouseShape;
 use ghostty_vt::osc::{ProgressReport, ProgressState};
 use gtk::glib::subclass::Signal;
+use gtk::glib::translate::{FromGlib, IntoGlib};
 use gtk::{gdk, gio, glib};
 
 use crate::class::application::Application;
@@ -650,16 +651,88 @@ impl Surface {
         // scenario we reach this point with im_len > 0 and that's if we
         // received a commit event from the input method. We don't want to
         // keep that state around since we've handled it here.
-        let result = self.key_event_encode(action, &event, &key_event, keyval, keycode, gtk_mods);
+        let result = self.key_event_encode(
+            action,
+            &KeySource::Event {
+                event: &event,
+                key_event: &key_event,
+            },
+            keyval,
+            keycode,
+            gtk_mods,
+        );
         imp.im_buf.borrow_mut().clear();
         result
+    }
+
+    /// Debug input replay (`GHOSTTY_DEBUG_INPUT_SCRIPT`): feed a synthesized
+    /// key event through the same encoding path as [`Surface::key_event`]
+    /// (physical key lookup, keyval translation, modifier translation, then
+    /// `key_callback`). The only part skipped is the input method filter
+    /// (it needs a real `GdkEvent`); text is committed through
+    /// [`Surface::debug_commit_text`] instead.
+    ///
+    /// `keyval`/`keycode`/`state` are what GTK's key controller would pass.
+    pub fn debug_key_event(
+        &self,
+        action: KeyAction,
+        keyval: u32,
+        keycode: u32,
+        state: gdk::ModifierType,
+    ) -> bool {
+        let display = self.imp().gl_area.display();
+        // What `GdkKeyEvent::keyval()/consumed_modifiers()/layout()` would
+        // report for this keycode+state (group 0).
+        let (translated, consumed) = display.translate_key(keycode, state, 0).map_or(
+            (
+                {
+                    // SAFETY: GdkKey wraps a plain keyval integer.
+                    #[allow(unsafe_code)]
+                    unsafe {
+                        gdk::Key::from_glib(keyval)
+                    }
+                },
+                gdk::ModifierType::empty(),
+            ),
+            |t| (t.0, t.3),
+        );
+        let result = self.key_event_encode(
+            action,
+            &KeySource::Synthetic {
+                translated,
+                layout: 0,
+                consumed,
+            },
+            translated.into_glib(),
+            keycode,
+            state,
+        );
+        self.imp().im_buf.borrow_mut().clear();
+        result
+    }
+
+    /// Debug input replay: write the renderer's last frame to `path` (PNG).
+    pub fn debug_screenshot(&self, path: &str) {
+        let Some(core) = self.core() else { return };
+        // The renderer reads back from the GL context.
+        self.imp().gl_area.make_current();
+        self.imp().gl_area.queue_render();
+        match core.write_screenshot(path) {
+            Ok(()) => log::warn!("debug input: wrote screenshot {path}"),
+            Err(err) => log::error!("debug input: screenshot failed: {err}"),
+        }
+    }
+
+    /// Debug input replay: commit text as the input method would (the
+    /// `commit` signal of the IM context), outside of any key event.
+    pub fn debug_commit_text(&self, text: &str) {
+        self.imp().im_context.emit_by_name::<()>("commit", &[&text]);
     }
 
     fn key_event_encode(
         &self,
         action: KeyAction,
-        event: &gdk::Event,
-        key_event: &gdk::KeyEvent,
+        src: &KeySource<'_>,
         keyval: u32,
         keycode: u32,
         gtk_mods: gdk::ModifierType,
@@ -667,9 +740,18 @@ impl Surface {
         let imp = self.imp();
 
         // Get the keyvals for this event.
-        let keyval_unicode: Option<char> = key_event.keyval().to_unicode();
-        let keyval_unicode_unshifted =
-            gtk_key::keyval_unicode_unshifted(&*imp.gl_area, key_event, keycode);
+        let keyval_unicode: Option<char> = match src {
+            KeySource::Event { key_event, .. } => key_event.keyval().to_unicode(),
+            KeySource::Synthetic { translated, .. } => translated.to_unicode(),
+        };
+        let keyval_unicode_unshifted = match src {
+            KeySource::Event { key_event, .. } => {
+                gtk_key::keyval_unicode_unshifted(&*imp.gl_area, key_event, keycode)
+            }
+            KeySource::Synthetic { layout, .. } => {
+                gtk_key::keyval_unicode_unshifted_for_layout(&*imp.gl_area, *layout, keycode)
+            }
+        };
 
         // We want to get the physical unmapped key to process physical
         // keybinds. (These are keybinds explicitly marked as requesting
@@ -699,13 +781,28 @@ impl Surface {
 
         // Get our modifier for the event
         let application = app();
-        let mods: Mods = gtk_key::event_mods(event, physical_key, gtk_mods, action, |dev, m| {
-            application.winproto().event_mods(dev, m)
-        });
+        let device = match src {
+            KeySource::Event { event, .. } => event.device(),
+            KeySource::Synthetic { .. } => imp
+                .gl_area
+                .display()
+                .default_seat()
+                .and_then(|s| s.keyboard()),
+        };
+        let mods: Mods = gtk_key::event_mods_for_device(
+            device.as_ref(),
+            physical_key,
+            gtk_mods,
+            action,
+            |dev, m| application.winproto().event_mods(dev, m),
+        );
 
         // Get our consumed modifiers
-        let consumed_mods: Mods =
-            gtk_key::translate_mods(key_event.consumed_modifiers() & gdk::MODIFIER_MASK);
+        let consumed = match src {
+            KeySource::Event { key_event, .. } => key_event.consumed_modifiers(),
+            KeySource::Synthetic { consumed, .. } => *consumed,
+        };
+        let consumed_mods: Mods = gtk_key::translate_mods(consumed & gdk::MODIFIER_MASK);
 
         // If we have no UTF-8 text, we try to convert our keyval to
         // a text value. We have to do this because GTK will not process
@@ -1756,6 +1853,20 @@ fn mouse_shape_from_i32(v: i32) -> MouseShape {
 /// to [0, 100].
 fn compute_fraction(progress: u8) -> f64 {
     f64::from(progress.min(100)) / 100.0
+}
+
+/// Where the data for the key encoding path comes from: a real GDK key event
+/// or a synthesized one (debug input replay).
+enum KeySource<'a> {
+    Event {
+        event: &'a gdk::Event,
+        key_event: &'a gdk::KeyEvent,
+    },
+    Synthetic {
+        translated: gdk::Key,
+        layout: u32,
+        consumed: gdk::ModifierType,
+    },
 }
 
 // ---------------------------------------------------------------------

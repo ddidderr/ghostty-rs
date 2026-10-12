@@ -6,6 +6,7 @@ pub mod app;
 pub mod cgroup;
 pub mod class;
 pub mod css;
+pub mod debug_input;
 pub mod ext;
 pub mod flatpak;
 pub mod gl;
