@@ -96,7 +96,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z19 | freetype-only font backend feature + register omissions | sonnet | ✅ | 3577 tests |
 | RV17 | confirmation Codex verification (clean HEAD) | codex astra | ✅ | RV16 resolved; 6 P3 (Apple freetype, test defect, 3 inspector, Metal alloc register) → Z20 |
 | Z20 | RV17 P3 items | sonnet | ✅ | 3582 tests; fix-deviant(renderer) |
-| RV18 | confirmation Codex verification (clean HEAD) | codex astra | 🟨 | |
+| RV18 | FINAL audit round (stopping criterion) | codex astra | ✅ | RV17 6/6 resolved; fix: input-reachable assert (P2), FreeBSD build (P2), 2 resource-dir issues, 3 register rows; P3 nits → KNOWN_DIFFERENCES |
+| Z21 | final fix pass + KNOWN_DIFFERENCES.md | sonnet | 🟨 | last code change before close-out |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -149,3 +150,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Z19 committed (feat(font) + fix-deviant(os)). RV17 running.
 - 2026-10-12: RV17 (Codex needed defensive framing after a false-positive cyber flag) → Z20.
 - 2026-10-12: Z20 committed (parity + fix-deviant(renderer)). RV18 running.
+- 2026-10-12: User: avoid endless review loop → stopping criterion: RV18 is the final audit; Z21 final fixes; P3 nits recorded, not chased.
