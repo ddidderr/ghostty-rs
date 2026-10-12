@@ -12,6 +12,31 @@ const DELIMITER: char = ';';
 #[cfg(not(windows))]
 const DELIMITER: char = ':';
 
+/// Uppercase one UTF-16 code unit like Windows' `RtlUpcaseUnicodeChar`
+/// (Unicode simple case mapping, per unit): surrogate halves and characters
+/// whose uppercase is not a single BMP code unit are unchanged.
+fn upcase_unit(u: u16) -> u16 {
+    let Some(c) = char::from_u32(u32::from(u)) else {
+        return u; // lone surrogate half
+    };
+    let mut up = c.to_uppercase();
+    match (up.next(), up.next()) {
+        (Some(m), None) => u16::try_from(u32::from(m)).unwrap_or(u),
+        _ => u,
+    }
+}
+
+/// The comparison form of an environment key on Windows: its WTF-16 code
+/// units, uppercased per unit. Never lossy: distinct lone surrogates stay
+/// distinct.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn windows_key(key: &OsStr) -> Vec<u16> {
+    crate::osbytes::wtf8_to_wide(&crate::osbytes::os_bytes(key))
+        .into_iter()
+        .map(upcase_unit)
+        .collect()
+}
+
 /// A byte-preserving environment map (Zig `std.process.EnvMap`): keys and
 /// values are arbitrary OS strings, never required to be UTF-8.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,10 +53,10 @@ impl EnvMap {
     /// itself.
     #[cfg(windows)]
     fn canonical_key<'a>(&'a self, key: &'a OsStr) -> Cow<'a, OsStr> {
-        let want = key.to_string_lossy().to_ascii_uppercase();
+        let want = windows_key(key);
         self.0
             .keys()
-            .find(|k| k.to_string_lossy().to_ascii_uppercase() == want)
+            .find(|k| windows_key(k) == want)
             .map_or(Cow::Borrowed(key), |k| Cow::Borrowed(k.as_os_str()))
     }
 
@@ -369,6 +394,47 @@ mod tests {
                 assert_eq!(getenv_not_empty("GHOSTTY_RS_T2").unwrap(), "v");
                 assert_eq!(getenv_not_empty("GHOSTTY_RS_NOPE"), None);
             },
+        );
+    }
+}
+
+#[cfg(test)]
+mod windows_key_tests {
+    use super::*;
+
+    fn key(units: &[u16]) -> Vec<u16> {
+        units.iter().copied().map(upcase_unit).collect()
+    }
+
+    #[test]
+    fn upcase_is_unicode_simple_per_unit() {
+        assert_eq!(upcase_unit(u16::from(b'a')), u16::from(b'A'));
+        assert_eq!(upcase_unit(0x00E9), 0x00C9); // e acute
+        assert_eq!(upcase_unit(0x03C9), 0x03A9); // omega
+        assert_eq!(upcase_unit(0x00DF), 0x00DF); // sharp s has no simple upper
+        assert_eq!(upcase_unit(0xD800), 0xD800);
+        assert_eq!(upcase_unit(0xDFFF), 0xDFFF);
+    }
+
+    #[test]
+    fn non_ascii_case_keys_are_equal() {
+        assert_eq!(key(&[0xE9, 0x61]), key(&[0xC9, 0x41]));
+    }
+
+    #[test]
+    fn distinct_lone_surrogate_keys_stay_distinct() {
+        assert_ne!(key(&[0x41, 0xD800]), key(&[0x41, 0xD801]));
+        assert_ne!(key(&[0xD800]), key(&[0xFFFD]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn windows_key_of_os_str_is_wtf16() {
+        use std::os::unix::ffi::OsStrExt;
+        // Unix OsStr "Aé" in UTF-8.
+        assert_eq!(
+            windows_key(OsStr::from_bytes("a\u{e9}".as_bytes())),
+            vec![0x41, 0xC9]
         );
     }
 }

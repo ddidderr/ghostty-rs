@@ -583,6 +583,17 @@ fn write_thread_main(handle: &OwnedHandle, rx: &Receiver<Vec<u8>>) {
 //-------------------------------------------------------------------------
 // Subprocess
 
+/// Insert the config `env` overrides, decoding the encoded key/value text
+/// to OS strings (WTF-16 on Windows) like the Unix implementation.
+fn apply_env_overrides(env: &mut EnvMap, overrides: &RepeatableStringMap) {
+    for (k, v) in overrides.iter() {
+        env.insert(
+            ghostty_os::osbytes::config_str_to_os(k),
+            ghostty_os::osbytes::config_str_to_os(v),
+        );
+    }
+}
+
 struct Subprocess {
     cwd: Option<EncodedOs>,
     env: Option<EnvMap>,
@@ -687,9 +698,7 @@ impl Subprocess {
         };
 
         // Add the environment variables that override any others.
-        for (k, v) in cfg.env_override.iter() {
-            env.insert(k, v);
-        }
+        apply_env_overrides(&mut env, &cfg.env_override);
 
         // Build our args list. If we fail to find the shell, we'd still like
         // to try to run something so Ghostty can launch.
@@ -926,6 +935,27 @@ pub fn exec_command(command: &ConfigCommand, windir: Option<&str>) -> Result<Vec
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn env_overrides_are_decoded() {
+        use std::os::windows::ffi::OsStringExt;
+
+        use ghostty_config::cli_args::ConfigField;
+
+        // A lone surrogate (escaped) value and a literal U+FDD0 key.
+        let lone = EncodedOs::from_wide(&[0x61, 0xD800]).into_encoded();
+        let lit = EncodedOs::from_plain_text("K\u{fdd0}").into_encoded();
+        let mut m = RepeatableStringMap::default();
+        m.parse_cli(Some(&format!("A={lone}"))).unwrap();
+        m.parse_cli(Some(&format!("{lit}=v"))).unwrap();
+        let mut env = EnvMap::new();
+        super::apply_env_overrides(&mut env, &m);
+        assert_eq!(
+            env.get("A").unwrap(),
+            std::ffi::OsString::from_wide(&[0x61, 0xD800])
+        );
+        assert_eq!(env.get("K\u{fdd0}").unwrap(), "v");
+    }
+
     #[test]
     fn terminfo_dir_is_sibling_of_resources_and_lossless() {
         use std::os::windows::ffi::{OsStrExt, OsStringExt};

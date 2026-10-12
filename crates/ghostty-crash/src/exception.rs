@@ -39,6 +39,13 @@ impl MachException {
     }
 }
 
+/// Whether the timed receive of the abort reply succeeded
+/// (`KERN_SUCCESS`); on timeout or error the caller must fall back to the
+/// signal-path report.
+pub(crate) fn abort_reply_ok(kr: i32) -> bool {
+    kr == 0
+}
+
 /// Wire layout of the abort request after the 24 byte Mach header:
 /// `thread: u32`, `signo: i32` (native endian).
 pub(crate) const ABORT_BODY_LEN: usize = 8;
@@ -78,6 +85,14 @@ fn kern_name(code: i64) -> Option<&'static str> {
 }
 
 impl MachException {
+    /// The subcode recorded in the minidump exception information: kept for
+    /// `EXC_BAD_ACCESS` (fault address) and for `EXC_SOFTWARE` /
+    /// `EXC_SOFT_SIGNAL` (the signal number).
+    pub(crate) fn minidump_subcode(&self) -> Option<u64> {
+        (self.kind == EXC_BAD_ACCESS || (self.kind == EXC_SOFTWARE && self.code == EXC_SOFT_SIGNAL))
+            .then_some(self.subcode as u64)
+    }
+
     /// `EXC_BAD_ACCESS`, ...
     pub(crate) fn name(&self) -> &'static str {
         match self.kind {
@@ -312,6 +327,30 @@ mod tests {
         let mut s = String::new();
         e.describe(&mut s);
         assert_eq!(s, "EXC_SOFTWARE (code=0x10003, subcode=0x6)");
+    }
+
+    #[test]
+    fn soft_signal_subcode_is_kept_for_minidump() {
+        assert_eq!(MachException::from_signal(6).minidump_subcode(), Some(6));
+        let bad = MachException {
+            kind: EXC_BAD_ACCESS,
+            code: 1,
+            subcode: 0x10,
+        };
+        assert_eq!(bad.minidump_subcode(), Some(0x10));
+        let other = MachException {
+            kind: EXC_SOFTWARE,
+            code: 1,
+            subcode: 9,
+        };
+        assert_eq!(other.minidump_subcode(), None);
+    }
+
+    #[test]
+    fn abort_reply_timeout_or_error_is_failure() {
+        assert!(abort_reply_ok(0));
+        assert!(!abort_reply_ok(0x10004003)); // MACH_RCV_TIMED_OUT
+        assert!(!abort_reply_ok(5));
     }
 
     #[test]

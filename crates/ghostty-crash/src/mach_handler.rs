@@ -460,7 +460,7 @@ pub(crate) fn request_abort_dump(signo: libc::c_int) -> bool {
     // suspension before replying). Bounded, in case the dump hangs.
     let mut buf = Buffer([0; 1024]);
     // SAFETY: `buf` is a writable 1024 byte aligned buffer.
-    unsafe {
+    let received = unsafe {
         mach_msg(
             buf.0.as_mut_ptr().cast(),
             MACH_RCV_MSG | MACH_RCV_TIMEOUT,
@@ -469,9 +469,11 @@ pub(crate) fn request_abort_dump(signo: libc::c_int) -> bool {
             reply,
             ABORT_WAIT_MS,
             MACH_PORT_NULL,
-        );
-    }
-    true
+        )
+    };
+    // Timeout or error: the report was not confirmed, so the caller falls
+    // back to the signal-path report.
+    exception::abort_reply_ok(received)
 }
 
 fn write_report(
@@ -508,7 +510,7 @@ fn write_report(
         exception: Some(ExceptionInfo {
             kind: ex.kind,
             code: ex.code as u64,
-            subcode: (ex.kind == exception::EXC_BAD_ACCESS).then_some(ex.subcode as u64),
+            subcode: ex.minidump_subcode(),
         }),
     };
     let dump = MinidumpWriter::with_crash_context(cc).dump(&mut Cursor::new(Vec::new()));

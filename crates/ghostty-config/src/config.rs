@@ -3811,6 +3811,13 @@ impl Default for Config {
     }
 }
 
+/// The default shell command for a raw `SHELL` environment value: the OS
+/// bytes are carried as encoded command text (so non-UTF-8 bytes and a
+/// literal U+FDD0 round-trip exactly, like Zig's byte slice).
+fn shell_from_env(value: &std::ffi::OsStr) -> Command {
+    Command::Shell(ghostty_os::osbytes::EncodedOs::from_os(value).into_encoded())
+}
+
 impl Config {
     /// The value of the config key in the form the C API exposes it (Zig:
     /// `c_get.get`). `None` if there is no such key.
@@ -4618,9 +4625,10 @@ impl Config {
             // If we were launched from the desktop, our SHELL env var
             // will represent our SHELL at login time. We only want to
             // read from SHELL if we're in a probable CLI environment.
-            if let Ok(value) = std::env::var("SHELL") {
-                log::info!("default shell source=env value={value}");
-                self.command = Some(Command::Shell(value));
+            if let Some(value) = std::env::var_os("SHELL") {
+                let value = shell_from_env(&value);
+                log::info!("default shell source=env value={value:?}");
+                self.command = Some(value);
 
                 // If we don't need the working directory, then we can exit now.
                 if *wd != WorkingDirectory::Home {
@@ -4963,6 +4971,26 @@ impl CliTarget for Config {
     clippy::assert_is_empty
 )]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn shell_from_env_round_trips_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        for raw in [
+            b"/bin/sh\xff".as_slice(),
+            "/bin/a\u{fdd0}b".as_bytes(),
+            b"/bin/zsh",
+        ] {
+            let Command::Shell(text) = shell_from_env(std::ffi::OsStr::from_bytes(raw)) else {
+                panic!("not a shell command");
+            };
+            assert_eq!(ghostty_os::osbytes::config_str_to_bytes(&text), raw);
+        }
+        let Command::Shell(plain) = shell_from_env(std::ffi::OsStr::new("/bin/zsh")) else {
+            panic!()
+        };
+        assert_eq!(plain, "/bin/zsh");
+    }
+
     #[cfg(unix)]
     #[test]
     fn config_template_written_at_non_utf8_path() {

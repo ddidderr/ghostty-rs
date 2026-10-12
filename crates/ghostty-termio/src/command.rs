@@ -240,16 +240,19 @@ const DEFAULT_PATH: &str = "/usr/local/bin:/bin/:/usr/bin";
 /// if it contains a slash, otherwise `<dir>/<file>` per PATH entry (an empty
 /// entry means the current directory).
 #[cfg(any(target_vendor = "apple", test))]
-fn exec_candidates(file: &str, path_env: Option<&str>) -> Vec<String> {
-    if file.contains('/') {
-        return vec![file.to_owned()];
+fn exec_candidates(file: &[u8], path_env: Option<&[u8]>) -> Vec<Vec<u8>> {
+    if file.contains(&b'/') {
+        return vec![file.to_vec()];
     }
     path_env
-        .unwrap_or(DEFAULT_PATH)
-        .split(':')
+        .unwrap_or(DEFAULT_PATH.as_bytes())
+        .split(|b| *b == b':')
         .map(|dir| {
-            let dir = if dir.is_empty() { "." } else { dir };
-            format!("{dir}/{file}")
+            let dir = if dir.is_empty() { b".".as_slice() } else { dir };
+            let mut c = dir.to_vec();
+            c.push(b'/');
+            c.extend_from_slice(file);
+            c
         })
         .collect()
 }
@@ -295,10 +298,15 @@ impl Command {
                 .collect::<Result<_, _>>()?,
         };
         #[cfg(target_vendor = "apple")]
-        let candidates = exec_candidates(&self.path, std::env::var("PATH").ok().as_deref())
-            .into_iter()
-            .map(|c| CString::new(config_str_to_bytes(&c)))
-            .collect::<Result<Vec<_>, _>>()?;
+        let candidates = exec_candidates(
+            &config_str_to_bytes(&self.path),
+            std::env::var_os("PATH")
+                .map(|p| ghostty_os::osbytes::os_bytes(&p))
+                .as_deref(),
+        )
+        .into_iter()
+        .map(CString::new)
+        .collect::<Result<Vec<_>, _>>()?;
         Ok(Prepared {
             path,
             argv,
@@ -1035,15 +1043,29 @@ mod tests {
 
     #[test]
     fn exec_candidates_search_path() {
-        assert_eq!(exec_candidates("/bin/sh", Some("/x")), ["/bin/sh"]);
-        assert_eq!(exec_candidates("a/b", None), ["a/b"]);
+        let c = |f: &str, p: Option<&str>| {
+            exec_candidates(f.as_bytes(), p.map(str::as_bytes))
+                .into_iter()
+                .map(|v| String::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(c("/bin/sh", Some("/x")), ["/bin/sh"]);
+        assert_eq!(c("a/b", None), ["a/b"]);
         assert_eq!(
-            exec_candidates("sh", Some("/usr/bin::/bin")),
+            c("sh", Some("/usr/bin::/bin")),
             ["/usr/bin/sh", "./sh", "/bin/sh"]
         );
         assert_eq!(
-            exec_candidates("sh", None),
+            c("sh", None),
             ["/usr/local/bin/sh", "/bin//sh", "/usr/bin/sh"]
         );
+    }
+
+    #[test]
+    fn exec_candidates_keep_raw_path_bytes() {
+        // Non-UTF-8 PATH bytes and a literal U+FDD0 are used verbatim.
+        let c = exec_candidates(b"sh", Some(b"/a\xff:/b\xef\xb7\x90x"));
+        assert_eq!(c[0], b"/a\xff/sh");
+        assert_eq!(c[1], b"/b\xef\xb7\x90x/sh");
     }
 }

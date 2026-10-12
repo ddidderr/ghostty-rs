@@ -59,9 +59,9 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
         Config::load()?
     };
 
-    let text = format_config(&config, &opts)?;
+    let text = format_config_bytes(&config, &opts)?;
     let mut stdout = std::io::stdout().lock();
-    stdout.write_all(text.as_bytes())?;
+    stdout.write_all(&text)?;
     stdout.flush()?;
     Ok(0)
 }
@@ -76,6 +76,16 @@ pub fn format_config(config: &Config, opts: &Options) -> Result<String, Error> {
     let mut out = String::new();
     fmt.format(&mut out)?;
     Ok(out)
+}
+
+/// Like [`format_config`] but the original bytes: the config layer holds OS
+/// data in the reversible escape encoding, and Zig writes the raw bytes, so
+/// export + reload reproduces the same value. Plain UTF-8 output is
+/// unchanged.
+pub fn format_config_bytes(config: &Config, opts: &Options) -> Result<Vec<u8>, Error> {
+    Ok(ghostty_os::osbytes::config_str_to_bytes(&format_config(
+        config, opts,
+    )?))
 }
 
 #[cfg(test)]
@@ -101,6 +111,29 @@ mod tests {
         let s = format_config(&config, &opts).unwrap();
         assert!(s.contains("# The font families to use."));
         assert!(s.contains("\nfont-size = 12\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn show_config_round_trips_non_utf8_and_fdd0_paths() {
+        use ghostty_os::osbytes::EncodedOs;
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a.conf");
+        let raw: &[u8] = b"custom-shader = /tmp/a\xff\xef\xb7\x90b\n";
+        std::fs::write(&first, raw).unwrap();
+        let mut cfg = Config::new_default();
+        cfg.load_file(&EncodedOs::from_path(&first)).unwrap();
+        let opts = Options::default();
+        let out = format_config_bytes(&cfg, &opts).unwrap();
+        assert_eq!(out, raw);
+
+        // Reload the exported bytes: same value.
+        let second = dir.path().join("b.conf");
+        std::fs::write(&second, &out).unwrap();
+        let mut cfg2 = Config::new_default();
+        cfg2.load_file(&EncodedOs::from_path(&second)).unwrap();
+        assert_eq!(cfg.custom_shader, cfg2.custom_shader);
+        assert_eq!(format_config_bytes(&cfg2, &opts).unwrap(), raw);
     }
 
     #[test]
