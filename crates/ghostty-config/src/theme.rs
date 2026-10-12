@@ -160,107 +160,51 @@ fn zig_basename(path: &str) -> &str {
     }
 }
 
-/// `std.fs.path.basenamePosix`: the last `ComponentIterator` component.
-/// `.` and `..` are ordinary names.
+/// `std.fs.path.basenamePosix` (Zig 0.15.2). `.` and `..` are ordinary names.
 fn basename_posix(path: &str) -> &str {
-    let root_len = usize::from(path.as_bytes().first() == Some(&b'/'));
-    basename_inner(path, root_len, |b| b == b'/')
+    basename_impl(path, |b, _| b == b'/')
 }
 
-/// `std.fs.path.basenameWindows`.
+/// `std.fs.path.basenameWindows` (Zig 0.15.2): `/` and `\\` separate, and a
+/// `:` at byte index 1 ends a drive designator of any first byte (`1:theme`
+/// is `theme`).
 fn basename_windows(path: &str) -> &str {
-    basename_inner(path, parse_path_windows_root_len(path), |b| {
-        b == b'/' || b == b'\\'
+    basename_impl(path, |b, i| {
+        b == b'/' || b == b'\\' || (b == b':' && i == 1)
     })
 }
 
-/// `ComponentIterator.init` + `last()`: skip the root and any separators after
-/// it, then take the last component (empty if there is none).
-fn basename_inner(path: &str, root_len: usize, is_sep: impl Fn(u8) -> bool) -> &str {
+/// The shared loop of both Zig functions. `is_stop(byte, index)` is true for
+/// separators (and, on Windows, the drive colon).
+fn basename_impl(path: &str, is_stop: impl Fn(u8, usize) -> bool) -> &str {
     let bytes = path.as_bytes();
-    let mut root_end_index = root_len;
-    for &c in &bytes[root_len..] {
-        if !is_sep(c) {
-            break;
-        }
-        root_end_index += 1;
+    if bytes.is_empty() {
+        return "";
     }
-    let mut end = bytes.len();
+    // Trailing separators (a drive colon at index 1 ends the path: empty).
+    let mut end_index = bytes.len() - 1;
     loop {
-        if end == root_end_index {
-            return "";
-        }
-        if !is_sep(bytes[end - 1]) {
-            break;
-        }
-        end -= 1;
-    }
-    let mut start = end;
-    while start != root_end_index && !is_sep(bytes[start - 1]) {
-        start -= 1;
-    }
-    &path[start..end]
-}
-
-/// `std.fs.path.parsePathWindows(u8, path).root.len` (with
-/// `getWin32PathType`; the path is WTF-8 so the drive letter is one whole code
-/// point of at most three bytes, like `RtlDetermineDosPathNameType_U`).
-fn parse_path_windows_root_len(path: &str) -> usize {
-    let b = path.as_bytes();
-    let sep = |c: u8| c == b'/' || c == b'\\';
-    let Some(&first) = b.first() else {
-        return 0; // relative
-    };
-    if sep(first) {
-        // \x
-        if b.len() < 2 || !sep(b[1]) {
-            return 1; // rooted
-        }
-        // \\. or \\?
-        if b.len() > 2 && (b[2] == b'.' || b[2] == b'?') {
-            // exactly \\. or \\? with nothing trailing
-            if b.len() == 3 {
-                return b.len(); // root_local_device
+        let byte = bytes[end_index];
+        if is_stop(byte, end_index) {
+            // Zig's Windows loop only skips real separators; the colon case
+            // returns empty at once, which is the same as skipping to 0.
+            if byte == b':' || end_index == 0 {
+                return "";
             }
-            // \\.\x or \\?\x
-            if sep(b[3]) {
-                return 4; // local_device
-            }
+            end_index -= 1;
+            continue;
         }
-        // \\x: UNC absolute (`parseUNC`)
-        let Some(server_end) = b[2..].iter().position(|&c| sep(c)).map(|i| i + 2) else {
-            return b.len();
-        };
-        // Any number of separators may sit between the server and the share.
-        let share_start =
-            server_end + 1 + b[server_end + 1..].iter().take_while(|&&c| sep(c)).count();
-        if share_start == b.len() {
-            // No share: the share is the empty slice right after the server
-            // separator.
-            return server_end + 1;
+        break;
+    }
+    let mut start_index = end_index;
+    end_index += 1;
+    while !is_stop(bytes[start_index], start_index) {
+        if start_index == 0 {
+            return &path[..end_index];
         }
-        let share_end = b[share_start..]
-            .iter()
-            .position(|&c| sep(c))
-            .map_or(b.len(), |i| i + share_start);
-        // `sep_after_share` adds one more.
-        return share_end + usize::from(share_end != b.len());
+        start_index -= 1;
     }
-    // Drive letter: a code point of 1..=3 bytes followed by ':'.
-    let colon_i = match first {
-        0x00..=0x7f => 1,
-        0xc2..=0xdf => 2,
-        0xe0..=0xef => 3,
-        _ => return 0, // invalid or 4-byte sequence: relative
-    };
-    if b.len() < colon_i + 1 || b[colon_i] != b':' {
-        return 0; // relative
-    }
-    if b.len() > colon_i + 1 && sep(b[colon_i + 1]) {
-        colon_i + 2 // drive_absolute
-    } else {
-        colon_i + 1 // drive_relative
-    }
+    &path[start_index + 1..end_index]
 }
 
 /// Open the given named theme. If there are any errors then messages
@@ -461,26 +405,12 @@ mod tests {
             ("C:basename.ext", "basename.ext"),
             ("C:basename.ext\\", "basename.ext"),
             ("C:basename.ext\\\\", "basename.ext"),
-            ("\\\\.", ""),
-            ("\\\\.\\", ""),
-            ("\\\\.\\basename.ext", "basename.ext"),
-            ("\\\\?", ""),
-            ("\\\\?\\", ""),
-            ("\\\\?\\basename.ext", "basename.ext"),
             ("C:foo", "foo"),
             ("file:stream", "file:stream"),
             // Non-letter drive designators are drive roots too (the
             // RV13 finding): `1:theme` is `theme`, not the whole name.
             ("1:theme", "theme"),
             ("1:", ""),
-            ("\u{3bb}:theme", "theme"),
-            ("\u{20ac}:\\theme", "theme"),
-            // UNC roots.
-            ("//a", ""),
-            ("//a/b", ""),
-            ("//a/b/c", "c"),
-            ("\\\\server\\\\share\\file", "file"),
-            ("//", ""),
         ] {
             assert_eq!(basename_windows(input), expected, "{input:?}");
         }

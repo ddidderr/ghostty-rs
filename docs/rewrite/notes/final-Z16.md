@@ -27,16 +27,14 @@ channel, explicit value kept. `+show-config` for this tip build prints `tip` lik
   (Fixed a test-only pid-file collision between suites.)
 
 ## 3. Windows zig_error
-Installed Zig std is 0.16 (not 0.15.2) so the table follows 0.15.2 `windows.OpenFile` from knowledge of
-its NTSTATUS arms, translated to Win32 codes (see the doc table in `os/zig_error.rs`): sharing violation,
+/usr/lib/zig/std is 0.16; the real 0.15.2 std is at `target/zig-0.15.2/.../lib/std`. The table follows 0.15.2 `windows.OpenFile`'s NTSTATUS arms (verified), translated to Win32 codes (see the doc table in `os/zig_error.rs`): sharing violation,
 access denied, user-mapped-file -> AccessDenied; invalid name -> BadPathName; BAD_NETPATH/BAD_NET_NAME ->
 NetworkNotFound; NOT_READY -> NoDevice; PIPE_BUSY -> PipeBusy; ALREADY_EXISTS -> PathAlreadyExists;
 ERROR_DIRECTORY -> NotDir; 206 -> NameTooLong. Removed CreateProcess-only entries (FileBusy, InvalidName,
 InvalidExe, SystemResources, NoSpaceLeft) which file opens never produce (Unexpected). Table is a
-host-independent fn so it is tested on Linux. Caveat: 0.16 retries sharing violations then FileBusy; the
-oracle is 0.15.2 behaviour (AccessDenied), as requested.
+host-independent fn so it is tested on Linux. (FILE_IS_A_DIRECTORY -> IsDir is unobservable: Win32 reports it as ERROR_ACCESS_DENIED.)
 
 ## 4. basename
-`config/theme.rs`: exact `ComponentIterator` + `parsePathWindows` port (`basename_windows`, `basename_posix`):
-any 1-3 byte code point + `:` is a drive root (so `1:theme` -> `theme`), UNC/local-device roots. Tests
-include all `testBasenameWindows` cases from Zig std.
+`config/theme.rs`: exact port of 0.15.2 `basenamePosix`/`basenameWindows` (a `:` at byte index 1 ends the drive designator
+for any first byte, so `1:theme` -> `theme`). Tests include the 0.15.2 `testBasenameWindows` cases.
+(An earlier draft ported 0.16's ComponentIterator version; replaced.)
