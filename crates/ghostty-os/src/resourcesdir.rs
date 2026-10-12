@@ -48,8 +48,12 @@ impl ResourcesDir {
 
 /// Sentinels we look for in the path to know we've found the resources
 /// directory (Linux).
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(not(any(windows, target_os = "macos", target_os = "freebsd")))]
 const SENTINELS: [&str; 2] = ["terminfo/g/ghostty", "terminfo/x/xterm-ghostty"];
+
+/// Sentinels on FreeBSD (`site-terminfo`, like Zig).
+#[cfg(target_os = "freebsd")]
+const SENTINELS: [&str; 2] = ["site-terminfo/g/ghostty", "site-terminfo/x/xterm-ghostty"];
 
 /// Sentinel on macOS (terminfo directories are named by hex there).
 #[cfg(target_os = "macos")]
@@ -66,12 +70,14 @@ const DEV_SENTINELS: [&str; 1] = ["terminfo/x/xterm-ghostty"];
 /// Gets the directory to the bundled resources directory, if it
 /// exists (not all platforms or packages have it).
 ///
-/// Zig's `builtin.mode == .Debug` is mapped to `cfg!(debug_assertions)`.
+/// Zig's `builtin.mode == .Debug` is mapped to the Cargo `dev` profile
+/// (`cfg(ghostty_debug_build)`, set by `build.rs`), not to `debug_assertions`:
+/// the repository's `release` profile enables assertions like ReleaseSafe.
 pub fn resources_dir() -> io::Result<ResourcesDir> {
     let exe = std::env::current_exe().ok();
     let env = std::env::var_os("GHOSTTY_RESOURCES_DIR");
     Ok(resources_dir_impl(
-        cfg!(debug_assertions),
+        cfg!(ghostty_debug_build),
         exe.as_deref(),
         env,
     ))
@@ -112,9 +118,14 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<OsString>) ->
             }
         }
 
-        // We look for a /usr/share style path.
+        // We look for a /usr/share style path (/usr/local/share on FreeBSD).
+        let share = if cfg!(target_os = "freebsd") {
+            "local/share"
+        } else {
+            "share"
+        };
         for sentinel in SENTINELS {
-            if let Some(v) = maybe_dir_os(dir, "share", sentinel) {
+            if let Some(v) = maybe_dir_os(dir, share, sentinel) {
                 return ResourcesDir {
                     app_path: Some(enc(&v.join("ghostty"))),
                     host_path: None,

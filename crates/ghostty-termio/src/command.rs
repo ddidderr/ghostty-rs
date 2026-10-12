@@ -546,18 +546,36 @@ fn execvpe(prep: &Prepared, argv: &[*const c_char], envp: &[*const c_char]) -> E
     })
 }
 
-#[cfg(not(target_vendor = "apple"))]
+#[cfg(not(any(
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "android"
+)))]
 #[allow(unsafe_code)]
 fn errno_now() -> i32 {
     // SAFETY: __errno_location returns a valid thread-local pointer.
     unsafe { *libc::__errno_location() }
 }
 
-#[cfg(target_vendor = "apple")]
+#[cfg(any(
+    target_vendor = "apple",
+    target_os = "freebsd",
+    target_os = "dragonfly"
+))]
 #[allow(unsafe_code)]
 fn errno_now() -> i32 {
     // SAFETY: __error returns a valid thread-local pointer.
     unsafe { *libc::__error() }
+}
+
+#[cfg(any(target_os = "openbsd", target_os = "netbsd", target_os = "android"))]
+#[allow(unsafe_code)]
+fn errno_now() -> i32 {
+    // SAFETY: __errno returns a valid thread-local pointer.
+    unsafe { *libc::__errno() }
 }
 
 fn write_stderr(msg: &[u8]) {
