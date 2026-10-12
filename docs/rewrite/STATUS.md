@@ -86,7 +86,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | VP | visual pixel parity vs installed Ghostty (nested weston captures, diff, fix) | sonnet | ✅ | 0.020% px diff on test page; tabs/splits/chrome bit-identical |
 | RV12 | final Codex verification (clean HEAD) | codex astra | ✅ | RV11 3/3 resolved; 3 P3 left → Z15 |
 | Z15 | P3: per-platform errno names, dot theme diag, z2d stroker port (pixel identity) | sonnet | ✅ | 0 differing pixels vs Ghostty; 3498 tests |
-| RV13 | final Codex verification (clean HEAD) | codex astra | 🟨 | |
+| RV13 | final Codex verification (clean HEAD) | codex astra | ✅ | RV12 3/3 resolved; 4 P3 → Z16 |
+| Z16 | update-channel default, async-backend epoll/io_uring, Windows error map + basename | sonnet | 🟨 | |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
