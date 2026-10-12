@@ -84,7 +84,11 @@ pub fn os_from_bytes(b: Vec<u8>) -> OsString {
 
 #[cfg(not(unix))]
 pub fn os_from_bytes(b: Vec<u8>) -> OsString {
-    OsString::from(String::from_utf8_lossy(&b).into_owned())
+    // Windows OS strings are WTF-16; valid UTF-8 converts losslessly and is
+    // reused without copying, anything else is replaced like Zig's utf8ToUtf16.
+    OsString::from(
+        String::from_utf8(b).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    )
 }
 
 /// OS string to reversible `String` (see the module docs).

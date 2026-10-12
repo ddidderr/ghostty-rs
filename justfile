@@ -28,11 +28,11 @@ fix: _fix fmt
 # Build libghostty-vt (C ABI, include/ghostty/vt.h) as target/<profile>/libghostty-vt.{so,a}
 # and, if the target is installed, target/wasm32-unknown-unknown/<profile>/ghostty-vt.wasm.
 vt-lib profile="release":
-    cargo build -p ghostty-vt-capi --profile {{profile}}
-    cp target/{{profile}}/libghostty_vt_capi.so target/{{profile}}/libghostty-vt.so
-    cp target/{{profile}}/libghostty_vt_capi.a target/{{profile}}/libghostty-vt.a
-    cargo build -p ghostty-vt-capi --profile {{profile}} --target wasm32-unknown-unknown
-    cp target/wasm32-unknown-unknown/{{profile}}/ghostty_vt_capi.wasm target/wasm32-unknown-unknown/{{profile}}/ghostty-vt.wasm
+    cargo build -p ghostty-vt-capi --profile {{ profile }}
+    cp target/{{ profile }}/libghostty_vt_capi.so target/{{ profile }}/libghostty-vt.so
+    cp target/{{ profile }}/libghostty_vt_capi.a target/{{ profile }}/libghostty-vt.a
+    cargo build -p ghostty-vt-capi --profile {{ profile }} --target wasm32-unknown-unknown
+    cp target/wasm32-unknown-unknown/{{ profile }}/ghostty_vt_capi.wasm target/wasm32-unknown-unknown/{{ profile }}/ghostty-vt.wasm
 
 # Run the libghostty-vt ABI check and the C/wasm example tests.
 vt-test:
@@ -107,7 +107,7 @@ locales OUT="target/locale":
 #                   (dev, release) installs the "-debug" application id
 #                   (com.mitchellh.ghostty-debug, "Ghostty (Debug)"), which is
 #                   the id the binary uses at runtime when built with debug
-#                   assertions.
+# assertions.
 install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="production": build-data docs locales
     #!/usr/bin/env bash
     set -euo pipefail
@@ -253,3 +253,20 @@ dist:
 # `zig build distcheck`).
 distcheck: dist
     scripts/dist.sh --check
+
+# Compile-check (clippy -D warnings) the macOS code paths from Linux.
+check-macos target="aarch64-apple-darwin":
+    scripts/macos-crosscheck.sh clippy {{ target }}
+
+# Compile-check (clippy -D warnings) the Windows code paths from Linux.
+check-windows:
+    scripts/windows-crosscheck.sh
+
+# Build, lint and test the wasm32 targets.
+check-wasm:
+    scripts/wasm-check.sh
+
+# Everything: native gate plus all cross-platform checks.
+check-all: clippy test check-wasm check-windows
+    scripts/macos-crosscheck.sh clippy aarch64-apple-darwin
+    scripts/macos-crosscheck.sh clippy x86_64-apple-darwin
