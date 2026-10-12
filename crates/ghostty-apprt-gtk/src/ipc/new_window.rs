@@ -21,6 +21,12 @@ use gtk::glib;
 use super::dbus::DBus;
 
 pub fn new_window(target: &Target, value: &NewWindow) -> Result<bool, Error> {
+    // Validate before touching the bus (deviant fix, see `arguments_variant`).
+    let command = value
+        .arguments
+        .as_deref()
+        .map(arguments_variant)
+        .transpose()?;
     let mut dbus = DBus::new(
         target,
         if value.arguments.is_none() {
@@ -30,31 +36,38 @@ pub fn new_window(target: &Target, value: &NewWindow) -> Result<bool, Error> {
         },
     )?;
 
-    if let Some(arguments) = &value.arguments {
+    if let Some(command) = &command {
         // If any arguments were specified on the command line, the first
         // parameter is an array of strings that contain the arguments. They
         // will be sent to the main Ghostty instance and interpreted as CLI
         // arguments.
-        dbus.add_parameter(&arguments_variant(arguments));
+        dbus.add_parameter(command);
     }
 
     dbus.send()?;
     Ok(true)
 }
 
-/// Zig constructs each GVariant string from serialized bytes including its NUL.
-/// Keep valid wire bytes unchanged. Zig marks these strings trusted, causing
-/// GIO to abort when serializing invalid UTF-8 or an interior NUL. Fail the same
-/// way explicitly: an untrusted GVariant would silently substitute an empty
-/// string, while a malformed trusted variant would violate Rust GLib's contract.
-fn arguments_variant(arguments: &[Vec<u8>]) -> glib::Variant {
-    glib::Variant::array_from_iter_with_type(
+/// Zig constructs each GVariant string from serialized bytes including its NUL
+/// and marks it trusted (`new_window.zig:49-53`), so GIO aborts the process when
+/// serializing invalid UTF-8 or an interior NUL (input-triggered crash).
+/// DEVIANT FIX: reject such arguments gracefully instead (see
+/// DEVIANT_FIXES.md); valid wire bytes are unchanged.
+fn arguments_variant(arguments: &[Vec<u8>]) -> Result<glib::Variant, Error> {
+    if let Some(bad) = arguments
+        .iter()
+        .find(|arg| arg.contains(&0) || std::str::from_utf8(arg).is_err())
+    {
+        log::error!("invalid D-Bus string in new-window arguments");
+        eprintln!(
+            "new-window argument is not valid UTF-8 or contains a NUL byte: {}",
+            String::from_utf8_lossy(bad).escape_debug()
+        );
+        return Err(Error::IpcFailed);
+    }
+    Ok(glib::Variant::array_from_iter_with_type(
         glib::VariantTy::STRING,
         arguments.iter().map(|arg| {
-            if arg.contains(&0) || std::str::from_utf8(arg).is_err() {
-                log::error!("invalid D-Bus string in new-window arguments");
-                std::process::abort();
-            }
             let mut bytes = arg.clone();
             bytes.push(0);
             glib::Variant::from_bytes_with_type(
@@ -62,47 +75,26 @@ fn arguments_variant(arguments: &[Vec<u8>]) -> glib::Variant {
                 glib::VariantTy::STRING,
             )
         }),
-    )
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
-    #[cfg(unix)]
     #[test]
-    fn invalid_dbus_strings_fail_without_substitution() {
-        use std::os::unix::process::ExitStatusExt;
-        const CHILD: &str = "GHOSTTY_TEST_INVALID_DBUS_VALUE";
-        if let Ok(kind) = std::env::var(CHILD) {
-            let value: &[u8] = if kind == "utf8" {
-                b"--title=bad\xff"
-            } else {
-                b"--title=bad\0tail"
-            };
-            arguments_variant(&[value.to_vec()]);
-            panic!("invalid D-Bus argument must abort like Zig/GIO");
+    fn invalid_dbus_strings_are_rejected_without_abort() {
+        for value in [&b"--title=bad\xff"[..], &b"--title=bad\0tail"[..]] {
+            let result = arguments_variant(&[b"ok".to_vec(), value.to_vec()]);
+            assert!(matches!(result, Err(Error::IpcFailed)));
         }
-        for kind in ["utf8", "nul"] {
-            // Disable core dumps in the child without changing this test process.
-            let result = std::process::Command::new("/bin/sh")
-                .args(["-c", "ulimit -c 0; exec \"$@\"", "ghostty-dbus-test"])
-                .arg(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "ipc::new_window::tests::invalid_dbus_strings_fail_without_substitution",
-                ])
-                .env(CHILD, kind)
-                .output()
-                .unwrap();
-            assert_eq!(result.status.signal(), Some(libc::SIGABRT));
-        }
+        assert!(arguments_variant(&[b"ok".to_vec()]).is_ok());
     }
 
     #[test]
     fn arguments_are_plain_dbus_strings_not_escape_encoded() {
         let argument = "--working-directory=/tmp/\u{fdd0}é";
-        let variant = arguments_variant(&[argument.as_bytes().to_vec()]);
+        let variant = arguments_variant(&[argument.as_bytes().to_vec()]).unwrap();
         assert_eq!(variant.get::<Vec<String>>().unwrap(), [argument]);
         assert_eq!(
             variant.child_value(0).data(),
