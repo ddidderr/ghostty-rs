@@ -4,6 +4,7 @@
 //! difftest_fuzz run [--seed N] [--cases N] [--jobs N] [--tokens N]
 //!                   [--zig PATH] [--work DIR] [--size CxR] [--sb BYTES]
 //! difftest_fuzz minz|minr <cols> <rows> <sb> <input-file> # minimise an abort
+//! difftest_fuzz panics [--seed N] [--cases N] [--tokens N]  # Rust only, no Zig
 //! difftest_fuzz min <cols> <rows> <sb> <input-file>   # minimise a divergence
 //! difftest_fuzz check <cols> <rows> <sb> <input-file> # compare one input
 //! ```
@@ -168,6 +169,10 @@ fn main() {
     let work = root.join("target/difftest-work");
     std::fs::create_dir_all(&work).expect("mkdir");
     let ctx = Arc::new(Ctx { zig, work });
+    if a.first().map(String::as_str) == Some("panics") {
+        panics(&a, &ctx);
+        return;
+    }
     std::panic::set_hook(Box::new(|_| {}));
     match a.first().map(String::as_str) {
         Some("check" | "min" | "minz" | "minr") => {
@@ -302,6 +307,46 @@ fn run(ctx: &Arc<Ctx>, a: &[String]) {
             fails_dir.display(),
             &bad[..bad.len().min(10)]
         );
+        std::process::exit(1);
+    }
+}
+
+fn lenient_panics(input: &[u8], c: u16, r: u16, sb: usize) -> bool {
+    let input = input.to_vec();
+    std::panic::catch_unwind(move || ghostty_difftest::drive_lenient(&input, c, r, sb)).is_err()
+}
+
+/// Rust-only panic hunt (run it with a debug build so assertions are on):
+/// untrusted terminal input must never panic, even where Zig aborts.
+fn panics(a: &[String], ctx: &Ctx) {
+    let seed: u64 = arg(a, "--seed", 1);
+    let cases: usize = arg(a, "--cases", 1000);
+    let tokens: usize = arg(a, "--tokens", 60);
+    let mut found = 0;
+    for i in 0..cases {
+        let mut rng = Rng(seed.wrapping_mul(0x1_0000_0001).wrapping_add(i as u64));
+        let (c, r, sb) = config(&mut rng);
+        let n = 1 + rng.below(tokens);
+        let input = generate(&mut rng, n);
+        if lenient_panics(&input, c, r, sb) {
+            found += 1;
+            let mut min = input.clone();
+            let mut i = 0;
+            while i < min.len() {
+                let mut cand = min.clone();
+                cand.remove(i);
+                if lenient_panics(&cand, c, r, sb) {
+                    min = cand;
+                } else {
+                    i += 1;
+                }
+            }
+            let _ = ctx;
+            eprintln!("case {i}: {c}x{r} sb={sb} minimised={min:02x?}");
+        }
+    }
+    println!("seed={seed} cases={cases} rust panics={found}");
+    if found > 0 {
         std::process::exit(1);
     }
 }

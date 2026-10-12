@@ -1079,6 +1079,31 @@ mod tests {
     }
 
     #[test]
+    fn difftest_grapheme_wrap_scrolling_margins_keeps_grapheme() {
+        // Same Devanagari conjunct at the right margin, but on the bottom row
+        // so the wrap scrolls the margin region and the grapheme data travels
+        // with its row. Zig asserts/faults (`moveGrapheme` on a blank cell);
+        // Rust must neither error nor leave a grapheme flag without data.
+        let mut t = term(255, 5);
+        t.vt_stream()
+            .next_slice("\x1b[?2027h\x1b[?69h\x1b[;9s\x1b[24H\t\u{915}\u{94d}\u{937}".as_bytes())
+            .unwrap();
+        let text = t.plain_string().unwrap();
+        assert!(text.contains('\u{915}'));
+    }
+
+    #[test]
+    fn difftest_mode_2027_toggle_with_bom_does_not_panic() {
+        // Zig asserts `!graphemeBreak` while replaying an existing grapheme
+        // (aborts in safe builds, ignored in ReleaseFast). It must never panic
+        // here: this repository's release profile enables debug assertions.
+        let mut t = term(20, 8);
+        t.vt_stream()
+            .next_slice(b"\x1b[?2027la\xef\xbb\xbf\x1b[?2027h\xe4\xb8\xad")
+            .unwrap();
+    }
+
+    #[test]
     fn difftest_grapheme_wrap_with_margins_moves_prev_cell() {
         // Devanagari conjunct widening the cell at the last column while a
         // left/right margin keeps the wrap from scrolling that cell: Zig moves

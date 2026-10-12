@@ -200,6 +200,16 @@ pub fn dump(input: &[u8], cols: u16, rows: u16, max_scrollback: usize) -> String
     dump_terminal(&t)
 }
 
+/// Feed `input` and ignore stream errors (they are reported to the caller as
+/// `Err`, not a crash). Used by the Rust-only panic hunt.
+pub fn drive_lenient(input: &[u8], cols: u16, rows: u16, max_scrollback: usize) -> String {
+    let mut opts = Options::new(cols, rows);
+    opts.max_scrollback = max_scrollback;
+    let mut t = Terminal::new(opts).expect("terminal");
+    let _ = t.vt_stream().next_slice(input);
+    dump_terminal(&t)
+}
+
 /// Canonical dump of an already-driven terminal.
 pub fn dump_terminal(t: &Terminal) -> String {
     let mut w = String::new();

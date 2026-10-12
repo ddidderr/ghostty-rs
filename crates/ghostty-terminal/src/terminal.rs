@@ -820,8 +820,12 @@ impl Terminal {
                     .expect("prev cell");
                 let cps = page.lookup_grapheme(idx).expect("grapheme data");
                 for &cp2 in cps {
-                    let b = ghostty_unicode::grapheme_break(cp1, cp2, &mut state);
-                    debug_assert!(!b);
+                    // Zig asserts `!graphemeBreak(cp1, cp2)` here, but that
+                    // is reachable from input (mode 2027 toggled after the
+                    // grapheme was built, e.g. with a BOM), so it must not
+                    // panic. ReleaseFast ignores the result; we do too. This
+                    // only advances `state`.
+                    let _ = ghostty_unicode::grapheme_break(cp1, cp2, &mut state);
                     cp1 = cp2;
                 }
             }
@@ -943,18 +947,31 @@ impl Terminal {
                                 let new_idx = page.cell_index(new_x, new_y).expect("new cell");
                                 // Zig moves from `prev.cell`, NOT from `old_pin`
                                 // (they differ when margins keep the row from
-                                // scrolling the cell out of `old_pin`).
-                                let old_idx = prev_idx;
-                                page.move_grapheme(old_idx, new_idx)?;
-                                page.cells[old_idx].set_content_tag(ContentTag::Codepoint);
-                                page.cells[new_idx].set_content_tag(ContentTag::CodepointGrapheme);
-                                page.rows[new_y].set_grapheme(true);
+                                // scrolling the cell out of `old_pin`). When
+                                // the wrap DID scroll the margin region, the
+                                // data travelled with its row to `old_pin` and
+                                // `prev.cell` is blank: Zig then asserts
+                                // (page.zig moveGrapheme) or faults in
+                                // ReleaseFast. Move from where the data really
+                                // is, and never flag a cell without data.
+                                let old_idx = if page.cells[prev_idx].has_grapheme() {
+                                    prev_idx
+                                } else {
+                                    page.cell_index(old_x, old_y).expect("old cell")
+                                };
+                                if page.cells[old_idx].has_grapheme() {
+                                    page.move_grapheme(old_idx, new_idx)?;
+                                    page.cells[old_idx].set_content_tag(ContentTag::Codepoint);
+                                    page.cells[new_idx]
+                                        .set_content_tag(ContentTag::CodepointGrapheme);
+                                    page.rows[new_y].set_grapheme(true);
+                                }
                                 page.update_row_grapheme_flag(old_y);
                             } else {
                                 let cps: Vec<u32> = {
                                     let page = self.screen().page(old_pin.node);
                                     let old_idx = page.cell_index(old_x, old_y).expect("old cell");
-                                    page.lookup_grapheme(old_idx).expect("grapheme").to_vec()
+                                    page.lookup_grapheme(old_idx).unwrap_or_default().to_vec()
                                 };
                                 for cp in cps {
                                     let x = self.screen().cursor.x;
