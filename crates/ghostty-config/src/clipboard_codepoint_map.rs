@@ -2,27 +2,10 @@
 //! for clipboard operations. When copying text to clipboard, matching
 //! codepoints will be replaced with their mapped values.
 
-/// Replacement value for a codepoint range.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Replacement {
-    /// A single replacement codepoint.
-    Codepoint(u32),
-    /// A UTF-8 encoded string to replace with.
-    String(String),
-}
-
-/// One entry of the map.
-///
-/// TODO(integration): this mirrors `terminal/formatter.zig` `CodepointMap`;
-/// replace with `ghostty_terminal::formatter::CodepointMap` once available.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
-    /// Unicode codepoint range to replace.
-    /// Asserts: range[0] <= range[1]
-    pub range: [u32; 2],
-    /// Replacement value for this range.
-    pub replacement: Replacement,
-}
+/// One entry of the map and its replacement value. The canonical
+/// definitions live in `ghostty_terminal::formatter` (`CodepointMap`,
+/// `Replacement`), which is what the terminal formatter consumes.
+pub use ghostty_terminal::formatter::{CodepointMap as Entry, Replacement};
 
 /// The list of entries.
 ///

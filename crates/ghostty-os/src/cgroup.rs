@@ -24,6 +24,30 @@ pub fn current(pid: u32) -> Option<String> {
     Some(String::from_utf8_lossy(&rest[..end]).into_owned())
 }
 
+/// True if the final path component of `pid`'s cgroup equals `expected`.
+pub fn scope_matches(pid: u32, expected: &str) -> bool {
+    current(pid)
+        .as_deref()
+        .and_then(|raw| raw.rsplit_once('/'))
+        .is_some_and(|(_, last)| last == expected)
+}
+
+/// Poll (every 25ms, at most 250ms) until `pid`'s cgroup ends in `expected`.
+/// Returns true if seen, false on timeout. This is the single wait loop
+/// shared by the termio `Command` hooks and apprt-gtk's pre-exec/post-fork.
+pub fn wait_for_scope(pid: u32, expected: &str) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if start.elapsed() > std::time::Duration::from_millis(250) {
+            return false;
+        }
+        if scope_matches(pid, expected) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

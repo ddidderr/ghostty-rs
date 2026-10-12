@@ -4,19 +4,11 @@
 //! <https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md>
 
 use crate::osc::{Command as OscCommand, Parser, State};
+use crate::string_encoding::{printf_q_decode, url_percent_decode};
 
 /// Error returned when decoding a command line fails (Zig
 /// `error.DecodeError`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecodeError;
-
-impl std::fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("decode error")
-    }
-}
-
-impl std::error::Error for DecodeError {}
+pub type DecodeError = crate::string_encoding::Error;
 
 /// A single semantic prompt command.
 ///
@@ -121,11 +113,6 @@ impl Command {
 
     /// Write the decoded command line (if any) to the writer. If an error
     /// occurs garbage may have been written to the writer.
-    ///
-    /// TODO(integration): uses local copies of `printfQDecode` /
-    /// `urlPercentDecode` (ZIG/src/os/string_encoding.zig); switch to
-    /// `ghostty-os` once available (that crate would need to be a dependency
-    /// of ghostty-vt, so these remain local for now).
     pub fn write_command_line(&self, writer: &mut Vec<u8>) -> Result<(), DecodeError> {
         if let Some(OptionValue::Bytes(command_line)) = self.read_option(OptionKey::Cmdline) {
             return printf_q_decode(writer, command_line);
@@ -416,91 +403,6 @@ pub fn parse(parser: &mut Parser, _terminator_ch: Option<u8>) -> Option<OscComma
     Some(OscCommand::SemanticPrompt(cmd))
 }
 
-// TODO(integration): local copies of ZIG/src/os/string_encoding.zig.
-
-/// Decode data that has been encoded in the same way that `bash`'s
-/// `printf %q` encodes a string and write it to the writer. If an error is
-/// returned garbage may have been written to the buffer.
-pub fn printf_q_decode(writer: &mut Vec<u8>, buf: &[u8]) -> Result<(), DecodeError> {
-    let data: &[u8] = if buf.starts_with(b"$'") {
-        // Strip off `$''` quoting.
-        if buf.len() < 3 || !buf.ends_with(b"'") {
-            return Err(DecodeError);
-        }
-        &buf[2..buf.len() - 1]
-    } else if buf.starts_with(b"'") {
-        // Strip off `''` quoting.
-        if buf.len() < 2 || !buf.ends_with(b"'") {
-            return Err(DecodeError);
-        }
-        &buf[1..buf.len() - 1]
-    } else {
-        buf
-    };
-
-    let mut src = 0;
-    while src < data.len() {
-        match data[src] {
-            b'\\' => {
-                if src + 1 >= data.len() {
-                    return Err(DecodeError);
-                }
-                match data[src + 1] {
-                    c @ (b' ' | b'\\' | b'"' | b'\'' | b'$') => writer.push(c),
-                    b'e' => writer.push(0x1b),
-                    b'n' => writer.push(b'\n'),
-                    b'r' => writer.push(b'\r'),
-                    b't' => writer.push(b'\t'),
-                    b'v' => writer.push(0x0b),
-                    _ => return Err(DecodeError),
-                }
-                src += 2;
-            }
-            c => {
-                writer.push(c);
-                src += 1;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Decode data that has been URL percent encoded and write it to the given
-/// buffer. If an error is returned garbage may have been written.
-pub fn url_percent_decode(writer: &mut Vec<u8>, buf: &[u8]) -> Result<(), DecodeError> {
-    fn hex(c: u8) -> Option<u8> {
-        match c {
-            b'0'..=b'9' => Some(c - b'0'),
-            b'a'..=b'f' => Some(c - b'a' + 10),
-            b'A'..=b'F' => Some(c - b'A' + 10),
-            _ => None,
-        }
-    }
-
-    let mut src = 0;
-    while src < buf.len() {
-        match buf[src] {
-            b'%' => {
-                if src + 2 >= buf.len() {
-                    return Err(DecodeError);
-                }
-                match (hex(buf[src + 1]), hex(buf[src + 2])) {
-                    (Some(a), Some(b)) => {
-                        writer.push((a << 4) | b);
-                        src += 3;
-                    }
-                    _ => return Err(DecodeError),
-                }
-            }
-            c => {
-                writer.push(c);
-                src += 1;
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -531,7 +433,7 @@ mod tests {
     }
 
     fn cmdline_err(input: &str) {
-        assert_eq!(cmdline(input).1, Err(DecodeError));
+        assert_eq!(cmdline(input).1, Err(DecodeError::DecodeError));
     }
 
     #[test]
@@ -979,20 +881,5 @@ mod tests {
         assert_eq!(r("-1"), Some(OptionValue::Int(-1)));
         assert!(r("abc").is_none());
         assert_eq!(r("127;aid=foo"), Some(OptionValue::Int(127)));
-    }
-
-    #[test]
-    fn string_encoding_extra_printf_q_and_percent() {
-        let mut w = Vec::new();
-        printf_q_decode(&mut w, b"bobr\\ kurwa").unwrap();
-        assert_eq!(w, b"bobr kurwa");
-        assert_eq!(
-            printf_q_decode(&mut Vec::new(), b"bobr\\dkurwa"),
-            Err(DecodeError)
-        );
-        assert_eq!(
-            printf_q_decode(&mut Vec::new(), b"bobr kurwa\\"),
-            Err(DecodeError)
-        );
     }
 }

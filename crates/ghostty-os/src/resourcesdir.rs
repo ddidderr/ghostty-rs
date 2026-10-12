@@ -64,6 +64,7 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     let Some(mut exe) = exe else {
         return ResourcesDir::default();
     };
+    let exe_start = exe;
 
     // We have an exe path! Climb the tree looking for the terminfo
     // bundle as we expect it.
@@ -91,7 +92,39 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
         };
     }
 
+    // Rust-specific: development builds run out of `<workspace>/target`, where
+    // there is no installed `share/` tree. Fall back to the in-repo
+    // `<workspace>/resources` directory (it carries the same sentinel,
+    // `terminfo/x/xterm-ghostty`, see scripts/gen-terminfo.sh) if the binary
+    // lives inside this workspace.
+    if debug && let Some(dir) = dev_resources_dir(exe_start) {
+        return ResourcesDir {
+            app_path: Some(dir),
+            host_path: None,
+        };
+    }
+
     ResourcesDir::default()
+}
+
+/// The workspace root this crate was compiled in (`crates/ghostty-os/../..`).
+fn workspace_root() -> std::path::PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// Returns `<workspace>/resources` if `exe` is inside the workspace this
+/// crate was built from and the directory contains our sentinel.
+fn dev_resources_dir(exe: &Path) -> Option<String> {
+    let root = workspace_root().canonicalize().ok()?;
+    let exe = exe.canonicalize().unwrap_or_else(|_| exe.to_path_buf());
+    if !exe.starts_with(&root) {
+        return None;
+    }
+    let res = root.join("resources");
+    SENTINELS
+        .iter()
+        .any(|s| res.join(s).exists())
+        .then(|| res.to_string_lossy().into_owned())
 }
 
 /// Little helper to check if the "base/sub/suffix" directory exists and
@@ -166,6 +199,19 @@ mod tests {
             resources_dir_impl(false, None, Some(String::new())).app(),
             None
         );
+    }
+
+    #[test]
+    fn dev_fallback_finds_workspace_resources() {
+        let exe = workspace_root().join("target/debug/ghostty");
+        let r = resources_dir_impl(true, Some(&exe), None);
+        assert!(r.app().is_some_and(|d| d.ends_with("/resources")));
+        // Outside the workspace there is no fallback.
+        let r = resources_dir_impl(true, Some(Path::new("/nonexistent/bin/x")), None);
+        assert_eq!(r.app(), None);
+        // Release builds never use it.
+        let r = resources_dir_impl(false, Some(&exe), None);
+        assert_eq!(r.app(), None);
     }
 
     #[test]

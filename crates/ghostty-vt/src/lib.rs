@@ -17,6 +17,7 @@ pub mod parser;
 pub mod sgr;
 pub mod simd;
 pub mod stream;
+pub mod string_encoding;
 pub mod tmux;
 pub mod utf8_decoder;
 pub mod x11_color;

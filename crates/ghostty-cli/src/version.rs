@@ -41,11 +41,7 @@ pub fn write_version(out: &mut dyn Write, info: &BuildInfo, tty: bool) -> std::i
 
     writeln!(out, "Build Config")?;
     // The Zig build prints its compiler version here.
-    writeln!(
-        out,
-        "  - Rust version  : {}",
-        option_env!("CARGO_PKG_RUST_VERSION").unwrap_or("unknown")
-    )?;
+    writeln!(out, "  - Rust version  : {}", env!("GHOSTTY_RUSTC_VERSION"))?;
     writeln!(out, "  - build mode    : {}", info.build_mode)?;
     writeln!(out, "  - app runtime   : {}", info.app_runtime)?;
     writeln!(out, "  - font engine   : {}", info.font_backend)?;

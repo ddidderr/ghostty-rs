@@ -21,23 +21,35 @@ fn write_void(f: &mut EntryFormatter<'_>) -> fmt::Result {
 }
 
 // ---------------------------------------------------------------------
-// Cursor style (ZIG/src/terminal/cursor.zig `Style`), duplicated here
-// because config cannot depend on ghostty-terminal.
+// Cursor style: the canonical type is `ghostty_terminal::cursor::Style`
+// (ZIG/src/terminal/cursor.zig `Style`); config only adds the field impl.
 
-config_enum! {
-    /// The visual style of the cursor. Whether or not it blinks
-    /// is determined by mode 12 (modes.zig). This mode is synchronized
-    /// with CSI q, the same as xterm.
-    pub enum CursorStyle {
-        /// DECSCUSR 5, 6
-        Bar => "bar",
-        /// DECSCUSR 1, 2
-        Block => "block",
-        /// DECSCUSR 3, 4
-        Underline => "underline",
-        /// Hollow block cursor. This is a block cursor with the center empty.
-        /// Reported as DECSCUSR 1 or 2 (block).
-        BlockHollow => "block_hollow",
+pub use ghostty_terminal::cursor::Style as CursorStyle;
+
+impl ConfigField for CursorStyle {
+    const VALID_VALUES: Option<&'static [&'static str]> =
+        Some(&["bar", "block", "underline", "block_hollow"]);
+
+    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+        let v = value.ok_or(ArgError::ValueRequired)?;
+        *self = match v {
+            "bar" => CursorStyle::Bar,
+            "block" => CursorStyle::Block,
+            "underline" => CursorStyle::Underline,
+            "block_hollow" => CursorStyle::BlockHollow,
+            _ => return Err(ArgError::InvalidValue),
+        };
+        Ok(())
+    }
+
+    fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
+        let name = match self {
+            CursorStyle::Bar => "bar",
+            CursorStyle::Block => "block",
+            CursorStyle::Underline => "underline",
+            CursorStyle::BlockHollow => "block_hollow",
+        };
+        writeln!(f.writer, "{} = {}", f.name, name)
     }
 }
 

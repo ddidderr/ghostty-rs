@@ -8,6 +8,7 @@ license.workspace = true
 const_format = "0.2.36"
 ghostty-input.workspace = true
 ghostty-os.workspace = true
+ghostty-terminal.workspace = true
 ghostty-vt.workspace = true
 log = "0.4.34"
 thiserror = "2.0.21"

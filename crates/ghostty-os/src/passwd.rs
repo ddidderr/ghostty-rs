@@ -25,16 +25,12 @@ pub fn get() -> std::io::Result<Entry> {
         }
     };
 
-    // TODO(integration): Zig shells out to the host via
-    // FlatpakHostCommand + a pty (`getent passwd <name>`) when running in
-    // Flatpak, because the sandbox passwd entry only has a correct username.
-    // That needs the `ghostty-termio` Pty; until then we use the sandbox
-    // entry and warn.
+    // If we're in flatpak then our entry is always empty so we grab it
+    // by shelling out to the host. note that we do HAVE an entry in the
+    // sandbox but only the username is correct.
     if is_flatpak() {
-        log::warn!(
-            "flatpak detected, but host passwd lookup is not implemented; \
-             using sandbox passwd entry"
-        );
+        log::info!("flatpak detected, will use host command to get our entry");
+        return host_entry(&user.name);
     }
 
     Ok(Entry {
@@ -44,9 +40,98 @@ pub fn get() -> std::io::Result<Entry> {
     })
 }
 
+/// Flatpak: look up our entry on the host with `getent passwd <name>` over a
+/// pty (Zig `passwd.get`, flatpak branch).
+///
+/// Dependency note: Zig uses `pty.zig`; `ghostty-termio` (which owns the Rust
+/// `Pty`) depends on this crate, so a minimal openpt/ptsname pair is opened
+/// here with rustix instead. Like Zig, only `shell` and `home` are filled in.
+fn host_entry(name: &str) -> std::io::Result<Entry> {
+    use rustix::fs::{Mode, OFlags};
+    use rustix::pty::{OpenptFlags, grantpt, openpt, ptsname, unlockpt};
+    use std::io::Read;
+
+    let err = std::io::Error::from;
+    let master =
+        openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC).map_err(err)?;
+    grantpt(&master).map_err(err)?;
+    unlockpt(&master).map_err(err)?;
+    let slave_name = ptsname(&master, Vec::new()).map_err(err)?;
+    let slave = rustix::fs::open(
+        slave_name.as_c_str(),
+        OFlags::RDWR | OFlags::NOCTTY,
+        Mode::empty(),
+    )
+    .map_err(err)?;
+
+    // Note: we wrap our getent call in a /bin/sh login shell because
+    // some operating systems (NixOS tested) don't set the PATH for various
+    // utilities properly until we get a login shell.
+    let mut cmd = crate::flatpak::FlatpakHostCommand::new(
+        vec![
+            "/bin/sh".into(),
+            "-l".into(),
+            "-c".into(),
+            format!("getent passwd {name}"),
+        ],
+        slave.try_clone()?,
+        slave.try_clone()?,
+        slave.try_clone()?,
+    );
+    cmd.spawn().map_err(std::io::Error::other)?;
+    cmd.wait().map_err(std::io::Error::other)?;
+
+    // Once started, we can close the child side. We do this after
+    // wait right now but that is fine too. This lets us read the
+    // parent and detect EOF.
+    drop(cmd);
+    drop(slave);
+
+    // Read all of our output (max total size is 1024 bytes, like Zig).
+    let mut file = std::fs::File::from(master);
+    let mut output = Vec::new();
+    let mut buf = [0u8; 1024];
+    loop {
+        let n = match file.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            // EIO is triggered at the end since we closed our child side.
+            // This is just EOF for this.
+            Err(e) if e.raw_os_error() == Some(rustix::io::Errno::IO.raw_os_error()) => break,
+            Err(e) => return Err(e),
+        };
+        output.extend_from_slice(&buf[..n]);
+        if output.len() > buf.len() {
+            break;
+        }
+    }
+
+    Ok(parse_getent(&String::from_utf8_lossy(&output)))
+}
+
+/// Shell and home are the last two `:`-separated fields of the output.
+fn parse_getent(output: &str) -> Entry {
+    let mut it = output.trim_end_matches([' ', '\r', '\n']).rsplit(':');
+    let shell = it.next().map(str::to_owned);
+    let home = it.next().map(str::to_owned);
+    Entry {
+        shell,
+        home,
+        name: None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_getent_output() {
+        let e = parse_getent("mitchell:x:1000:1000:Mitchell:/home/mitchell:/bin/zsh\r\n");
+        assert_eq!(e.shell.as_deref(), Some("/bin/zsh"));
+        assert_eq!(e.home.as_deref(), Some("/home/mitchell"));
+        assert_eq!(e.name, None);
+    }
 
     #[test]
     fn get_entry() {

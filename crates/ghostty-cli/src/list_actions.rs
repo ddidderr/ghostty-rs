@@ -3,7 +3,6 @@
 use std::io::Write;
 
 use ghostty_config::config_struct;
-use ghostty_input::binding::ActionKey;
 
 use crate::error::Error;
 
@@ -35,44 +34,12 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
 }
 
 /// `helpgen_actions.generate(.plaintext, show_docs)`.
-///
-/// TODO(integration): this is a local copy of
-/// `ghostty_input::helpgen_actions::generate`. The embedded docs of a few
-/// actions in ghostty-input (`adjust_selection`, ...) end with an extra blank
-/// line compared to Ghostty's `help_strings`, which adds a stray `"  "` line
-/// to `--docs` output. Trailing newlines are normalised here; once the data
-/// is fixed in ghostty-input this should call `helpgen_actions::generate`.
 #[must_use]
 pub fn generate_plaintext(show_docs: bool) -> String {
-    let mut writer = String::new();
-    let mut stream = String::new();
-    for &key in ActionKey::ALL {
-        let name = key.name();
-        if name.starts_with('_') {
-            continue;
-        }
-
-        // Write previously stored doc comment below all related actions
-        if show_docs {
-            writer.push_str(&stream);
-            writer.push('\n');
-            stream.clear();
-            writer.push_str(name);
-            writer.push_str(":\n");
-            for line in key.docs().trim_end_matches('\n').split('\n') {
-                stream.push_str("  ");
-                stream.push_str(line);
-                stream.push('\n');
-            }
-        } else {
-            writer.push_str(name);
-            writer.push('\n');
-        }
-    }
-
-    // Write any remaining buffered documentation
-    writer.push_str(&stream);
-    writer
+    ghostty_input::helpgen_actions::generate_string(
+        ghostty_input::helpgen_actions::Format::Plaintext,
+        show_docs,
+    )
 }
 
 #[cfg(test)]
@@ -93,16 +60,5 @@ mod tests {
         assert!(s.starts_with("\nignore:\n  Ignore this key combination.\n"));
         assert!(s.contains("      respectively.\n\njump_to_prompt:\n"));
         assert!(s.ends_with('\n'));
-    }
-
-    #[test]
-    fn matches_input_crate_when_docs_are_clean() {
-        // The first actions have well-formed docs.
-        let ours = generate_plaintext(true);
-        let theirs = ghostty_input::helpgen_actions::generate_string(
-            ghostty_input::helpgen_actions::Format::Plaintext,
-            true,
-        );
-        assert!(ours.lines().take(100).eq(theirs.lines().take(100)));
     }
 }

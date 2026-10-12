@@ -10,26 +10,42 @@ use std::sync::OnceLock;
 /// licensed under the same license as Ghostty.
 const DATA: &str = include_str!("res/rgb.txt");
 
+/// Parse rgb.txt into `(name with original case, value)` entries in file
+/// order. This is not very robust parsing, because we expect a very exact
+/// format for rgb.txt.
+fn parse_entries() -> impl Iterator<Item = (&'static str, Rgb)> {
+    DATA.split('\n').filter(|l| !l.is_empty()).map(|line| {
+        let r: u8 = line[0..3].trim_matches(' ').parse().expect("bad rgb.txt");
+        let g: u8 = line[4..7].trim_matches(' ').parse().expect("bad rgb.txt");
+        let b: u8 = line[8..11].trim_matches(' ').parse().expect("bad rgb.txt");
+        let name = line[12..].trim_matches(|c| c == ' ' || c == '\t' || c == '\n');
+        (name, Rgb { r, g, b })
+    })
+}
+
 /// The map of all available X11 colors. Keys are lowercase ASCII; lookups
 /// are ASCII case-insensitive (see [`get`]).
 fn map() -> &'static HashMap<String, Rgb> {
     static MAP: OnceLock<HashMap<String, Rgb>> = OnceLock::new();
     MAP.get_or_init(|| {
         let mut m = HashMap::new();
-        // Parse the line. This is not very robust parsing, because we expect
-        // a very exact format for rgb.txt.
-        for line in DATA.split('\n') {
-            if line.is_empty() {
-                continue;
-            }
-            let r: u8 = line[0..3].trim_matches(' ').parse().expect("bad rgb.txt");
-            let g: u8 = line[4..7].trim_matches(' ').parse().expect("bad rgb.txt");
-            let b: u8 = line[8..11].trim_matches(' ').parse().expect("bad rgb.txt");
-            let name = line[12..].trim_matches(|c| c == ' ' || c == '\t' || c == '\n');
-            m.entry(name.to_ascii_lowercase())
-                .or_insert(Rgb { r, g, b });
+        for (name, rgb) in parse_entries() {
+            m.entry(name.to_ascii_lowercase()).or_insert(rgb);
         }
         m
+    })
+}
+
+/// All X11 color names with their original spelling (e.g. `AliceBlue`,
+/// `alice blue`) and values, in rgb.txt order. Like the case-insensitive
+/// map, the first spelling of a name wins.
+pub fn names() -> &'static [(&'static str, Rgb)] {
+    static NAMES: OnceLock<Vec<(&'static str, Rgb)>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        let mut seen = std::collections::HashSet::new();
+        parse_entries()
+            .filter(|(n, _)| seen.insert(n.to_ascii_lowercase()))
+            .collect()
     })
 }
 
@@ -47,6 +63,14 @@ pub fn get_bytes(name: &[u8]) -> Option<Rgb> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn names_keep_original_case() {
+        let n = names();
+        assert!(n.iter().any(|(name, _)| *name == "AliceBlue"));
+        assert!(n.iter().any(|(name, _)| *name == "alice blue"));
+        assert!(n.iter().all(|(name, rgb)| get(name) == Some(*rgb)));
+    }
 
     #[test]
     fn x11_color_map() {

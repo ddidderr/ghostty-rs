@@ -9,8 +9,9 @@ use indexmap::IndexMap;
 use super::{Action, Elem, Error, Flags, FoldedTrigger, Parser, Trigger, TriggerKey};
 use crate::key::KeyEvent;
 
-/// TODO(integration): stand-in for `config/formatter.zig` `EntryFormatter`.
-/// The config crate implements this to write `keybind = <value>` lines.
+/// Sink for `config/formatter.zig` `EntryFormatter`. The config crate
+/// implements this (`ghostty_config::keybinds`) to write `keybind = <value>`
+/// lines.
 pub trait EntryFormatter {
     /// Format a single `key = value` entry where `value` is a string.
     fn format_entry(&mut self, value: &str);

@@ -1438,7 +1438,6 @@ Valid arguments are:
 
     Adjust the selection to the beginning or the end of the line
     respectively.
-
 "##
             }
             ActionKey::JumpToPrompt => {
@@ -1469,7 +1468,6 @@ Valid actions are:
 
     The default OS editor is determined by using `open` on macOS
     and `xdg-open` on Linux.
-
 "##
             }
             ActionKey::WriteScreenFile => {
@@ -1576,7 +1574,6 @@ Valid arguments:
     Creates a new split along the larger direction.
     For example, if the parent split is currently wider than it is tall,
     then a left-right split would be created, and vice versa.
-
 "##
             }
             ActionKey::GotoSplit => {
@@ -1943,7 +1940,6 @@ The value determines the crash location:
   - `render`
 
     Crash on the render thread for the focused surface.
-
 "##
             }
         }

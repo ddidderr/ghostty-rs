@@ -16,35 +16,14 @@ config_struct! {
 }
 cli_options!(Options, help);
 
-/// `terminal/res/rgb.txt`, the same file `x11_color` is built from.
-///
-/// TODO(integration): ghostty-vt's `x11_color` only exposes lookups (and
-/// lower-cases the names); expose its key list and use it instead of
-/// re-parsing the data here.
-const RGB_DATA: &str = include_str!("../../ghostty-vt/src/res/rgb.txt");
-
 /// All X11 color names (with their original spelling) and values. Like the
 /// case-insensitive Zig map the first spelling of a name wins.
 #[must_use]
 pub fn x11_colors() -> Vec<(String, (u8, u8, u8))> {
-    let mut seen = std::collections::HashSet::new();
-    let mut out = vec![];
-    for line in RGB_DATA.split('\n') {
-        if line.len() < 12 {
-            continue;
-        }
-        let parse = |s: &str| s.trim_matches(' ').parse::<u8>().ok();
-        let (Some(r), Some(g), Some(b)) =
-            (parse(&line[0..3]), parse(&line[4..7]), parse(&line[8..11]))
-        else {
-            continue;
-        };
-        let name = line[12..].trim_matches([' ', '\t', '\n']);
-        if seen.insert(name.to_ascii_lowercase()) {
-            out.push((name.to_string(), (r, g, b)));
-        }
-    }
-    out
+    ghostty_vt::x11_color::names()
+        .iter()
+        .map(|(n, c)| ((*n).to_string(), (c.r, c.g, c.b)))
+        .collect()
 }
 
 /// `std.ascii.orderIgnoreCase`.
