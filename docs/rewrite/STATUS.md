@@ -98,8 +98,9 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z20 | RV17 P3 items | sonnet | ✅ | 3582 tests; fix-deviant(renderer) |
 | RV18 | FINAL audit round (stopping criterion) | codex astra | ✅ | RV17 6/6 resolved; fix: input-reachable assert (P2), FreeBSD build (P2), 2 resource-dir issues, 3 register rows; P3 nits → KNOWN_DIFFERENCES |
 | Z21 | final fix pass + KNOWN_DIFFERENCES.md | sonnet | ✅ | 3584 tests; fix-deviant(terminal) |
-| P3 | fix the 6 remaining KNOWN_DIFFERENCES rows | sonnet | 🟨 | user: legit issues must be done |
-| WINE | run Windows code (incl. ConPTY) under Wine 11, fix bugs | sonnet | 🟨 | upgrades Windows from compile-checked to runtime-tested |
+| P3 | fix the 6 remaining KNOWN_DIFFERENCES rows | sonnet | ✅ | + fix-deviant(termio) getpgid |
+| WINE | run Windows code (incl. ConPTY) under Wine 11, fix bugs | sonnet | ✅ | 2758 tests pass under Wine; 2 fix-deviant |
+| ZWJ | theme search box ZWJ cluster rendering | sonnet | 🟨 | last item |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -155,3 +156,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: User: avoid endless review loop → stopping criterion: RV18 is the final audit; Z21 final fixes; P3 nits recorded, not chased.
 - 2026-10-12: Z21 committed; project closed out per stopping criterion.
 - 2026-10-12: Stop-hook: fix remaining P3s (legit) and runtime-test Windows under Wine (found installed). No further audit rounds.
+- 2026-10-12: P3 + WINE committed (1 parity + 3 fix-deviant commits). Windows now runtime-tested under Wine (2758 pass).
