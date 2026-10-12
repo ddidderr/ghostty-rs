@@ -31,7 +31,7 @@ pub use crate::options::NoOptions as Options;
 /// if both are set. If neither are set, it will print an error
 /// and exit.
 pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
-    let mut stderr = std::io::stderr().lock();
+    let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 1024);
 
     let mut opts = Options;
     crate::parse_options(&mut opts, args)?;

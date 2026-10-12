@@ -402,7 +402,7 @@ fn resolve_path_for_opening(
 ) -> Option<ghostty_os::osbytes::EncodedOs> {
     use std::path::{Component, Path, PathBuf};
 
-    if Path::new(path).is_absolute() {
+    if ghostty_os::osbytes::zig_is_absolute(path.as_bytes()) {
         return None;
     }
 

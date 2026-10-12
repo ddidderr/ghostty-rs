@@ -165,7 +165,8 @@ impl Action {
                 // to stdout. In the future we can style this much prettier
                 // for all commands by just changing this one place.
                 let text = format!("{}\n", self.help_text());
-                let mut stdout = std::io::stdout().lock();
+                let mut stdout =
+                    crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 1024);
                 if let Err(e) = stdout.write_all(text.as_bytes()) {
                     log::warn!("failed to write help text: {e}\n");
                     return Ok(1);

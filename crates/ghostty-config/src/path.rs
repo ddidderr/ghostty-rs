@@ -112,12 +112,15 @@ impl Path {
     pub fn expand(&mut self, base: &EncodedOs, diags: &mut DiagnosticList) -> std::io::Result<()> {
         // Filesystem calls use the decoded OS paths.
         let base_path = base.to_path()?;
-        assert!(base_path.is_absolute());
+        assert!(base.is_zig_absolute());
 
         let path = self.path().clone();
 
         // If it is already absolute we can ignore it.
-        if path.is_empty() || path.to_path()?.is_absolute() {
+        if path.is_empty() || {
+            path.to_path()?;
+            path.is_zig_absolute()
+        } {
             return Ok(());
         }
 

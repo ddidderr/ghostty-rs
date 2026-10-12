@@ -40,6 +40,7 @@ pub mod ssh_cache;
 pub mod tui;
 pub mod validate_config;
 pub mod version;
+pub(crate) mod zig_writer;
 
 pub use error::Error;
 pub use ghostty::{Action, run_from_args};

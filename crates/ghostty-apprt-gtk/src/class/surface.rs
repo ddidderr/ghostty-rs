@@ -1818,7 +1818,9 @@ impl Surface {
                 log::warn!("invalid bell audio path: BadPathName");
                 return;
             };
-            debug_assert!(path.is_absolute());
+            debug_assert!(ghostty_os::osbytes::zig_is_absolute(
+                &ghostty_os::osbytes::os_bytes(path.as_os_str())
+            ));
             let media_file = gtk::MediaFile::for_filename(&path);
 
             // If the audio file is marked as required, we'll emit an error if

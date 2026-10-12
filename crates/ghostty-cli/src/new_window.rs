@@ -187,6 +187,13 @@ impl CliTarget for Options {
 ///
 /// Available since: 1.2.0
 pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
+    let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 1024);
+    let result = run_args(args, &mut stderr);
+    let _ = std::io::Write::flush(&mut stderr);
+    result
+}
+
+fn run_args(args: &[impl AsRef<[u8]>], stderr: &mut dyn std::io::Write) -> Result<u8, Error> {
     let mut opts = Options::default();
     let mut iter =
         ghostty_config::cli_args::ArgsIterator::new(args.iter().skip(1).map(AsRef::as_ref));
@@ -196,7 +203,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
             return Err(Error::ActionHelpRequested);
         }
         Err(err) => {
-            eprintln!("Error parsing args: {err}");
+            writeln!(stderr, "Error parsing args: {err}")?;
             return Ok(1);
         }
     }
@@ -237,7 +244,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
                 return Ok(1);
             }
             Err(e) => {
-                eprint!("Sending the IPC failed: {e}");
+                write!(stderr, "Sending the IPC failed: {e}")?;
                 return Ok(1);
             }
         },
@@ -248,7 +255,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     }
 
     // If we get here, the platform is not supported.
-    eprintln!("+new-window is not supported on this platform.");
+    writeln!(stderr, "+new-window is not supported on this platform.")?;
     Ok(1)
 }
 

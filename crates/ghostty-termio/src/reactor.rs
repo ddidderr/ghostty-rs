@@ -7,7 +7,8 @@
 //!
 //! * [`Backend::IoUring`]: one `IORING_OP_POLL_ADD` per interest (re-armed
 //!   after it fires, removed with `IORING_OP_POLL_REMOVE` when the interest
-//!   goes away) and an `EXT_ARG` timeout on the wait.
+//!   goes away) and, for the wait timeout, `EXT_ARG` when the ring has it or
+//!   else an `IORING_OP_TIMEOUT` entry (libxev's own timers use the latter).
 //! * [`Backend::Epoll`]: a persistent epoll instance whose registrations are
 //!   diffed against the interests every wait (level-triggered).
 //! * `Poll`: plain `poll(2)`, used where libxev has a single, different
@@ -51,6 +52,14 @@ impl Reactor {
             Backend::IoUring => Ok(Reactor::IoUring(Box::new(UringReactor::new()?))),
             _ => Ok(Reactor::Poll),
         }
+    }
+
+    /// An io_uring reactor behaving as on a ring without `EXT_ARG`.
+    #[cfg(all(test, target_os = "linux"))]
+    fn uring_without_ext_arg() -> io::Result<Reactor> {
+        Ok(Reactor::IoUring(Box::new(
+            UringReactor::new_without_ext_arg()?,
+        )))
     }
 
     /// A plain `poll(2)` reactor regardless of platform.
@@ -229,6 +238,10 @@ impl EpollReactor {
 /// The user_data of `IORING_OP_POLL_REMOVE` submissions (ids start at 1).
 #[cfg(target_os = "linux")]
 const REMOVE_ID: u64 = 0;
+/// The first user_data of the `IORING_OP_TIMEOUT` entries used when `EXT_ARG`
+/// is missing (poll ids count up from 1 and never reach this range).
+#[cfg(target_os = "linux")]
+const TIMEOUT_BASE: u64 = 1 << 63;
 
 /// io_uring based poller (`IORING_OP_POLL_ADD` one-shot polls).
 #[cfg(target_os = "linux")]
@@ -237,17 +250,36 @@ pub struct UringReactor {
     /// token -> (raw fd, write, id of the armed poll)
     armed: HashMap<usize, (RawFd, bool, u64)>,
     next_id: u64,
+    /// Whether waits may carry their timeout as `EXT_ARG` (kernel 5.11+).
+    ext_arg: bool,
+    /// user_data of the `IORING_OP_TIMEOUT` of the current wait and whether
+    /// it has completed (the `EXT_ARG`-less path).
+    timeout_id: u64,
+    timeout_fired: bool,
 }
 
 #[cfg(target_os = "linux")]
 impl UringReactor {
     fn new() -> io::Result<UringReactor> {
-        // Same ring size as libxev's default.
+        // Same ring size and (absent) flags as libxev's `IoUring.init(256, 0)`.
+        let ring = io_uring::IoUring::new(256)?;
+        let ext_arg = ring.params().is_feature_ext_arg();
         Ok(UringReactor {
-            ring: io_uring::IoUring::new(256)?,
+            ring,
             armed: HashMap::new(),
             next_id: 1,
+            ext_arg,
+            timeout_id: TIMEOUT_BASE,
+            timeout_fired: false,
         })
+    }
+
+    /// A reactor that behaves as on a ring without `EXT_ARG`.
+    #[cfg(test)]
+    fn new_without_ext_arg() -> io::Result<UringReactor> {
+        let mut r = UringReactor::new()?;
+        r.ext_arg = false;
+        Ok(r)
     }
 
     /// Queue an entry, flushing the submission queue first if it is full.
@@ -318,6 +350,13 @@ impl UringReactor {
             if id == REMOVE_ID {
                 continue;
             }
+            if id >= TIMEOUT_BASE {
+                // A stale (cancelled) timeout of an earlier wait is ignored.
+                if id == self.timeout_id {
+                    self.timeout_fired = true;
+                }
+                continue;
+            }
             let Some(token) = self
                 .armed
                 .iter()
@@ -348,6 +387,7 @@ impl UringReactor {
         // Results already waiting (e.g. from a previous partial reap).
         let res = match timeout {
             None => self.ring.submit_and_wait(1),
+            Some(d) if !self.ext_arg => return self.wait_with_timeout_op(d, interests, ready),
             Some(d) => {
                 let ts = types::Timespec::new()
                     .sec(d.as_secs())
@@ -364,6 +404,53 @@ impl UringReactor {
             },
         }
         self.reap(interests, ready);
+        Ok(())
+    }
+
+    /// Wait with a timeout on a ring without `EXT_ARG`: queue an
+    /// `IORING_OP_TIMEOUT` (5.4+, what libxev's timers use) whose completion
+    /// ends the wait. Completions that are not for the interests (a cancelled
+    /// timeout of an earlier wait) do not end it.
+    fn wait_with_timeout_op(
+        &mut self,
+        d: Duration,
+        interests: &[Interest<'_>],
+        ready: &mut Vec<usize>,
+    ) -> io::Result<()> {
+        use io_uring::{opcode, types};
+
+        let ts = types::Timespec::new()
+            .sec(d.as_secs())
+            .nsec(d.subsec_nanos());
+        self.timeout_id = self.timeout_id.wrapping_add(1).max(TIMEOUT_BASE);
+        self.timeout_fired = false;
+        // The kernel copies the timespec while consuming the entry in
+        // `submit_and_wait` below; `ts` outlives that call.
+        let entry = opcode::Timeout::new(std::ptr::addr_of!(ts))
+            .build()
+            .user_data(self.timeout_id);
+        self.push(&entry)?;
+        loop {
+            let res = self.ring.submit_and_wait(1);
+            self.reap(interests, ready);
+            match res {
+                Ok(_) => {}
+                Err(e) => match e.raw_os_error() {
+                    Some(libc::ETIME | libc::EINTR | libc::EBUSY) => break,
+                    _ => return Err(e),
+                },
+            }
+            if self.timeout_fired || !ready.is_empty() {
+                break;
+            }
+        }
+        if !self.timeout_fired {
+            // Cancel it so it cannot wake a later wait.
+            let entry = opcode::TimeoutRemove::new(self.timeout_id)
+                .build()
+                .user_data(REMOVE_ID);
+            self.push(&entry)?;
+        }
         Ok(())
     }
 }
@@ -391,6 +478,46 @@ mod tests {
 
     fn pipe() -> (OwnedFd, OwnedFd) {
         rustix::pipe::pipe().unwrap()
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_without_ext_arg_uses_timeout_op() {
+        let Ok(mut r) = Reactor::uring_without_ext_arg() else {
+            eprintln!("SKIP io_uring reactor: unavailable");
+            return;
+        };
+        let (rd, wr) = pipe();
+        let interest = [Interest {
+            token: 7,
+            fd: rd.as_fd(),
+            write: false,
+        }];
+        let mut ready = vec![];
+        // Times out when nothing is ready, repeatedly (a cancelled timeout of
+        // the previous wait must not end the next one early).
+        for _ in 0..3 {
+            let start = std::time::Instant::now();
+            r.wait(&interest, Some(Duration::from_millis(30)), &mut ready)
+                .unwrap();
+            assert!(ready.is_empty());
+            assert!(start.elapsed() >= Duration::from_millis(25));
+        }
+        // Readiness ends the wait long before the timeout.
+        rustix::io::write(&wr, b"x").unwrap();
+        let start = std::time::Instant::now();
+        r.wait(&interest, Some(Duration::from_secs(10)), &mut ready)
+            .unwrap();
+        assert_eq!(ready, vec![7]);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        // The abandoned 10 s timeout does not wake the following wait.
+        let mut buf = [0u8; 1];
+        rustix::io::read(&rd, &mut buf).unwrap();
+        let start = std::time::Instant::now();
+        r.wait(&interest, Some(Duration::from_millis(30)), &mut ready)
+            .unwrap();
+        assert!(ready.is_empty());
+        assert!(start.elapsed() >= Duration::from_millis(25));
     }
 
     #[test]

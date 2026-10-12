@@ -229,7 +229,7 @@ pub fn open(
     let theme_text = theme.as_encoded();
 
     // Absolute themes are loaded a different path.
-    if theme_path.is_absolute() {
+    if theme.is_zig_absolute() {
         let file = open_absolute(theme, diags)?;
         if !check_regular(&file, theme_text, diags) {
             return None;
@@ -444,6 +444,21 @@ mod tests {
         assert_eq!(zig_basename("a/b"), "b");
         assert_eq!(zig_basename("a//"), "a");
         assert_eq!(zig_basename("./"), ".");
+    }
+
+    #[test]
+    fn windows_basename_matches_zig_0_15_2() {
+        // The drive colon is recognized only at byte index 1.
+        assert_eq!(basename_windows("\u{3bb}:theme"), "\u{3bb}:theme");
+        assert_eq!(
+            basename_windows("light:\u{3bb}:theme"),
+            "light:\u{3bb}:theme"
+        );
+        assert_eq!(basename_windows("1:theme"), "theme");
+        assert_eq!(basename_windows("c:"), "");
+        assert_eq!(basename_windows("a\\b/c\\"), "c");
+        assert_eq!(basename_windows("\\"), "");
+        assert_eq!(basename_windows("theme"), "theme");
     }
 
     #[test]

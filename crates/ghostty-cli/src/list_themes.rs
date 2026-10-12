@@ -233,7 +233,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     crate::parse_options(&mut opts, args)?;
 
     let stdout = std::io::stdout();
-    let mut stderr = std::io::stderr();
+    let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 4096);
 
     let resources_dir = resources_dir();
     if resources_dir.is_none() {
@@ -262,7 +262,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
         return Ok(0);
     }
 
-    let mut out = std::io::BufWriter::new(stdout.lock());
+    let mut out = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 4096);
     write_plain(&mut out, &themes, &opts)?;
     // Don't forget to flush!
     out.flush()?;

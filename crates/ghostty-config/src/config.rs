@@ -3935,7 +3935,8 @@ impl Config {
     ///
     /// `path` must be resolved and absolute.
     pub fn load_file(&mut self, path: &EncodedOs) -> Result<(), Error> {
-        assert!(path.to_path()?.is_absolute());
+        path.to_path()?;
+        assert!(path.is_zig_absolute());
         let file = match crate::file_load::open(path) {
             Ok(f) => f,
             Err(crate::file_load::OpenFileError::NotAFile) => {
@@ -4260,7 +4261,8 @@ impl Config {
 
             // All paths should already be absolute at this point because
             // they're fixed up after each load.
-            assert!(path.to_path()?.is_absolute());
+            path.to_path()?;
+            assert!(path.is_zig_absolute());
 
             // We must only load a unique file once
             if !loaded.insert(path.clone()) {

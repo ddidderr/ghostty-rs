@@ -81,6 +81,36 @@ pub fn os_bytes(s: &OsStr) -> Vec<u8> {
     s.to_str().map_or_else(Vec::new, |s| s.as_bytes().to_vec())
 }
 
+/// `std.fs.path.isAbsolutePosix` (Zig 0.15.2).
+#[must_use]
+pub fn zig_is_absolute_posix(path: &[u8]) -> bool {
+    path.first() == Some(&b'/')
+}
+
+/// `std.fs.path.isAbsoluteWindows` (Zig 0.15.2): any leading separator (a
+/// rooted or UNC path) or `<byte>:` followed by a separator is absolute.
+#[must_use]
+pub fn zig_is_absolute_windows(path: &[u8]) -> bool {
+    match path {
+        [] => false,
+        [b'/' | b'\\', ..] => true,
+        [_, b':', b'/' | b'\\', ..] => true,
+        _ => false,
+    }
+}
+
+/// `std.fs.path.isAbsolute` for the host platform. Rust's
+/// `Path::is_absolute` differs on Windows (it requires a prefix, so `\theme`
+/// and `/theme` are not absolute there).
+#[must_use]
+pub fn zig_is_absolute(path: &[u8]) -> bool {
+    if cfg!(windows) {
+        zig_is_absolute_windows(path)
+    } else {
+        zig_is_absolute_posix(path)
+    }
+}
+
 /// Build an OS string from raw bytes (WTF-8 on Windows; bytes that are not
 /// well-formed WTF-8 become U+FFFD). Filesystem and process operations must
 /// use their checked conversions instead.
@@ -288,6 +318,12 @@ impl EncodedOs {
     #[must_use]
     pub fn from_path(p: &std::path::Path) -> Self {
         Self::from_os(p.as_os_str())
+    }
+
+    /// `std.fs.path.isAbsolute` on the decoded bytes.
+    #[must_use]
+    pub fn is_zig_absolute(&self) -> bool {
+        zig_is_absolute(&self.to_bytes())
     }
 
     /// Encode raw bytes.
@@ -796,5 +832,39 @@ mod tests {
         let o = os_from_bytes(vec![0xff, b'/', 0x80]);
         let s = os_to_config_string(&o);
         assert_eq!(config_str_to_os(&s), o);
+    }
+}
+
+#[cfg(test)]
+mod zig_absolute_tests {
+    use super::*;
+
+    #[test]
+    fn windows_is_absolute_matches_zig_0_15_2() {
+        for (p, want) in [
+            ("", false),
+            ("/", true),
+            ("//server/file", true),
+            ("\\\\server", true),
+            ("\\theme", true),
+            ("/theme", true),
+            ("c", false),
+            ("c:", false),
+            ("c:\\", true),
+            ("c:/", true),
+            ("1:/x", true),
+            ("C:cwd/another", false),
+            ("directory\\directory", false),
+        ] {
+            assert_eq!(zig_is_absolute_windows(p.as_bytes()), want, "{p}");
+        }
+    }
+
+    #[test]
+    fn posix_is_absolute_matches_zig_0_15_2() {
+        assert!(!zig_is_absolute_posix(b""));
+        assert!(zig_is_absolute_posix(b"/home/foo"));
+        assert!(!zig_is_absolute_posix(b"bar/"));
+        assert!(!zig_is_absolute_posix(b"\\theme"));
     }
 }

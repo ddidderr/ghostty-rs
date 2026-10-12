@@ -605,6 +605,30 @@ impl_int_field!(
     isize => |_| CValue::Unsupported
 );
 
+/// Zig `u21` (a Unicode scalar range integer, `0..=0x1F_FFFF`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct U21(pub u32);
+
+impl U21 {
+    pub const MAX: u32 = 0x1f_ffff;
+}
+
+impl ConfigField for U21 {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let v = value.ok_or(ArgError::ValueRequired)?;
+        let n = ghostty_os::zig_fmt::parse_int::<u32>(v, 0).map_err(|_| ArgError::InvalidValue)?;
+        if n > Self::MAX {
+            return Err(ArgError::InvalidValue);
+        }
+        *self = U21(n);
+        Ok(())
+    }
+
+    fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
+        writeln!(f.writer, "{} = {}", f.name, self.0)
+    }
+}
+
 macro_rules! impl_float_field {
     ($($t:ty => $cv:expr),*) => {$(
         impl ConfigField for $t {
@@ -1019,6 +1043,29 @@ mod tests {
         fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
             self.parse_field_bytes(key, value)
         }
+    }
+
+    config_struct! {
+        pub struct Cp {
+            "cp" => cp: Option<U21> = None,
+        }
+    }
+
+    #[test]
+    fn u21_field_matches_zig_range() {
+        let mut c = Cp::raw_default();
+        c.parse_field("cp", Some("0x1FFFFF")).unwrap();
+        assert_eq!(c.cp, Some(U21(0x1f_ffff)));
+        c.parse_field("cp", Some("0b1000001")).unwrap();
+        assert_eq!(c.cp, Some(U21(65)));
+        for bad in ["0x200000", "4294967295", "99999999999999999999", "-1", "x"] {
+            assert_eq!(
+                c.parse_field("cp", Some(bad)),
+                Err(ArgError::InvalidValue),
+                "{bad}"
+            );
+        }
+        assert_eq!(c.parse_field("cp", None), Err(ArgError::ValueRequired));
     }
 
     config_enum! {

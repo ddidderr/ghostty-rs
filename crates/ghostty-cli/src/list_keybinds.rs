@@ -73,7 +73,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     }
 
     let text = format_plain(&config.keybind, opts.docs)?;
-    let mut out = std::io::BufWriter::new(stdout.lock());
+    let mut out = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 1024);
     out.write_all(text.as_bytes())?;
     // Don't forget to flush!
     out.flush()?;

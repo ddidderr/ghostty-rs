@@ -163,7 +163,7 @@ pub fn open(path: &EncodedOs) -> Result<File, OpenFileError> {
         log::warn!("invalid config path: {err}");
         OpenFileError::FileOpenFailed
     })?;
-    assert!(real.is_absolute());
+    assert!(path.is_zig_absolute());
 
     let file = File::open(&real).map_err(|err| {
         if err.kind() == std::io::ErrorKind::NotFound {

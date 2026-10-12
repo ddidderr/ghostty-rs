@@ -97,7 +97,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     }
 
     // Output each
-    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
+    let mut stdout = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 2048);
     for family in &families {
         let Some(list) = map.get_mut(family) else {
             continue;

@@ -50,8 +50,8 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
-    let mut stdout = std::io::BufWriter::new(std::io::stdout().lock());
-    let mut stderr = std::io::BufWriter::new(std::io::stderr().lock());
+    let mut stdout = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 1024);
+    let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 1024);
 
     let result = run_inner(&opts, &mut stdout, &mut stderr);
 

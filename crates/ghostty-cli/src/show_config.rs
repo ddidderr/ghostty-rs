@@ -60,9 +60,9 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     };
 
     let text = format_config_bytes(&config, &opts)?;
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 4096);
     stdout.write_all(&text)?;
-    stdout.flush()?;
+    stdout.end()?;
     Ok(0)
 }
 

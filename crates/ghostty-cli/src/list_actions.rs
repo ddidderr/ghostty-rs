@@ -27,7 +27,7 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     crate::parse_options(&mut opts, args)?;
 
     let out = generate_plaintext(opts.docs);
-    let mut stdout = std::io::stdout().lock();
+    let mut stdout = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 4096);
     stdout.write_all(out.as_bytes())?;
     stdout.flush()?;
     Ok(0)

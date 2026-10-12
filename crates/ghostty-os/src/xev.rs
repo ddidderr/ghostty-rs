@@ -108,24 +108,13 @@ pub fn available(be: Backend) -> bool {
     }
 }
 
-/// libxev performs a harmless `io_uring_setup(256)` to see if we have
-/// io_uring support. We additionally require what our loop needs
-/// (`IORING_OP_POLL_ADD`, `IORING_OP_POLL_REMOVE` and the `EXT_ARG` timeout),
-/// so that "available" never selects a ring that cannot run the IO loop.
+/// libxev's `io_uring.available()`: a harmless `IoUring.init(256, 0)` (an
+/// `io_uring_setup` with 256 entries and no flags) that either succeeds or
+/// not. Nothing more is required; a reactor that wants a feature the ring
+/// lacks (such as the `EXT_ARG` wait timeout) has to cope with its absence.
 #[cfg(target_os = "linux")]
 fn io_uring_available() -> bool {
-    let Ok(ring) = io_uring::IoUring::new(256) else {
-        return false;
-    };
-    if !ring.params().is_feature_ext_arg() {
-        return false;
-    }
-    let mut probe = io_uring::Probe::new();
-    if ring.submitter().register_probe(&mut probe).is_err() {
-        return false;
-    }
-    probe.is_supported(io_uring::opcode::PollAdd::CODE)
-        && probe.is_supported(io_uring::opcode::PollRemove::CODE)
+    io_uring::IoUring::new(256).is_ok()
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -193,6 +182,16 @@ mod tests {
         let before = backend();
         assert!(!prefer(Backend::Iocp));
         assert_eq!(backend(), before);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn io_uring_available_is_plain_setup() {
+        // libxev's check is exactly a successful `IoUring.init(256, 0)`.
+        assert_eq!(
+            available(Backend::IoUring),
+            io_uring::IoUring::new(256).is_ok()
+        );
     }
 
     #[cfg(target_os = "linux")]

@@ -1,6 +1,9 @@
 //! `+show-face` (ZIG/src/cli/show_face.zig).
 
+use std::io::Write;
+
 use ghostty_config::{
+    cli_args::U21,
     config::Config,
     config_enum,
     config_struct,
@@ -14,8 +17,12 @@ use ghostty_font::{
     face::DesiredSize,
     shared_grid_set::DerivedConfig,
 };
+use ghostty_os::osbytes::EncodedOs;
 
-use crate::error::Error;
+use crate::{
+    error::Error,
+    zig_writer::{Sink, ZigWriter, stdout_sink},
+};
 
 config_enum! {
     /// Font style (Zig: `font.Style`).
@@ -38,10 +45,10 @@ config_enum! {
 config_struct! {
     pub struct Options {
         /// The codepoint to search for.
-        "cp" => cp: Option<u32> = None,
+        "cp" => cp: Option<U21> = None,
 
         /// Search for all of the codepoints in the string.
-        "string" => string: Option<String> = None,
+        "string" => string: Option<EncodedOs> = None,
 
         /// Font style to search for.
         "style" => style: Style = Style::Regular,
@@ -82,7 +89,15 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
-    run_args(&opts, &mut std::io::stdout(), &mut std::io::stdout())
+    // Zig creates both writers on stdout (`File.stdout()`), each with its own
+    // 1024 byte buffer, and flushes stdout then stderr at the end.
+    let sink: Sink = stdout_sink();
+    let mut stdout = ZigWriter::new(sink.clone(), 1024);
+    let mut stderr = ZigWriter::new(sink, 1024);
+    let result = run_args(&opts, &mut stdout, &mut stderr);
+    let _ = stdout.flush();
+    let _ = stderr.flush();
+    result
 }
 
 fn run_args(
@@ -175,16 +190,25 @@ fn run_args(
 
     let mut rc = None;
     if let Some(cp) = opts.cp {
-        rc = lookup(stdout, stderr, &grid, style, presentation, cp)?;
+        rc = lookup(stdout, stderr, &grid, style, presentation, cp.0)?;
     }
     if rc.is_none()
         && let Some(string) = &opts.string
     {
-        for ch in string.chars() {
-            rc = lookup(stdout, stderr, &grid, style, presentation, ch as u32)?;
-            if rc.is_some() {
-                break;
+        // `Utf8View.init` validates the whole string before any lookup.
+        if let Ok(text) = std::str::from_utf8(&string.to_bytes()) {
+            for ch in text.chars() {
+                rc = lookup(stdout, stderr, &grid, style, presentation, ch as u32)?;
+                if rc.is_some() {
+                    break;
+                }
             }
+        } else {
+            write!(
+                stderr,
+                "Unable to parse string as unicode: error.InvalidUtf8"
+            )?;
+            rc = Some(1);
         }
     }
 
@@ -229,4 +253,68 @@ fn lookup(
         "U+{cp:02X} \u{ab} {ch} \u{bb} found in face \u{201c}{name}\u{201d}."
     )?;
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn parse(args: &[&[u8]]) -> Options {
+        let mut full: Vec<&[u8]> = vec![b"ghostty"];
+        full.extend_from_slice(args);
+        let mut opts = Options::default();
+        crate::parse_options(&mut opts, &full).unwrap();
+        opts
+    }
+
+    #[test]
+    fn cp_is_u21() {
+        let o = parse(&[b"--cp=0x1FFFFF"]);
+        assert_eq!(o.cp, Some(U21(0x1f_ffff)));
+        assert!(o.diagnostics.is_empty());
+        for bad in ["--cp=0x200000", "--cp=4294967295", "--cp=-1"] {
+            let o = parse(&[bad.as_bytes()]);
+            assert_eq!(o.cp, None, "{bad}");
+            let d = &o.diagnostics.items()[0];
+            assert_eq!(d.key, "cp");
+            assert!(d.to_string().contains("invalid value"), "{d}");
+        }
+    }
+
+    #[test]
+    fn invalid_cp_exits_1_without_panic() {
+        let o = parse(&[b"--cp=4294967295"]);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(run_args(&o, &mut out, &mut err).unwrap(), 1);
+        let text = String::from_utf8(err).unwrap();
+        assert!(
+            text.starts_with("config error: cli:") && text.contains("cp: invalid value"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn string_accepts_raw_bytes_at_parse() {
+        let o = parse(&[b"--cp=65", b"--string=\xff"]);
+        assert!(o.diagnostics.is_empty());
+        assert_eq!(o.string.unwrap().to_bytes(), b"\xff");
+    }
+
+    #[test]
+    fn invalid_utf8_string_fails_after_cp_lookup() {
+        let o = parse(&[b"--config-default-files=false", b"--string=\xff"]);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        // Without a usable font setup this can fail earlier; only assert the
+        // Zig message when the grid was available.
+        let rc = run_args(&o, &mut out, &mut err).unwrap();
+        let err = String::from_utf8(err).unwrap();
+        if err.contains("Unable to") && !err.contains("as unicode") {
+            return;
+        }
+        assert_eq!(rc, 1);
+        assert_eq!(err, "Unable to parse string as unicode: error.InvalidUtf8");
+    }
 }

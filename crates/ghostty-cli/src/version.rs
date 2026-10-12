@@ -12,7 +12,7 @@ use crate::{
 pub fn run(_args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let stdout = std::io::stdout();
     let tty = stdout.is_terminal();
-    let mut out = std::io::BufWriter::new(stdout.lock());
+    let mut out = crate::zig_writer::ZigWriter::new(crate::zig_writer::stdout_sink(), 1024);
     write_version(&mut out, &build_info::get(), tty)?;
     out.flush()?;
     Ok(0)
