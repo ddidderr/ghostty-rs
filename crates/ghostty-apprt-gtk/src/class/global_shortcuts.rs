@@ -157,6 +157,42 @@ fn vardict(entries: Vec<(&str, glib::Variant)>) -> glib::Variant {
     map.to_variant()
 }
 
+/// `(a{sv})`: the `CreateSession` arguments.
+fn create_session_payload(handle_token: &str, session_handle_token: &str) -> glib::Variant {
+    let opts = vardict(vec![
+        ("handle_token", handle_token.to_variant()),
+        ("session_handle_token", session_handle_token.to_variant()),
+    ]);
+    glib::Variant::tuple_from_iter([opts])
+}
+
+/// `(oa(sa{sv})sa{sv})`: the `BindShortcuts` arguments (session handle,
+/// shortcuts, parent window, options).
+fn bind_shortcuts_payload<'a>(
+    handle: &str,
+    shortcuts: impl Iterator<Item = (&'a str, String)>,
+    request_token: &str,
+) -> Option<glib::Variant> {
+    let handle = ObjectPath::try_from(handle.to_owned()).ok()?;
+    let binds = glib::Variant::array_from_iter_with_type(
+        glib::VariantTy::new("(sa{sv})").ok()?,
+        shortcuts.map(|(trigger, description)| {
+            let opts = vardict(vec![
+                ("description", description.to_variant()),
+                ("preferred_trigger", trigger.to_variant()),
+            ]);
+            glib::Variant::tuple_from_iter([trigger.to_variant(), opts])
+        }),
+    );
+    let opts = vardict(vec![("handle_token", request_token.to_variant())]);
+    Some(glib::Variant::tuple_from_iter([
+        handle.to_variant(),
+        binds,
+        String::new().to_variant(),
+        opts,
+    ]))
+}
+
 impl GlobalShortcuts {
     pub fn new() -> Self {
         glib::Object::new()
@@ -279,39 +315,18 @@ impl GlobalShortcuts {
     fn make_payload(&self, method: Method, request_token: &str) -> Option<glib::Variant> {
         match method {
             // https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html#org-freedesktop-portal-globalshortcuts-createsession
-            Method::CreateSession => {
-                let opts = vardict(vec![
-                    ("handle_token", request_token.to_variant().to_variant()),
-                    (
-                        "session_handle_token",
-                        generate_token().to_variant().to_variant(),
-                    ),
-                ]);
-                Some((opts,).to_variant())
-            }
+            Method::CreateSession => Some(create_session_payload(request_token, &generate_token())),
             // https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.GlobalShortcuts.html#org-freedesktop-portal-globalshortcuts-bindshortcuts
             Method::BindShortcuts => {
                 let imp = self.imp();
                 let handle = imp.handle.borrow().clone()?;
-                let handle = ObjectPath::try_from(handle).ok()?;
-
-                let binds: Vec<(String, glib::Variant)> = imp
-                    .map
-                    .borrow()
-                    .iter()
-                    .map(|(trigger, action)| {
-                        let opts = vardict(vec![
-                            ("description", action.to_string().to_variant().to_variant()),
-                            ("preferred_trigger", trigger.to_variant().to_variant()),
-                        ]);
-                        (trigger.clone(), opts)
-                    })
-                    .collect();
-                let opts = vardict(vec![(
-                    "handle_token",
-                    request_token.to_variant().to_variant(),
-                )]);
-                Some((handle, binds, String::new(), opts).to_variant())
+                let map = imp.map.borrow();
+                bind_shortcuts_payload(
+                    &handle,
+                    map.iter()
+                        .map(|(trigger, action)| (trigger.as_str(), action.to_string())),
+                    request_token,
+                )
             }
         }
     }
@@ -457,5 +472,42 @@ impl GlobalShortcuts {
         };
         let Some(action) = action else { return };
         self.emit_by_name::<()>("trigger", &[&action.to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn create_session_payload_signature() {
+        let v = create_session_payload("tok", "stok");
+        assert_eq!(v.type_().as_str(), "(a{sv})");
+        let (m,): (HashMap<String, glib::Variant>,) = v.get().unwrap();
+        assert_eq!(m["handle_token"].get::<String>().unwrap(), "tok");
+        assert_eq!(m["session_handle_token"].get::<String>().unwrap(), "stok");
+    }
+
+    #[test]
+    fn bind_shortcuts_payload_signature() {
+        let v = bind_shortcuts_payload(
+            "/org/freedesktop/portal/desktop/session/1_2/x",
+            [("CTRL+ALT+x", "new_window".to_owned())].into_iter(),
+            "tok",
+        )
+        .unwrap();
+        assert_eq!(v.type_().as_str(), "(oa(sa{sv})sa{sv})");
+        assert_eq!(v.n_children(), 4);
+        let binds = v.child_value(1);
+        assert_eq!(binds.n_children(), 1);
+        let bind = binds.child_value(0);
+        assert_eq!(bind.child_value(0).str(), Some("CTRL+ALT+x"));
+        let opts: HashMap<String, glib::Variant> = bind.child_value(1).get().unwrap();
+        assert_eq!(opts["description"].get::<String>().unwrap(), "new_window");
+        assert_eq!(
+            opts["preferred_trigger"].get::<String>().unwrap(),
+            "CTRL+ALT+x"
+        );
     }
 }

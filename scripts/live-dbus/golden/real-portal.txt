@@ -1,0 +1,14 @@
+== facts ==
+portal frontend: (<uint32 2>,)
+tty: startup: 997 reports=1 last bg=rgb:1111/2222/3333
+tty: after gsettings color-scheme=prefer-light: 997 reports=1,2 last bg=rgb:ffff/eeee/dddd
+tty: after gsettings color-scheme=prefer-dark: 997 reports=2,1 last bg=rgb:1111/2222/3333
+tty: after gsettings color-scheme=default: 997 reports=1,2 last bg=rgb:ffff/eeee/dddd
+tty: after gsettings color-scheme=prefer-dark: 997 reports=2,1 last bg=rgb:1111/2222/3333
+global-shortcuts request error: GDBus.Error:org.freedesktop.portal.Error.NotAllowed
+global-shortcuts request error: GDBus.Error:org.freedesktop.portal.Error.NotAllowed
+global-shortcuts request error: GDBus.Error:org.freedesktop.portal.Error.NotAllowed
+global-shortcuts request error: GDBus.Error:org.freedesktop.portal.Error.NotAllowed
+global-shortcuts request error: GDBus.Error:org.freedesktop.portal.Error.NotAllowed
+alive: instances=1
+== mock received ==

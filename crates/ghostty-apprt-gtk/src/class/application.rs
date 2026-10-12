@@ -293,6 +293,12 @@ mod imp {
         /// The global shortcut logic.
         pub global_shortcuts: OnceCell<GlobalShortcuts>,
 
+        /// True once the shortcuts' `config` property is bound to ours
+        /// (Zig: `bindProperty` in `startupGlobalShortcuts`, after the
+        /// D-Bus connection was set; before that the config must not reach
+        /// the shortcuts, or the portal session is created twice).
+        pub global_shortcuts_bound: Cell<bool>,
+
         /// Set to true so long as we request a window exactly once. This
         /// prevents quitting the app before we've shown one window.
         pub requested_window: Cell<bool>,
@@ -827,7 +833,9 @@ impl Application {
         }
 
         // Keep global shortcuts in sync with the config (property binding).
-        if let Some(gs) = self.imp().global_shortcuts.get() {
+        if self.imp().global_shortcuts_bound.get()
+            && let Some(gs) = self.imp().global_shortcuts.get()
+        {
             gs.set_config(self.imp().config.borrow().as_ref());
         }
     }
@@ -1075,6 +1083,7 @@ impl Application {
         gs.set_connection(self.dbus_connection().as_ref());
 
         // Keep the shortcut config in sync with the app.
+        self.imp().global_shortcuts_bound.set(true);
         gs.set_config(self.imp().config.borrow().as_ref());
 
         // Setup the signal handler for global shortcut triggers

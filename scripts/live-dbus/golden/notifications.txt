@@ -1,0 +1,16 @@
+== facts ==
+notifications so far: 7
+alive after ActionInvoked: instances=1 windows=1
+alive after more ActionInvoked: instances=1 windows=1
+notifications after desktop-notifications=false: 7
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.Notifications.Notify ["", 0, "", "Ghostty", "osc9 body", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 0, "", "Title777", "Body777", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 0, "", "Ghostty", "OnlyBody", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 0, "", "Only title", "", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 0, "", "Ghostty", "<b>markup</b> & \"quotes\" \u00e9\u20ac", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 1, "", "Ghostty", "osc9 body", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]
+org.freedesktop.Notifications.Notify ["", 0, "", "semi", "colon;body", ["default", ""], {"desktop-entry": "com.mitchellh.ghostty", "image-path": "com.mitchellh.ghostty", "urgency": 1}, -1]

@@ -299,3 +299,10 @@ check-all: clippy test check-wasm check-windows
 # Capture original Ghostty vs the Rust build in a headless weston and diff them.
 visual-parity *scenarios:
     RUST_BIN="${RUST_BIN:-target/vp/production/ghostty}" scripts/visual-parity.sh {{scenarios}}
+
+# Live D-Bus / portal comparison (private bus + nested weston): notifications,
+# single-instance, global shortcuts, color-scheme, cgroup scope. Builds the
+# iteration binary first. UPDATE_GOLDEN=1 re-records scripts/live-dbus/golden.
+live-dbus *scenarios:
+    scripts/live-dbus/build-rust.sh
+    RUST_BIN="${RUST_BIN:-target/vp/production/ghostty}" scripts/live-dbus-test.sh {{scenarios}}

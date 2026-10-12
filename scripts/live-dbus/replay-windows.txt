@@ -1,0 +1,4 @@
+wait 5000
+windows-dump
+wait 4000
+windows-dump

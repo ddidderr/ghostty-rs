@@ -1,0 +1,15 @@
+== facts ==
+phase default:
+phase always:
+  call: {"args": ["app-ghostty-surface-transient-PID.scope", "fail", [["ManagedOOMMemoryPressure", "kill"], ["PIDs", [PID]]], []], "iface": "org.freedesktop.systemd1.Manager", "method": "StartTransientUnit"}
+phase always-limits:
+  call: {"args": ["app-ghostty-surface-transient-PID.scope", "fail", [["MemoryHigh", 123456789], ["TasksMax", 77], ["ManagedOOMMemoryPressure", "kill"], ["PIDs", [PID]]], []], "iface": "org.freedesktop.systemd1.Manager", "method": "StartTransientUnit"}
+phase never:
+phase always-failing:
+  call: {"args": ["app-ghostty-surface-transient-PID.scope", "fail", [["ManagedOOMMemoryPressure", "kill"], ["PIDs", [PID]]], []], "iface": "org.freedesktop.systemd1.Manager", "method": "StartTransientUnit"}
+cgroup done
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.systemd1.Manager.StartTransientUnit ["app-ghostty-surface-transient-PID.scope", "fail", [["ManagedOOMMemoryPressure", "kill"], ["PIDs", [PID]]], []]

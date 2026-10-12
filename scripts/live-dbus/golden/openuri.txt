@@ -1,0 +1,7 @@
+== facts ==
+spawn: xdg-open argc=1 [$RUN/cfg/ghostty/config] cwd=$ROOT
+portal OpenURI/OpenFile calls: 0
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]

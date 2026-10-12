@@ -1,0 +1,16 @@
+== facts ==
+step start: windows=1
+new_window shortcut id: CTRL+ALT+x
+step Activated(new_window): windows=2
+step Activated(unknown): windows=2
+step reload without global: windows=2
+step reload with global again: windows=2
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.portal.GlobalShortcuts.CreateSession [{"handle_token": "ghostty_TOKEN", "session_handle_token": "ghostty_TOKEN"}]
+org.freedesktop.portal.GlobalShortcuts.BindShortcuts ["/org/freedesktop/portal/desktop/session/SENDER/ghostty_TOKEN", [["CTRL+ALT+x", {"description": "new_window", "preferred_trigger": "CTRL+ALT+x"}], ["SHIFT+LOGO+b", {"description": "new_tab", "preferred_trigger": "SHIFT+LOGO+b"}], ["SHIFT+CTRL+F12", {"description": "reload_config", "preferred_trigger": "SHIFT+CTRL+F12"}], ["CTRL+ALT+q", {"description": "text:hi", "preferred_trigger": "CTRL+ALT+q"}]], "", {"handle_token": "ghostty_TOKEN"}]
+org.freedesktop.portal.Session.Close {"path": "/org/freedesktop/portal/desktop/session/SENDER/ghostty_TOKEN"}
+org.freedesktop.portal.GlobalShortcuts.CreateSession [{"handle_token": "ghostty_TOKEN", "session_handle_token": "ghostty_TOKEN"}]
+org.freedesktop.portal.GlobalShortcuts.BindShortcuts ["/org/freedesktop/portal/desktop/session/SENDER/ghostty_TOKEN", [["CTRL+ALT+x", {"description": "new_window", "preferred_trigger": "CTRL+ALT+x"}]], "", {"handle_token": "ghostty_TOKEN"}]

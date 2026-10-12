@@ -1,0 +1,12 @@
+== facts ==
+tty: startup: 997 reports=1 last bg=rgb:1111/2222/3333
+tty: after portal color-scheme=2: 997 reports=1,2 last bg=rgb:ffff/eeee/dddd
+tty: after portal color-scheme=1: 997 reports=2,1 last bg=rgb:1111/2222/3333
+tty: after portal color-scheme=0: 997 reports=1,2 last bg=rgb:ffff/eeee/dddd
+tty: after portal color-scheme=2: 997 reports=- last bg=rgb:ffff/eeee/dddd
+tty: after reload window-theme=dark: 997 reports=2 last bg=rgb:ffff/eeee/dddd
+tty: after portal color-scheme=2 with window-theme=dark: 997 reports=- last bg=rgb:ffff/eeee/dddd
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]

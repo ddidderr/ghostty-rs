@@ -1,0 +1,49 @@
+== facts ==
+first instance owns name: 0
+step first: windows=1 instances=1
+ipc newwin rc=0
+step +new-window: windows=2 instances=1
+ipc newwin-e rc=0
+step +new-window -e: windows=3 instances=1
+ipc newwin-wd rc=0
+step +new-window --working-directory: windows=4 instances=1
+ipc newwin-e-wd rc=0
+step +new-window -e..--working-directory: windows=5 instances=1
+ipc newwin-class rc=1
+  ipc-err: D-Bus method call returned an error err=GDBus.Error:org.freedesktop.DBus.Error.ServiceUnknown: The name com.example.nobody was not provided by any .service files
+step +new-window --class=nobody: windows=5 instances=1
+second launch rc=0
+step second launch: windows=6 instances=1
+child: /usr/bin/bash  cwd=$HOME
+child: /usr/bin/bash  cwd=$HOME
+child: /usr/bin/bash  cwd=$ROOT
+child: /usr/bin/bash  cwd=/usr
+child: sleep 601  cwd=$ROOT
+step -e launch: windows=6 instances=2
+step -e launch ended: windows=6 instances=1
+custom class owns name: 0
+step custom: windows=1 instances=2
+ipc newwin-custom rc=0
+step +new-window --class=custom: custom windows=2 default windows=6
+ipc newwin-custom-e rc=0
+step +new-window --class=custom -e: custom windows=3 default windows=6
+ipc newwin-badclass rc=1
+  ipc-err: D-Bus bus name is not valid: 1bad
+badclass done
+bus name: com.example.custom-app
+bus name: com.mitchellh.ghostty
+actions: ([open-config, present-surface, quit, new-window-command, new-window, reload-config],)
+custom actions: ([open-config, present-surface, quit, new-window-command, new-window, reload-config],)
+== mock received ==
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "color-scheme"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "contrast"]
+org.freedesktop.portal.Settings.Read ["org.freedesktop.appearance", "accent-color"]
