@@ -91,7 +91,8 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV14 | final Codex verification (clean HEAD) | codex astra | ✅ | RV13 4/4 addressed; 1 P2 (+show-face u21 panic) + 5 P3 → Z17 |
 | Z17 | show-face u21/UTF-8/ordering, Windows isAbsolute, io_uring detection | sonnet | ✅ | + first fix-deviant(cli) commit |
 | RV15 | final Codex verification (clean HEAD; DEVIANT_FIXES-aware) | codex astra | ✅ | 1 P2 (D-Bus abort → deviant fix), 4 P3, 9 register corrections → Z18 |
-| Z18 | RV15: D-Bus abort (fix-deviant), open.rs stdin/snap/50KiB, show-face fragments, register fixes | sonnet | 🟨 | |
+| Z18 | RV15: D-Bus abort (fix-deviant), open.rs stdin/snap/50KiB, show-face fragments, register fixes | sonnet | ✅ | 3574 tests; 2 fix-deviant commits |
+| RV16 | final Codex verification (clean HEAD) | codex astra | 🟨 | |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -140,3 +141,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: RV14 → Z17 launched.
 - 2026-10-12: User: mark intentional deviations as fix-deviant(...) commits + register. Z17 committed as parity commit + fix-deviant(cli).
 - 2026-10-12: Gate green (3569 tests, all cross-checks). RV15 running.
+- 2026-10-12: Z18 committed (parity + fix-deviant(gtk) + fix-deviant(os)); gate green; RV16 running.
