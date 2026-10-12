@@ -1,10 +1,10 @@
-# Known differences (left by the stopping criterion)
+# Known differences
 
-All previously listed differences (rows 5-10: theme-search word navigation,
-grapheme backspace, ASCII-only case folding, initial preview colors, load_file
-error propagation, subprocess cleanup wait) have been fixed; see
-`notes/final-P3.md` (row 10 is registered as a deviant fix in
-`DEVIANT_FIXES.md`). No known differences are currently recorded here.
+All behavioural differences found by the audits (RV1–RV18) have been fixed;
+intentional deviations (upstream bugs fixed rather than replicated) are listed
+in DEVIANT_FIXES.md. No known unfixed behavioural differences remain.
+
+What remains is verification coverage that this Linux machine cannot provide:
 
 ## Not verifiable on this machine
 

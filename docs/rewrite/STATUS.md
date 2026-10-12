@@ -1,6 +1,6 @@
 # Status
 
-**Overall: complete (2026-10-12); final polish in progress (P3 leftovers, Windows runtime tests under Wine).** Ghostty 1.3.1's Zig code is fully ported to Rust: Linux/GTK app (built, tested, verified at runtime, pixel-identical to the original), libghostty + libghostty-vt C APIs (ABI-checked), WASM (node-tested), macOS and Windows code paths (compile-checked with clippy -D warnings; not runnable here). 3584 tests; terminal core differentially fuzzed against Ghostty's Zig code (390k+ cases, 0 divergences); config/CLI output byte-identical to the installed Ghostty. Review rounds stopped after RV18 per the stopping criterion in PLAN.md. Intentional deviations: DEVIANT_FIXES.md; remaining minor differences: KNOWN_DIFFERENCES.md.
+**Overall: complete (2026-10-12).** All of Ghostty 1.3.1's Zig code is ported to Rust. Linux/GTK app: built, tested, verified at runtime, pixel-identical to the original. libghostty + libghostty-vt C APIs: ABI-checked against the unchanged headers, Ghostty's C/WASM examples run. WASM: node-tested. Windows: runtime-tested under Wine 11 (2758 tests incl. ConPTY). macOS: compile-checked with clippy -D warnings (cannot run here). 3602 native tests; terminal core differentially fuzzed against Ghostty's Zig code (390k+ cases, 0 divergences; panic hunt 0 panics); config/CLI output byte-identical to the installed Ghostty. Intentional deviations: DEVIANT_FIXES.md (fix-deviant commits); no known unfixed differences (KNOWN_DIFFERENCES.md lists only unverifiable coverage).
 
 Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠️ done with gaps
 
@@ -100,7 +100,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | Z21 | final fix pass + KNOWN_DIFFERENCES.md | sonnet | ✅ | 3584 tests; fix-deviant(terminal) |
 | P3 | fix the 6 remaining KNOWN_DIFFERENCES rows | sonnet | ✅ | + fix-deviant(termio) getpgid |
 | WINE | run Windows code (incl. ConPTY) under Wine 11, fix bugs | sonnet | ✅ | 2758 tests pass under Wine; 2 fix-deviant |
-| ZWJ | theme search box ZWJ cluster rendering | sonnet | 🟨 | last item |
+| ZWJ | theme search box ZWJ cluster rendering | sonnet | ✅ | |
 | DEV | DEVIANT_FIXES.md register of all intentional deviations (with commits) | sonnet | ✅ | 30 fixed bugs, 11 kept quirks, 18 other |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
 | Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
@@ -157,3 +157,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: Z21 committed; project closed out per stopping criterion.
 - 2026-10-12: Stop-hook: fix remaining P3s (legit) and runtime-test Windows under Wine (found installed). No further audit rounds.
 - 2026-10-12: P3 + WINE committed (1 parity + 3 fix-deviant commits). Windows now runtime-tested under Wine (2758 pass).
+- 2026-10-12: All remaining legit items fixed (P3 rows, Wine runtime testing, ZWJ). Final gate: 3602 native tests, 2758 under Wine, all cross-checks green. Done.
