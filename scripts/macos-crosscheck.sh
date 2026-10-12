@@ -3,6 +3,8 @@
 # Uses `zig cc` wrappers for the few C build scripts in the dependency
 # tree; real macOS builds need none of this. See docs/rewrite/notes/macos-M1.md.
 # Usage: scripts/macos-crosscheck.sh [check|clippy] [target]
+# MACOS_CHECK_FEATURES="ghostty-font/font-backend-freetype" adds cargo features
+# (for example the FreeType-only font backend on Apple).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MODE=${1:-clippy}
@@ -54,8 +56,12 @@ CRATES=(-p ghostty-vt -p ghostty-unicode -p ghostty-datastruct -p ghostty-os -p 
   -p ghostty-config -p ghostty-terminal -p ghostty-font -p ghostty-renderer -p ghostty-termio
   -p ghostty-core -p ghostty-apprt -p ghostty-inspector -p ghostty-lib -p ghostty-crash
   -p ghostty-bench -p ghostty-vt-capi)
+FEATURES=()
+if [ -n "${MACOS_CHECK_FEATURES:-}" ]; then
+  FEATURES=(--features "$MACOS_CHECK_FEATURES")
+fi
 if [ "$MODE" = clippy ]; then
-  cargo clippy --target "$TARGET" "${CRATES[@]}" --lib --tests -- -D warnings
+  cargo clippy --target "$TARGET" "${CRATES[@]}" "${FEATURES[@]}" --lib --tests -- -D warnings
 else
-  cargo check --target "$TARGET" "${CRATES[@]}" --lib --tests
+  cargo check --target "$TARGET" "${CRATES[@]}" "${FEATURES[@]}" --lib --tests
 fi

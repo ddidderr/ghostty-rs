@@ -54,8 +54,7 @@ impl Inspector {
         }
 
         // Setup our core inspector
-        let scale = f64::from(RtSurface::get_content_scale(surface.as_ref()).x);
-        ghostty_inspector::setup(&mut ctx, scale);
+        ghostty_inspector::setup(&mut ctx);
         if let Err(err) = core.activate_inspector() {
             log::error!("failed to activate inspector err={err}");
         }

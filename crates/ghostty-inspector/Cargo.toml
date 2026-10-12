@@ -13,6 +13,13 @@ ghostty-terminal.workspace = true
 ghostty-vt.workspace = true
 log = "0.4"
 
+# Zig builds Dear ImGui with `-DIMGUI_ENABLE_FREETYPE` (pkg/dcimgui), so the
+# inspector font is rasterized with FreeType. The `freetype` feature needs a
+# system FreeType (pkg-config); other targets keep stb_truetype (see
+# `docs/rewrite/DEVIANT_FIXES.md`).
+[target.'cfg(not(any(windows, target_vendor = "apple", target_arch = "wasm32")))'.dependencies]
+dear-imgui-rs = { version = "0.19", features = ["freetype"] }
+
 [lints.rust]
 unsafe_code = "deny"
 

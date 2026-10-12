@@ -745,6 +745,10 @@ impl Surface {
     #[cfg(target_vendor = "apple")]
     #[must_use]
     pub fn quicklook_font(&self, scale: f32) -> Option<*mut std::ffi::c_void> {
+        // For non-CoreText (and the other CoreText variants) we return none.
+        if ghostty_font::options.backend != ghostty_font::Backend::Coretext {
+            return None;
+        }
         let grid = self.renderer.font_grid();
         let mut state = grid.write();
         let face = state
@@ -752,12 +756,7 @@ impl Surface {
             .collection
             .get_face(ghostty_font::collection::Index::default())
             .ok()?;
-        let font = face.quicklook_font(f64::from(scale));
-        Some(
-            objc2_core_foundation::CFRetained::into_raw(font)
-                .as_ptr()
-                .cast(),
-        )
+        ghostty_font::face::quicklook_font_raw(face, f64::from(scale))
     }
 
     /// Current sizes.

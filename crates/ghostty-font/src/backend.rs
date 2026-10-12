@@ -13,9 +13,10 @@
 //!   (Zig: `-Dfont-backend=...`). "There is no scenario that is the default"
 //!   for those; they're only used by people who want to self-compile Ghostty
 //!   and prefer the freetype aesthetic.
-//! * Non-Apple, non-wasm targets with the cargo feature
+//! * Non-wasm targets (Apple included) with the cargo feature
 //!   `font-backend-freetype`: [`Backend::Freetype`] (Zig
-//!   `-Dfont-backend=freetype`: no font discovery).
+//!   `-Dfont-backend=freetype`: no font discovery; takes precedence over the
+//!   `coretext-*` features).
 //! * wasm32: [`Backend::WebCanvas`].
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -104,11 +105,7 @@ pub struct Options {
     pub backend: Backend,
 }
 
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    not(target_vendor = "apple"),
-    feature = "font-backend-freetype"
-))]
+#[cfg(all(not(target_arch = "wasm32"), feature = "font-backend-freetype"))]
 pub const OPTIONS: Options = Options {
     backend: Backend::Freetype,
 };
@@ -122,13 +119,18 @@ pub const OPTIONS: Options = Options {
     backend: Backend::FontconfigFreetype,
 };
 
-#[cfg(all(target_vendor = "apple", feature = "coretext-freetype"))]
+#[cfg(all(
+    target_vendor = "apple",
+    feature = "coretext-freetype",
+    not(feature = "font-backend-freetype")
+))]
 pub const OPTIONS: Options = Options {
     backend: Backend::CoretextFreetype,
 };
 
 #[cfg(all(
     target_vendor = "apple",
+    not(feature = "font-backend-freetype"),
     feature = "coretext-harfbuzz",
     not(feature = "coretext-freetype")
 ))]
@@ -138,6 +140,7 @@ pub const OPTIONS: Options = Options {
 
 #[cfg(all(
     target_vendor = "apple",
+    not(feature = "font-backend-freetype"),
     feature = "coretext-noshape",
     not(feature = "coretext-freetype"),
     not(feature = "coretext-harfbuzz")
@@ -148,6 +151,7 @@ pub const OPTIONS: Options = Options {
 
 #[cfg(all(
     target_vendor = "apple",
+    not(feature = "font-backend-freetype"),
     not(feature = "coretext-freetype"),
     not(feature = "coretext-harfbuzz"),
     not(feature = "coretext-noshape")
@@ -164,6 +168,19 @@ pub const OPTIONS: Options = Options {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The `build.rs` cfgs must agree with the selected backend on every
+    /// target, including FreeType-only on Apple (Zig `Backend.has*`).
+    #[test]
+    fn selected_backend_matches_build_cfgs() {
+        let b = OPTIONS.backend;
+        assert_eq!(b.has_freetype(), cfg!(font_freetype));
+        assert_eq!(b.has_fontconfig(), cfg!(font_fontconfig));
+        assert_eq!(b.has_coretext(), cfg!(font_coretext));
+        assert_eq!(b.has_harfbuzz(), cfg!(font_harfbuzz));
+        assert_eq!(cfg!(font_discovery), b.has_fontconfig() || b.has_coretext());
+        assert_eq!(crate::HAS_DISCOVERY, cfg!(font_discovery));
+    }
 
     #[test]
     fn web_canvas_capabilities() {
@@ -236,11 +253,7 @@ mod tests {
         assert!(!b.has_coretext());
     }
 
-    #[cfg(all(
-        not(target_arch = "wasm32"),
-        not(target_vendor = "apple"),
-        feature = "font-backend-freetype"
-    ))]
+    #[cfg(all(not(target_arch = "wasm32"), feature = "font-backend-freetype"))]
     #[test]
     fn freetype_only_backend_selected() {
         let b = OPTIONS.backend;

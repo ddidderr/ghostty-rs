@@ -706,8 +706,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "728af47c10cb2b12aa36b942e610f894ecafc5d61d0056ab61f9629f02b3d5dc"
 dependencies = [
  "cc",
+ "pkg-config",
  "serde",
  "serde_json",
+ "vcpkg",
 ]
 
 [[package]]

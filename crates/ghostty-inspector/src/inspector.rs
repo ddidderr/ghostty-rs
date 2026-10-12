@@ -2,18 +2,19 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use dear_imgui_rs::{ConfigFlags, Context, FontSource, StbTrueTypeFontData, Ui};
+use dear_imgui_rs::{ConfigFlags, Context, FontSource, Ui};
 use ghostty_renderer::{overlay::Feature, state::InspectorHook};
 use ghostty_terminal::terminal::Terminal;
 
 use crate::widgets;
 
+/// The inspector font size in pixels. Zig hardcodes `16 * 2` ("This is
+/// currently hardcoded to a 2x content scale", with a TODO to recalculate it
+/// for different screen DPIs); the style is scaled separately by the apprt.
+pub const FONT_SIZE: f32 = 16.0 * 2.0;
+
 /// Setup the ImGui state. This requires an ImGui context.
-///
-/// `scale_factor` is the content scale of the display; Zig hardcodes a 2x
-/// scale here (with a TODO) and sizes the font as `16 * 2`, this uses
-/// `16 * scale_factor` instead.
-pub fn setup(ctx: &mut Context, scale_factor: f64) {
+pub fn setup(ctx: &mut Context) {
     let io = ctx.io_mut();
 
     // Enable docking, which we use heavily for the UI. Our colorspace is
@@ -28,14 +29,28 @@ pub fn setup(ctx: &mut Context, scale_factor: f64) {
         log::warn!("failed to disable the imgui log file err={err}");
     }
 
-    // Use our own embedded font
-    let font_size = (16.0 * scale_factor.max(1.0)) as f32;
-    match StbTrueTypeFontData::from_slice(ghostty_font::embedded::REGULAR) {
-        Ok(data) => {
-            ctx.font_atlas()
-                .add_font(&[FontSource::stb_truetype_with_size(data, font_size)]);
+    // Use our own embedded font. The atlas rasterizes it with FreeType (the
+    // default loader of the `freetype` build of Dear ImGui, as in Zig) where
+    // that build is available, otherwise with stb_truetype.
+    ctx.font_atlas().add_font(&[embedded_font_source()]);
+}
+
+#[cfg(not(any(windows, target_vendor = "apple", target_arch = "wasm32")))]
+#[allow(unsafe_code)]
+fn embedded_font_source() -> FontSource<'static> {
+    // SAFETY: the embedded font is a complete, valid TrueType font that
+    // lives for the whole program; Dear ImGui copies it on add.
+    unsafe { FontSource::ttf_data_with_size(ghostty_font::embedded::REGULAR, FONT_SIZE) }
+}
+
+#[cfg(any(windows, target_vendor = "apple", target_arch = "wasm32"))]
+fn embedded_font_source() -> FontSource<'static> {
+    match dear_imgui_rs::StbTrueTypeFontData::from_slice(ghostty_font::embedded::REGULAR) {
+        Ok(data) => FontSource::stb_truetype_with_size(data, FONT_SIZE),
+        Err(err) => {
+            log::warn!("failed to load the embedded inspector font err={err}");
+            FontSource::default_font_with_size(FONT_SIZE)
         }
-        Err(err) => log::warn!("failed to load the embedded inspector font err={err}"),
     }
 }
 
@@ -110,6 +125,18 @@ impl InspectorHook for Shared {
 
 #[cfg(test)]
 mod tests {
+    /// Zig sizes the font as `16 * 2` and rasterizes with FreeType.
+    #[test]
+    fn font_size_and_rasterizer_match_zig() {
+        assert!((super::FONT_SIZE - 32.0).abs() < f32::EPSILON);
+        let freetype_target = cfg!(not(any(
+            windows,
+            target_vendor = "apple",
+            target_arch = "wasm32"
+        )));
+        assert_eq!(dear_imgui_rs::HAS_FREETYPE, freetype_target);
+    }
+
     use ghostty_input::{Action, Key, KeyEvent};
     use ghostty_renderer::size::{CellSize, Padding, ScreenSize, Size};
     use ghostty_terminal::terminal::Options;
@@ -146,7 +173,7 @@ mod tests {
     #[test]
     fn draws_frames_headless() {
         let mut ctx = Context::create();
-        setup(&mut ctx, 1.0);
+        setup(&mut ctx);
         ctx.io_mut().set_display_size([1000.0, 700.0]);
         ctx.io_mut().set_delta_time(1.0 / 60.0);
         ctx.font_atlas()

@@ -3,9 +3,10 @@
 //!
 //! Backends (see `src/backend.rs`):
 //! * Linux & other non-Apple, non-wasm targets: `fontconfig_freetype`.
-//! * Linux & other non-Apple, non-wasm targets with the cargo feature
+//! * Any non-wasm target (Apple included) with the cargo feature
 //!   `font-backend-freetype`: `freetype` (FreeType rendering, HarfBuzz
-//!   shaping, no font discovery; Zig `-Dfont-backend=freetype`).
+//!   shaping, no font discovery; Zig `-Dfont-backend=freetype`). On Apple
+//!   it takes precedence over the `coretext-*` features.
 //! * wasm32: `web_canvas`.
 //! * Apple targets: `coretext` (default), or via cargo features
 //!   `coretext-freetype`, `coretext-harfbuzz`, `coretext-noshape`.
@@ -46,14 +47,15 @@ fn main() {
     let ct_hb = feat("CORETEXT_HARFBUZZ");
     let ct_noshape = feat("CORETEXT_NOSHAPE");
 
+    // Zig `-Dfont-backend=freetype` is valid on every non-wasm target,
+    // Darwin included (no discovery, so the embedded emoji fonts are used).
     let ft_only = feat("FONT_BACKEND_FREETYPE");
-    if ft_only && (wasm || apple) {
-        println!(
-            "cargo:warning=feature `font-backend-freetype` only applies to non-Apple, \
-             non-wasm targets; ignored"
-        );
+    if ft_only && wasm {
+        println!("cargo:warning=feature `font-backend-freetype` does not apply to wasm32; ignored");
     }
-    let ft_only = ft_only && !wasm && !apple;
+    let ft_only = ft_only && !wasm;
+    // CoreText is the backend on Apple targets unless FreeType-only is asked.
+    let coretext = apple && !ft_only;
 
     let on = |c: &str, v: bool| {
         if v {
@@ -61,17 +63,17 @@ fn main() {
         }
     };
 
-    let freetype = !wasm && (!apple || ct_ft);
-    let harfbuzz = !wasm && (!apple || ct_ft || ct_hb);
+    let freetype = !wasm && (!coretext || ct_ft);
+    let harfbuzz = !wasm && (!coretext || ct_ft || ct_hb);
     on("font_freetype", freetype);
     let fontconfig = !wasm && !apple && !ft_only;
     on("font_fontconfig", fontconfig);
-    on("font_discovery", fontconfig || apple);
+    on("font_discovery", fontconfig || coretext);
     on("font_harfbuzz", harfbuzz);
-    on("font_coretext", apple);
-    on("font_coretext_face", apple && !ct_ft);
+    on("font_coretext", coretext);
+    on("font_coretext_face", coretext && !ct_ft);
     // The shaper is CoreText only for the plain `coretext` backend;
     // `coretext_noshape` uses the no-op shaper.
-    on("font_coretext_shaper", apple && !harfbuzz && !ct_noshape);
-    on("font_noshape", apple && !harfbuzz && ct_noshape);
+    on("font_coretext_shaper", coretext && !harfbuzz && !ct_noshape);
+    on("font_noshape", coretext && !harfbuzz && ct_noshape);
 }

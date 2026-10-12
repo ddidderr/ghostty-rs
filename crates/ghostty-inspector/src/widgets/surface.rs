@@ -13,6 +13,10 @@ use super::{key, renderer, terminal, termio};
 use crate::dock::begin_window;
 
 /// This is discovered via the hardcoded string in the ImGui demo window.
+/// True for the Cargo `dev` profile only (Zig `builtin.mode == .Debug`);
+/// set by `build.rs` from `PROFILE`, deliberately not `debug_assertions`.
+pub const DEBUG_BUILD: bool = cfg!(ghostty_debug_build);
+
 const WINDOW_IMGUI_DEMO: &str = "Dear ImGui Demo";
 const WINDOW_KEYBOARD: &str = "Keyboard";
 const WINDOW_TERMINAL: &str = "Terminal";
@@ -133,8 +137,10 @@ impl Inspector {
         crate::dock::flush_splits(ui);
 
         // In debug we show the ImGui demo window so we can easily view
-        // available widgets and such.
-        if cfg!(debug_assertions) && self.show_demo_window {
+        // available widgets and such. Zig checks `builtin.mode == .Debug`
+        // (not `ReleaseSafe`), which is the Cargo `dev` profile; assertions
+        // enabled in a release profile do not count.
+        if DEBUG_BUILD && self.show_demo_window {
             ui.show_demo_window(&mut self.show_demo_window);
         }
 
@@ -398,6 +404,14 @@ fn mouse_button_label(button: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn demo_window_gate_follows_the_dev_profile() {
+        // The `release` profile keeps debug assertions on (like Zig's
+        // ReleaseSafe) but must not show the demo.
+        let debug_build = DEBUG_BUILD;
+        assert_eq!(debug_build, env!("GHOSTTY_BUILD_PROFILE") == "debug");
+    }
 
     #[test]
     fn button_labels() {

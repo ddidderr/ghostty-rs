@@ -31,6 +31,25 @@ pub use ghostty_config::types_b::FreetypeLoadFlags;
 #[cfg(target_arch = "wasm32")]
 pub use web_canvas::Face;
 
+/// A retained `CTFontRef` of `face` for macOS quicklook (Zig
+/// `ghostty_surface_quicklook_font`, which only answers for the plain
+/// `.coretext` backend and returns null for every other one, FreeType-only
+/// included). The caller owns the reference.
+#[cfg(target_vendor = "apple")]
+#[must_use]
+pub fn quicklook_font_raw(face: &Face, scale: f64) -> Option<*mut std::ffi::c_void> {
+    #[cfg(font_coretext_face)]
+    if crate::backend::OPTIONS.backend == crate::Backend::Coretext {
+        return Some(
+            objc2_core_foundation::CFRetained::into_raw(face.quicklook_font(scale))
+                .as_ptr()
+                .cast(),
+        );
+    }
+    let _ = (face, scale);
+    None
+}
+
 /// If a DPI can't be calculated, this DPI is used. This is probably
 /// wrong on modern devices so it is highly recommended you get the DPI
 /// using whatever platform method you can.

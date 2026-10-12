@@ -97,7 +97,7 @@ mod imp {
             let weak = obj.downgrade();
             obj.upcast_ref::<ImguiWidget>().set_hooks(
                 // Called to do initial setup of the UI.
-                Box::new(ghostty_inspector::setup),
+                Box::new(|ctx, _scale| ghostty_inspector::setup(ctx)),
                 // Called for every frame to draw the UI.
                 Box::new(move |ui| {
                     let Some(this) = weak.upgrade() else {

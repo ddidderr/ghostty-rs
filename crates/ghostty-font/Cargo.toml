@@ -40,7 +40,7 @@ harfbuzz-sys = { version = "0.8.0", features = ["bundled"] }
 # Like upstream (which builds them from source) the bundled copies are used,
 # so no system library is needed on macOS.
 freetype-sys = { version = "0.23.0", optional = true, features = ["bundled"] }
-harfbuzz-sys = { version = "0.8.0", optional = true, default-features = false, features = ["coretext", "bundled"] }
+harfbuzz-sys = { version = "0.8.0", optional = true, default-features = false, features = ["bundled"] }
 objc2 = "0.6.5"
 objc2-core-foundation = "0.3.2"
 objc2-core-graphics = "0.3.2"
@@ -51,18 +51,19 @@ objc2-foundation = "0.3.2"
 default = []
 # CoreText for discovery, FreeType for rendering, HarfBuzz for shaping
 # (Zig `-Dfont-backend=coretext_freetype`; Apple targets only).
-coretext-freetype = ["dep:freetype-sys", "dep:harfbuzz-sys", "harfbuzz-sys/freetype"]
+coretext-freetype = ["dep:freetype-sys", "dep:harfbuzz-sys", "harfbuzz-sys/freetype", "harfbuzz-sys/coretext"]
 # CoreText for discovery and rendering, HarfBuzz for shaping
 # (Zig `-Dfont-backend=coretext_harfbuzz`; Apple targets only).
-coretext-harfbuzz = ["dep:harfbuzz-sys"]
+coretext-harfbuzz = ["dep:harfbuzz-sys", "harfbuzz-sys/coretext"]
 # CoreText for discovery and rendering, no shaping
 # (Zig `-Dfont-backend=coretext_noshape`; Apple targets only).
 coretext-noshape = []
 # FreeType for rendering and HarfBuzz for shaping with no font discovery
-# (Zig `-Dfont-backend=freetype`; non-Apple, non-wasm targets only; the
-# default there is `fontconfig_freetype`). Not enabled by `--all-features`
-# in any meaningful sense: it switches the whole build to the backend.
-font-backend-freetype = []
+# (Zig `-Dfont-backend=freetype`; every target but wasm32, Apple included;
+# the default on Linux is `fontconfig_freetype`). Not enabled by
+# `--all-features` in any meaningful sense: it switches the whole build to
+# the backend.
+font-backend-freetype = ["dep:freetype-sys", "dep:harfbuzz-sys", "harfbuzz-sys/freetype"]
 
 # This crate wraps the freetype / harfbuzz / fontconfig C libraries through
 # their `-sys` crates; unsafe is denied by default and allowed on minimal,

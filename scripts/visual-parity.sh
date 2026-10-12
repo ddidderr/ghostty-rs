@@ -2,7 +2,8 @@
 # Visual parity: capture original Ghostty and the Rust build in an isolated,
 # headless nested weston and compare pixel-wise.
 #
-#   scripts/visual-parity.sh [scenario...]     (default: page page-bar tabs)
+#   scripts/visual-parity.sh [scenario...]     (default: page page-bar tabs;
+#   also available: inspector = ctrl+shift+i via xdotool)
 #
 # env: RUST_BIN (default target/production/ghostty), REF_BIN (default
 # /usr/bin/ghostty), OUT (default target/visual-parity), W/H output size.
@@ -22,7 +23,7 @@ WORK=$(mktemp -d "$OUT/work.XXXX")
 SOCK=vp$$
 
 XWL=
-case " $SCEN " in *" tabs "*) XWL=xwayland=true; mkdir -p /tmp/.X11-unix ;; esac
+case " $SCEN " in *" tabs "*|*" inspector "*) XWL=xwayland=true; mkdir -p /tmp/.X11-unix ;; esac
 cat >"$WORK/weston.ini" <<INI
 [core]
 shell=desktop-shell.so
@@ -80,7 +81,7 @@ run_one() {
     HOME=$WORK/home-$label)
   mkdir -p "$WORK/home-$label"
   case $scen in
-  tabs)
+  tabs|inspector)
     # Needs input: run under Xwayland and drive with xdotool.
     env=("${env[@]/GDK_BACKEND=wayland/GDK_BACKEND=x11}")
     env+=(DISPLAY="$(xwl_display)")
@@ -88,7 +89,7 @@ run_one() {
       -e "$VP/testpage.sh" >"$WORK/$label-$scen.log" 2>&1 &
     local pid=$!
     sleep 6
-    xdotool_keys
+    xdotool_keys "$scen"
     sleep 3
     shoot "$out"
     kill $pid 2>/dev/null; wait $pid 2>/dev/null
@@ -106,6 +107,10 @@ run_one() {
 xwl_display() { grep -o "display :[0-9]*" "$WORK/weston.log" | tail -1 | sed 's/display //'; }
 xdotool_keys() {
   export DISPLAY=$(xwl_display)
+  if [ "${1:-}" = inspector ]; then
+    xdotool key --clearmodifiers ctrl+shift+i; sleep 3
+    return
+  fi
   xdotool key --clearmodifiers ctrl+shift+t; sleep 1
   xdotool key --clearmodifiers ctrl+shift+o; sleep 1
   xdotool key --clearmodifiers ctrl+shift+e; sleep 1

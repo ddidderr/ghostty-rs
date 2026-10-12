@@ -134,20 +134,28 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
 
 #[cfg(test)]
 mod tests {
+    /// Keyed off the font crate's actually selected backend, not this
+    /// crate's own feature flag: cargo feature unification can enable
+    /// `ghostty-font/font-backend-freetype` without the CLI forwarding
+    /// feature, and on Apple targets the default backend (CoreText) has
+    /// discovery.
+    ///
     /// Without a discovery mechanism (the `freetype` font backend, Zig
     /// `Discover == void`) `+list-fonts` prints the compile-time-option
     /// message and exits with 1, after parsing the arguments.
-    #[cfg(feature = "font-backend-freetype")]
     #[test]
-    fn freetype_backend_reports_no_discovery() {
-        const { assert!(!ghostty_font::HAS_DISCOVERY) };
-        assert_eq!(super::run(&[] as &[&[u8]]).expect("run"), 1);
-        assert!(super::NO_DISCOVERY_MESSAGE.ends_with("try again."));
-    }
-
-    #[cfg(not(feature = "font-backend-freetype"))]
-    #[test]
-    fn default_backend_has_discovery() {
-        const { assert!(ghostty_font::HAS_DISCOVERY) };
+    fn discovery_presence_follows_selected_backend() {
+        let backend = ghostty_font::options.backend;
+        assert_eq!(
+            ghostty_font::HAS_DISCOVERY,
+            backend.has_fontconfig() || backend.has_coretext()
+        );
+        if ghostty_font::HAS_DISCOVERY {
+            assert_ne!(backend, ghostty_font::Backend::Freetype);
+        } else {
+            assert_eq!(backend, ghostty_font::Backend::Freetype);
+            assert_eq!(super::run(&[] as &[&[u8]]).expect("run"), 1);
+            assert!(super::NO_DISCOVERY_MESSAGE.ends_with("try again."));
+        }
     }
 }

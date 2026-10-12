@@ -259,16 +259,20 @@ fn encode_action(md: &mut Vec<(String, String)>, action: &ParserAction) -> Strin
     }
 }
 
-/// Mirrors `Parser.Action.format` for the actions that are not specially
-/// encoded.
+/// Mirrors Zig 0.15.2 `Parser.Action.format` for the actions that are not
+/// specially encoded: `@typeName(Action)`, then `{ .<tag> = <value> }` with
+/// `u8` payloads as `0x{x}` and every other payload printed with
+/// `printValue("any", .., depth 3)`: structs as `.{ .a = .., .b = .. }`,
+/// slices as `{ a, b }` (`{  }` when empty), integers in decimal and `void`
+/// as `void`.
 fn format_action(action: &ParserAction) -> String {
     let (tag, value) = match action {
         ParserAction::DcsHook(d) => (
             "dcs_hook",
             format!(
-                "{{ intermediates = {:?}, params = {:?}, final = {} }}",
-                d.intermediates(),
-                d.params(),
+                ".{{ .intermediates = {}, .params = {}, .final = {} }}",
+                zig_any_slice(d.intermediates()),
+                zig_any_slice(d.params()),
                 d.final_
             ),
         ),
@@ -280,7 +284,21 @@ fn format_action(action: &ParserAction) -> String {
         // Handled by the specific encoders.
         _ => ("unknown", String::new()),
     };
-    format!("parser.Parser.Action{{ .{tag} = {value} }}")
+    format!("terminal.Parser.Action{{ .{tag} = {value} }}")
+}
+
+/// A slice of integers as Zig's `{any}` prints it: `{ 1, 2 }`, or `{  }`
+/// when empty.
+fn zig_any_slice<T: std::fmt::Display>(items: &[T]) -> String {
+    let mut out = String::from("{ ");
+    for (i, v) in items.iter().enumerate() {
+        if i != 0 {
+            out.push_str(", ");
+        }
+        let _ = write!(out, "{v}");
+    }
+    out.push_str(" }");
+    out
 }
 
 fn encode_print(ch: u32) -> String {
@@ -925,6 +943,35 @@ mod tests {
         assert!(filter("abc,-abc").pass_filter("abc"));
         assert!(!filter("-abc,abc").pass_filter("abc"));
         assert!(filter("-").pass_filter("abc"));
+    }
+
+    #[test]
+    fn dcs_and_apc_descriptions_match_zig_format() {
+        // Expected strings produced by Zig 0.15.2 `Parser.Action.format`.
+        let hook = ParserAction::DcsHook(ghostty_vt::parser::Dcs::new(b"$ ", &[1, 2, 300], b'q'));
+        assert_eq!(
+            format_action(&hook),
+            "terminal.Parser.Action{ .dcs_hook = .{ .intermediates = { 36, 32 }, \
+             .params = { 1, 2, 300 }, .final = 113 } }"
+        );
+        let empty = ParserAction::DcsHook(ghostty_vt::parser::Dcs::new(b"", &[], b'q'));
+        assert_eq!(
+            format_action(&empty),
+            "terminal.Parser.Action{ .dcs_hook = .{ .intermediates = {  }, \
+             .params = {  }, .final = 113 } }"
+        );
+        assert_eq!(
+            format_action(&ParserAction::DcsUnhook),
+            "terminal.Parser.Action{ .dcs_unhook = void }"
+        );
+        assert_eq!(
+            format_action(&ParserAction::DcsPut(0x1b)),
+            "terminal.Parser.Action{ .dcs_put = 0x1b }"
+        );
+        assert_eq!(
+            format_action(&ParserAction::ApcPut(0x41)),
+            "terminal.Parser.Action{ .apc_put = 0x41 }"
+        );
     }
 
     #[test]
