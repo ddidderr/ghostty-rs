@@ -73,9 +73,12 @@ fn main() {
     // neither blueprint-compiler nor glib-compile-resources (Zig:
     // `GhosttyDist.Resource` for `ghostty_resources.{c,h}`). As in Zig, it is
     // never used in a git checkout.
-    println!("cargo:rerun-if-changed=dist/ghostty.gresource");
     let prebuilt = manifest.join("dist/ghostty.gresource");
     if prebuilt.is_file() && !manifest.join("../../.git").exists() {
+        // Watch the bundle only when it is an input. In a checkout it is
+        // normally absent, and watching a missing file forces every build
+        // to recompile the resources and all dependent crates.
+        println!("cargo:rerun-if-changed=dist/ghostty.gresource");
         std::fs::copy(&prebuilt, out.join("ghostty.gresource")).unwrap();
         return;
     }
@@ -119,10 +122,24 @@ fn main() {
     let xml_path = out.join("ghostty.gresource.xml");
     std::fs::write(&xml_path, xml).unwrap();
 
-    glib_build_tools::compile_resources(
-        &[out.as_path(), res.as_path()],
-        xml_path.to_str().unwrap(),
-        "ghostty.gresource",
+    // glib-build-tools also watches the generated XML and UI files. Their
+    // timestamps change during this script, invalidating the next build.
+    // All actual inputs are already covered by the `resources` watch above.
+    let compiled = Command::new("glib-compile-resources")
+        .arg("--sourcedir")
+        .arg(&out)
+        .arg("--sourcedir")
+        .arg(&res)
+        .arg("--target")
+        .arg(out.join("ghostty.gresource"))
+        .arg(&xml_path)
+        .output()
+        .expect("`glib-compile-resources` is required to build ghostty-apprt-gtk");
+    assert!(
+        compiled.status.success(),
+        "glib-compile-resources failed with {}:\n{}",
+        compiled.status,
+        String::from_utf8_lossy(&compiled.stderr)
     );
 }
 

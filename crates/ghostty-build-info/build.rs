@@ -61,10 +61,13 @@ fn detect_version(manifest_dir: &Path) -> (String, Option<String>) {
         let git_dir = PathBuf::from(git_dir);
         println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
         println!("cargo:rerun-if-changed={}", git_dir.join("refs").display());
-        println!(
-            "cargo:rerun-if-changed={}",
-            git_dir.join("packed-refs").display()
-        );
+        // Missing watched paths make Cargo rerun this script on every build.
+        // Packing loose refs also changes `refs`, so it will register this
+        // optional file once Git creates it.
+        let packed_refs = git_dir.join("packed-refs");
+        if packed_refs.is_file() {
+            println!("cargo:rerun-if-changed={}", packed_refs.display());
+        }
     }
     let hash = run(
         "git",

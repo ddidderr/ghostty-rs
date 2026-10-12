@@ -70,6 +70,16 @@ ghostty-bench (benchmarks), ghostty-build-data (completions, man pages, syntax).
 Non-code: `resources/` (shell-integration, themes, terminfo), `dist/` (desktop
 integration), `po/` (translations), crate-local `res/`/`shaders/`/`resources/`.
 
+Build inputs: `ghostty-build-info/build.rs` derives version metadata from the
+workspace manifest and Git HEAD/refs, watching `packed-refs` only when it exists
+(packing loose refs also changes the watched `refs` directory). The GTK build
+script compiles `resources/` in checkouts and watches the optional
+`dist/ghostty.gresource` bundle only when consuming it from a source tarball.
+Missing optional files must not be emitted as Cargo `rerun-if-changed` inputs:
+they invalidate every subsequent build and rebuild downstream crates.
+GTK invokes `glib-compile-resources` directly so generated XML/UI files in
+`OUT_DIR` are not watched as inputs; the `resources/` watch covers their sources.
+
 ## Key design decisions
 
 1. **Safe Rust by default.** Workspace lint `unsafe_code = "forbid"`. Crates

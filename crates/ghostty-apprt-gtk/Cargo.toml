@@ -46,9 +46,6 @@ dear-imgui-glow = "0.19"
 glow = "0.18"
 wayland-sys = { version = "0.31.11", features = ["client", "dlopen"] }
 
-[build-dependencies]
-glib-build-tools = "0.22"
-
 [dev-dependencies]
 env_logger = "0.11"
 
