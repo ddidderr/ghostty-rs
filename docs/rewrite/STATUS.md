@@ -80,9 +80,10 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | RV9 | final Codex verification + full-scope sweep | codex astra | ✅ | RV8 9/9 resolved; 6 differential gaps (NUL panic, numeric grammar, ...) → Z11 |
 | Z11 | RV9 gaps: NUL font names, Zig parseInt/parseFloat, C NUL, ASCII trim, ArgIteratorGeneral, diagnostics | sonnet | ✅ | 3456 tests; 202-field differential vs installed Ghostty: 0 mismatches |
 | Z12 | Zig numeric parsing in VT/terminal/protocol parsers | sonnet | ✅ | 3468 tests |
-| DF | differential fuzzing: Zig terminal core vs Rust terminal core (Zig 0.15.2 driver) | sonnet | 🟨 | |
+| DF | differential fuzzing: Zig terminal core vs Rust terminal core (Zig 0.15.2 driver) | sonnet | ✅ | 390k cases, 0 divergences; Zig UAF not replicated |
+| VP | visual pixel parity vs installed Ghostty (nested weston captures, diff, fix) | sonnet | 🟨 | user request |
 | RV10 | final Codex verification (RV9 rows + full sweep) | codex astra | ✅ | all prior rows resolved; 8 gaps (1 P1 C buffer len regression) → Z13 |
-| Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | 🟨 | |
+| Z13 | RV10 gaps incl. P1 C action len/alloc mismatch | sonnet | ✅ | |
 
 ## Log
 - 2026-10-11: Phase 0 complete; Phase 1 launched.
@@ -119,3 +120,4 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 - 2026-10-12: RV9: all RV8 rows resolved; 6 new differential gaps → Z11.
 - 2026-10-12: Z11 committed (3456 tests). Z12 launched; RV10 after.
 - 2026-10-12: Z12 committed (3468 tests). DF (Zig-vs-Rust differential fuzzing) + RV10 launched.
+- 2026-10-12: User: fix (don't replicate) genuine Zig memory bugs → AGENT_GUIDE rule 2. User: aim for pixel-identical look → VP launched. Z13 + DF committed.
