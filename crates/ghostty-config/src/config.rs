@@ -3976,7 +3976,18 @@ impl Config {
         //
         // See: https://github.com/Vladimir-csp/xdg-terminal-exec
         {
+            #[cfg(unix)]
             use std::os::unix::ffi::OsStrExt;
+            #[cfg(not(unix))]
+            trait OsStrExt {
+                fn as_bytes(&self) -> &[u8];
+            }
+            #[cfg(not(unix))]
+            impl OsStrExt for std::ffi::OsString {
+                fn as_bytes(&self) -> &[u8] {
+                    self.as_encoded_bytes()
+                }
+            }
             let cargs: Vec<std::ffi::CString> = argv
                 .iter()
                 .filter_map(|a| std::ffi::CString::new(a.as_bytes()).ok())
@@ -4619,22 +4630,13 @@ fn zig_io_error_name(err: &std::io::Error) -> String {
 }
 
 fn file_kind_name(meta: &std::fs::Metadata) -> &'static str {
-    use std::os::unix::fs::FileTypeExt;
     let ft = meta.file_type();
     if ft.is_dir() {
         "directory"
     } else if ft.is_symlink() {
         "sym_link"
-    } else if ft.is_block_device() {
-        "block_device"
-    } else if ft.is_char_device() {
-        "character_device"
-    } else if ft.is_fifo() {
-        "named_pipe"
-    } else if ft.is_socket() {
-        "unix_domain_socket"
     } else {
-        "unknown"
+        crate::theme::special_kind_name(ft)
     }
 }
 

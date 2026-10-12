@@ -241,9 +241,8 @@ fn zround(v: f64) -> f64 {
 
 impl Metrics {
     /// All-zero metrics, except `cursor_thickness` which defaults to 1.
-    /// (Zig's private `init()`; used by tests.)
-    #[cfg(test)]
-    fn init() -> Metrics {
+    /// (Zig's private `init()`; used by tests and the web_canvas face.)
+    pub(crate) fn init() -> Metrics {
         Metrics {
             cell_width: 0,
             cell_height: 0,

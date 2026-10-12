@@ -1,6 +1,6 @@
 //! Font backend selection. Port of `font/backend.zig`.
 //!
-//! The Rust rewrite only targets Linux, so [`OPTIONS`] always selects
+//! On Linux (and other non-wasm targets) [`OPTIONS`] selects
 //! [`Backend::FontconfigFreetype`] (fontconfig discovery, FreeType rendering,
 //! HarfBuzz shaping). The other variants are kept for fidelity with the Zig
 //! enum and its helper predicates.
@@ -27,7 +27,11 @@ pub enum Backend {
 impl Backend {
     /// Returns the default backend for a build environment.
     pub fn default_for_target() -> Backend {
-        if cfg!(target_os = "macos") {
+        // wasm32 always uses the browser Canvas API (Zig: `Backend.default`
+        // with `wasm_target == .browser`).
+        if cfg!(target_arch = "wasm32") {
+            Backend::WebCanvas
+        } else if cfg!(target_os = "macos") {
             Backend::Coretext
         } else {
             Backend::FontconfigFreetype
@@ -72,14 +76,30 @@ pub struct Options {
     pub backend: Backend,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub const OPTIONS: Options = Options {
     backend: Backend::FontconfigFreetype,
+};
+
+#[cfg(target_arch = "wasm32")]
+pub const OPTIONS: Options = Options {
+    backend: Backend::WebCanvas,
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn web_canvas_capabilities() {
+        let b = Backend::WebCanvas;
+        assert!(!b.has_freetype());
+        assert!(!b.has_fontconfig());
+        assert!(!b.has_harfbuzz());
+        assert!(!b.has_coretext());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn linux_backend_capabilities() {
         let b = OPTIONS.backend;

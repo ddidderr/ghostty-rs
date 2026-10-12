@@ -3,6 +3,7 @@
 //!
 //! Port of `ZIG/src/terminal/StringMap.zig`. Regex matching uses Oniguruma
 //! (the `onig` crate), like Ghostty.
+#[cfg(not(target_arch = "wasm32"))]
 use onig::{MatchParam, Regex, Region, SearchOptions};
 
 use crate::{page_list::Pin, selection::Selection};
@@ -16,6 +17,7 @@ use crate::{page_list::Pin, selection::Selection};
 /// the `ghostty-onig` wrapper since the `onig` crate does not expose it).
 /// Exceeding it aborts matching with an error which is treated as "no
 /// further matches".
+#[cfg(not(target_arch = "wasm32"))]
 const ONI_SEARCH_RETRY_LIMIT: u32 = 100_000;
 
 /// A string and a map from each byte of the string to the pin it came from.
@@ -25,6 +27,9 @@ pub struct StringMap {
     pub map: Vec<Pin>,
 }
 
+// Like Zig (`build_options.oniguruma == false`), regex search is not
+// available on wasm32 (Oniguruma is a C library).
+#[cfg(not(target_arch = "wasm32"))]
 impl StringMap {
     /// Returns an iterator that yields the next match of the given regex.
     pub fn search_iterator<'a>(&'a self, regex: &'a Regex) -> SearchIterator<'a> {
@@ -36,6 +41,7 @@ impl StringMap {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Iterates over the regular expression matches of the string.
 pub struct SearchIterator<'a> {
     map: &'a StringMap,
@@ -43,6 +49,7 @@ pub struct SearchIterator<'a> {
     offset: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> SearchIterator<'a> {
     /// Returns the next regular expression match or None if there are
     /// no more matches.
@@ -88,6 +95,7 @@ impl<'a> SearchIterator<'a> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<'a> Iterator for SearchIterator<'a> {
     type Item = Match<'a>;
 
@@ -115,7 +123,7 @@ impl Match<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::{

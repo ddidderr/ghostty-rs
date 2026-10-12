@@ -9,14 +9,22 @@ tiny-skia = "0.12.0"
 png = "0.18.1"
 thiserror = "2.0.21"
 log = "0.4.34"
-freetype-sys = "0.23.0"
-harfbuzz-sys = "0.8.0"
 ghostty-unicode.workspace = true
 bitflags = "2.13.2"
-yeslogic-fontconfig-sys = "6.0.1"
 ghostty-datastruct.workspace = true
 ghostty-config.workspace = true
 ghostty-terminal.workspace = true
+
+# The C font libraries are unavailable on wasm32, where the web_canvas
+# backend (browser Canvas API through JS imports) is used instead
+# (Zig: `font/backend.zig` `Backend.default`).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+freetype-sys = "0.23.0"
+harfbuzz-sys = "0.8.0"
+yeslogic-fontconfig-sys = "6.0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ghostty-os.workspace = true
 
 # This crate wraps the freetype / harfbuzz / fontconfig C libraries through
 # their `-sys` crates; unsafe is denied by default and allowed on minimal,

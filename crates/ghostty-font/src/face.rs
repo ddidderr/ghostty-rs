@@ -9,10 +9,17 @@ use std::sync::Arc;
 
 use crate::metrics::Metrics;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod freetype;
+// The pure (non-JS) parts of the web_canvas face compile everywhere so they
+// can be unit tested natively; the JS-backed `Face` is wasm32-only.
+pub mod web_canvas;
 
+#[cfg(not(target_arch = "wasm32"))]
 pub use freetype::Face;
 pub use ghostty_config::types_b::FreetypeLoadFlags;
+#[cfg(target_arch = "wasm32")]
+pub use web_canvas::Face;
 
 /// If a DPI can't be calculated, this DPI is used. This is probably
 /// wrong on modern devices so it is highly recommended you get the DPI

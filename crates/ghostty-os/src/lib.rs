@@ -15,38 +15,69 @@
 )]
 
 pub mod args;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cgroup;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod dbus;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod desktop;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod env;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod file;
 pub mod file_type;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod flatpak;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod homedir;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod hostname;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod i18n;
 pub mod i18n_locales;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod kernel_info;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod locale;
 pub mod mouse;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod open;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod passwd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod path;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod pipe;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod resourcesdir;
 pub mod shell;
 pub mod string_encoding;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod systemd;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod temp_dir;
 pub mod uri;
+#[cfg(target_arch = "wasm32")]
+pub mod wasm;
+
+#[cfg(target_arch = "wasm32")]
+mod unsupported;
+#[cfg(target_arch = "wasm32")]
+pub use unsupported::homedir::expand_home;
+#[cfg(target_arch = "wasm32")]
+pub use unsupported::{ResourcesDir, homedir, is_flatpak, passwd, resources_dir, xdg};
+#[cfg(not(target_arch = "wasm32"))]
 pub mod xdg;
 
 #[cfg(test)]
 pub(crate) mod testutil;
 
 // Functions and types (mirrors the flat exports of `os/main.zig`).
+#[cfg(not(target_arch = "wasm32"))]
 pub use dbus::launched_by_dbus_activation;
+#[cfg(not(target_arch = "wasm32"))]
 pub use desktop::{DesktopEnvironment, desktop_environment, launched_from_desktop};
+#[cfg(not(target_arch = "wasm32"))]
 pub use env::{
     EnvMap,
     append_env,
@@ -59,21 +90,32 @@ pub use env::{
     prepend_env,
     prepend_env_os,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use file::{Rlimit, alloc_tmp_dir, fix_max_files, restore_max_files};
+#[cfg(not(target_arch = "wasm32"))]
 pub use flatpak::{FlatpakHostCommand, is_flatpak};
+#[cfg(not(target_arch = "wasm32"))]
 pub use homedir::{expand_home, home};
+#[cfg(not(target_arch = "wasm32"))]
 pub use kernel_info::get_kernel_info;
+#[cfg(not(target_arch = "wasm32"))]
 pub use locale::ensure_locale;
 pub use mouse::click_interval;
+#[cfg(not(target_arch = "wasm32"))]
 pub use open::open;
+#[cfg(not(target_arch = "wasm32"))]
 pub use pipe::pipe;
+#[cfg(not(target_arch = "wasm32"))]
 pub use resourcesdir::{ResourcesDir, resources_dir};
 pub use shell::ShellEscapeWriter;
+#[cfg(not(target_arch = "wasm32"))]
 pub use systemd::launched_by_systemd;
+#[cfg(not(target_arch = "wasm32"))]
 pub use temp_dir::TempDir;
 
 /// Join path components like `std.fs.path.join` (POSIX): empty components
 /// are skipped and exactly one separator is placed between components.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn path_join(parts: &[&str]) -> String {
     let mut out = String::new();
     for p in parts {

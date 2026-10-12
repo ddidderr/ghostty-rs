@@ -94,14 +94,21 @@ fn diag(diags: &mut DiagnosticList, message: String) {
 }
 
 fn kind_name(ft: std::fs::FileType) -> &'static str {
-    use std::os::unix::fs::FileTypeExt;
     if ft.is_file() {
         "file"
     } else if ft.is_dir() {
         "directory"
     } else if ft.is_symlink() {
         "sym_link"
-    } else if ft.is_block_device() {
+    } else {
+        special_kind_name(ft)
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn special_kind_name(ft: std::fs::FileType) -> &'static str {
+    use std::os::unix::fs::FileTypeExt;
+    if ft.is_block_device() {
         "block_device"
     } else if ft.is_char_device() {
         "character_device"
@@ -112,6 +119,12 @@ fn kind_name(ft: std::fs::FileType) -> &'static str {
     } else {
         "unknown"
     }
+}
+
+/// wasm32 has no special file types (`std::os::unix` is unavailable).
+#[cfg(not(unix))]
+pub(crate) fn special_kind_name(_: std::fs::FileType) -> &'static str {
+    "unknown"
 }
 
 /// Verify that the file is a regular file, adding a diagnostic otherwise.

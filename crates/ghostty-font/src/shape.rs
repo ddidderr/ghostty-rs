@@ -3,12 +3,17 @@
 //! The shaper implementation for the Linux backend is HarfBuzz
 //! ([`crate::shaper::harfbuzz::Shaper`]).
 
+pub use crate::shaper::feature::{DEFAULT_FEATURES, Feature, FeatureList};
 /// Shaper implementation for our compile options (backend
 /// `fontconfig_freetype` => HarfBuzz).
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::shaper::harfbuzz::Shaper;
+/// Shaper implementation for the `web_canvas` backend (wasm32).
+#[cfg(target_arch = "wasm32")]
+pub use crate::shaper::web_canvas::Shaper;
+#[cfg(not(target_arch = "wasm32"))]
 pub use crate::shaper::{
     cache::Cache,
-    feature::{DEFAULT_FEATURES, Feature, FeatureList},
     harfbuzz,
     noop,
     run::{RunIterator, RunIteratorHook, RunOptions, TextRun},

@@ -1,0 +1,56 @@
+[package]
+name = "ghostty-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The Ghostty WASM module (browser): C ABI exports for atlas, font faces, shaper and config. Port of main_wasm.zig"
+
+# `cdylib` is the `.wasm` module; `rlib` keeps the crate usable from native
+# workspace builds (it is empty there).
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ghostty-config.workspace = true
+ghostty-font.workspace = true
+ghostty-os.workspace = true
+ghostty-terminal.workspace = true
+log = "0.4.34"
+
+[features]
+# Zig's `wasm_shared` build option.
+wasm-shared = ["ghostty-os/wasm-shared"]
+
+# `[workspace.lints]` with `unsafe_code` denied (the `extern "C"` exports need
+# raw pointers; every unsafe block carries a SAFETY comment).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"
+
+[dev-dependencies]
+temp-env = "0.3.6"

@@ -3,12 +3,31 @@
 //! [`LoadingImage`] is an image that is still being transmitted (possibly in
 //! chunks). [`Image`] is a fully loaded and validated image.
 
+#[cfg(unix)]
+use std::os::unix::{ffi::OsStrExt, fs::FileExt};
 use std::{
     io::{Cursor, Read, Seek, SeekFrom},
-    os::unix::{ffi::OsStrExt, fs::FileExt},
     path::Path,
     time::Instant,
 };
+
+/// wasm32 has no `std::os::unix`; paths are treated as UTF-8 there.
+#[cfg(not(unix))]
+trait OsStrExt {
+    fn from_bytes(bytes: &[u8]) -> &std::ffi::OsStr;
+    fn as_bytes(&self) -> &[u8];
+}
+
+#[cfg(not(unix))]
+impl OsStrExt for std::ffi::OsStr {
+    fn from_bytes(bytes: &[u8]) -> &std::ffi::OsStr {
+        std::ffi::OsStr::new(std::str::from_utf8(bytes).unwrap_or(""))
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        self.as_encoded_bytes()
+    }
+}
 
 use ghostty_vt::kitty::graphics_command::{
     Command,
@@ -143,6 +162,19 @@ impl LoadingImage {
     }
 
     /// Reads the data from a shared memory segment.
+    #[cfg(target_arch = "wasm32")]
+    #[allow(clippy::unused_self)]
+    fn read_shared_memory(&mut self, _offset: u32, _size: u32, path: &[u8]) -> Result<(), Error> {
+        // POSIX shared memory does not exist on wasm32.
+        log::warn!(
+            "shared memory not supported on wasm: {}",
+            String::from_utf8_lossy(path)
+        );
+        Err(Error::InvalidData)
+    }
+
+    /// Reads the data from a shared memory segment.
+    #[cfg(not(target_arch = "wasm32"))]
     fn read_shared_memory(&mut self, offset: u32, size: u32, path: &[u8]) -> Result<(), Error> {
         use rustix::{fs::Mode, shm};
 
@@ -160,6 +192,7 @@ impl LoadingImage {
         result
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn read_shm_fd(
         &mut self,
         fd: rustix::fd::OwnedFd,
@@ -898,6 +931,7 @@ mod tests {
         assert!(loading.complete().is_ok());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn image_load_shared_memory() {
         use std::io::Write;

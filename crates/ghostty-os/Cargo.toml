@@ -6,16 +6,51 @@ license.workspace = true
 
 [dependencies]
 ghostty-vt.workspace = true
-gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
 log = "0.4.34"
+thiserror = "2.0.21"
+
+# Zig's wasm build only compiles `os/wasm.zig`; the POSIX / D-Bus / gettext
+# dependencies are unavailable on wasm32.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
 nix = { version = "0.31.3", features = ["user"] }
 rustix = { version = "1.1.5", features = ["fs", "process", "system", "pipe", "net", "time", "rand", "pty"] }
-thiserror = "2.0.21"
 zbus = "5.19.0"
 
+[features]
+# Mirrors Zig's `wasm_shared` build option (SharedArrayBuffer-backed memory).
+wasm-shared = []
 
-[lints]
-workspace = true
+# Same as `[workspace.lints]` except `unsafe_code` is denied instead of
+# forbidden: the wasm JS import blocks (`src/wasm`) need `unsafe`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+todo = "warn"
+unwrap_used = "warn"
+cast_possible_truncation = "allow"
+cast_possible_wrap = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+cast_lossless = "allow"
+module_name_repetitions = "allow"
+too_many_lines = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+struct_excessive_bools = "allow"
+fn_params_excessive_bools = "allow"
+match_same_arms = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+return_self_not_must_use = "allow"
+used_underscore_binding = "allow"
+large_stack_arrays = "allow"
+inline_always = "allow"
 
 [dev-dependencies]
 temp-env = "0.3.6"
