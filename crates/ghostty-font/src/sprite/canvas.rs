@@ -4,12 +4,17 @@
 //! Ghostty uses the `z2d` library for antialiased path drawing. This port
 //! reproduces z2d's default `multisample_4x` rasterizer (4x4 samples per
 //! pixel, scanline spans, alpha `coverage * 16 - 1`) in [`Canvas::rasterize`];
-//! stroke outlines come from `tiny-skia`'s stroker.
+//! stroke outlines come from [`super::stroke`], a port of z2d's stroke plotter.
+
+#![allow(
+    clippy::float_cmp,
+    clippy::excessive_precision,
+    clippy::neg_cmp_op_on_partial_ord
+)]
 
 use std::ops::Sub;
 
-use tiny_skia::{LineCap, LineJoin, PathBuilder, PathSegment, Stroke};
-
+use super::stroke;
 use crate::atlas::{self, Atlas, Format, Region};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -148,64 +153,129 @@ impl Path {
             return;
         }
         self.nodes.push(PathNode::ClosePath);
+        // z2d adds an explicit `move_to` to the initial point after every
+        // `close_path` node.
+        if let Some((x, y)) = self.start {
+            self.nodes.push(PathNode::MoveTo(x, y));
+        }
         self.current = self.start;
     }
 
     /// Add a circular arc centered at `(x, y)` from angle `a0` to `a1`
-    /// (radians, clockwise in canvas space with +y down). If there is a
-    /// current point, a line is drawn to the start of the arc, otherwise
-    /// the arc starts a new subpath.
+    /// (radians, increasing angles, clockwise in canvas space with +y down),
+    /// like z2d's `Path.arc` (`internal/arc.zig`, Cairo's arc algorithm). If
+    /// there is a current point, a line is drawn to the start of the arc,
+    /// otherwise the arc starts a new subpath.
     pub fn arc(&mut self, x: f64, y: f64, radius: f64, a0: f64, a1: f64) {
-        use std::f64::consts::FRAC_PI_2;
-
-        let (sx, sy) = (x + radius * a0.cos(), y + radius * a0.sin());
-        if self.current.is_some() {
-            self.line_to(sx, sy);
-        } else {
-            self.move_to(sx, sy);
+        let mut a1 = a1;
+        while a1 < a0 {
+            a1 += std::f64::consts::TAU;
         }
-
-        let mut sweep = a1 - a0;
-        // Split into segments of at most a quarter turn.
-        let segs = ((sweep.abs() / FRAC_PI_2).ceil() as usize).max(1);
-        sweep /= segs as f64;
-        let k = 4.0 / 3.0 * (sweep / 4.0).tan();
-        let mut a = a0;
-        for _ in 0..segs {
-            let (s0, c0) = a.sin_cos();
-            let (s1, c1) = (a + sweep).sin_cos();
-            self.curve_to(
-                x + radius * (c0 - k * s0),
-                y + radius * (s0 + k * c0),
-                x + radius * (c1 + k * s1),
-                y + radius * (s1 - k * c1),
-                x + radius * c1,
-                y + radius * s1,
-            );
-            a += sweep;
-        }
+        self.arc_in_direction(x, y, radius, a0, a1, 0.1);
     }
 
-    fn to_skia(&self, dx: f64, dy: f64) -> Option<tiny_skia::Path> {
-        let mut pb = PathBuilder::new();
-        let f = |v: f64, d: f64| (v + d) as f32;
-        for n in &self.nodes {
-            match *n {
-                PathNode::MoveTo(x, y) => pb.move_to(f(x, dx), f(y, dy)),
-                PathNode::LineTo(x, y) => pb.line_to(f(x, dx), f(y, dy)),
-                PathNode::CurveTo(x1, y1, x2, y2, x3, y3) => pb.cubic_to(
-                    f(x1, dx),
-                    f(y1, dy),
-                    f(x2, dx),
-                    f(y2, dy),
-                    f(x3, dx),
-                    f(y3, dy),
-                ),
-                PathNode::ClosePath => pb.close(),
+    /// z2d `arc_line_to`: a no-op when already at the destination.
+    fn arc_line_to(&mut self, x: f64, y: f64) {
+        if self.current == Some((x, y)) {
+            return;
+        }
+        self.line_to(x, y);
+    }
+
+    fn arc_in_direction(&mut self, xc: f64, yc: f64, radius: f64, amin: f64, amax: f64, tol: f64) {
+        use std::f64::consts::PI;
+        let (mut amin, amax) = (amin, amax);
+        if !(amax * amax >= 0.0) || !(amin * amin >= 0.0) {
+            return;
+        }
+        // (The `max_full_circles` guard of z2d is irrelevant for sprites.)
+        if amax - amin > PI {
+            let amid = amin + (amax - amin) / 2.0;
+            self.arc_in_direction(xc, yc, radius, amin, amid, tol);
+            self.arc_in_direction(xc, yc, radius, amid, amax, tol);
+        } else if amax != amin {
+            // Identity CTM: the transformed circle's major axis is `radius`.
+            let max_angle = arc_max_angle_for_tolerance_normalized(tol / radius);
+            let mut segments = ((amax - amin).abs() / max_angle).ceil() as i32;
+            let step = (amax - amin) / f64::from(segments);
+            segments -= 1;
+            self.arc_line_to(xc + radius * amin.cos(), yc + radius * amin.sin());
+            for _ in 0..segments.max(0) {
+                self.arc_segment(xc, yc, radius, amin, amin + step);
+                amin += step;
             }
+            self.arc_segment(xc, yc, radius, amin, amax);
+        } else {
+            self.arc_line_to(xc + radius * amin.cos(), yc + radius * amin.sin());
         }
-        pb.finish()
     }
+
+    fn arc_segment(&mut self, xc: f64, yc: f64, radius: f64, a: f64, b: f64) {
+        let (r_sin_a, r_cos_a) = (radius * a.sin(), radius * a.cos());
+        let (r_sin_b, r_cos_b) = (radius * b.sin(), radius * b.cos());
+        let h = 4.0 / 3.0 * ((b - a) / 4.0).tan();
+        self.curve_to(
+            xc + r_cos_a - h * r_sin_a,
+            yc + r_sin_a + h * r_cos_a,
+            xc + r_cos_b + h * r_sin_b,
+            yc + r_sin_b - h * r_cos_b,
+            xc + r_cos_b,
+            yc + r_sin_b,
+        );
+    }
+
+    /// The path nodes translated by `(dx, dy)` (z2d applies the canvas
+    /// transformation when nodes are added to the path).
+    fn to_nodes(&self, dx: f64, dy: f64) -> Vec<stroke::Node> {
+        let t = |x: f64, y: f64| (x + dx, y + dy);
+        self.nodes
+            .iter()
+            .map(|n| match *n {
+                PathNode::MoveTo(x, y) => stroke::Node::MoveTo(t(x, y)),
+                PathNode::LineTo(x, y) => stroke::Node::LineTo(t(x, y)),
+                PathNode::CurveTo(x1, y1, x2, y2, x3, y3) => {
+                    stroke::Node::CurveTo(t(x1, y1), t(x2, y2), t(x3, y3))
+                }
+                PathNode::ClosePath => stroke::Node::ClosePath,
+            })
+            .collect()
+    }
+}
+
+/// z2d `arc_error_normalized`.
+fn arc_error_normalized(angle: f64) -> f64 {
+    2.0 / 27.0 * (angle / 4.0).sin().powf(6.0) / (angle / 4.0).cos().powf(2.0)
+}
+
+/// z2d `arc_max_angle_for_tolerance_normalized`.
+fn arc_max_angle_for_tolerance_normalized(tolerance: f64) -> f64 {
+    use std::f64::consts::PI;
+    const TABLE: [(f64, f64); 11] = [
+        (PI / 1.0, 0.0185185185185185036127),
+        (PI / 2.0, 0.000272567143730179811158),
+        (PI / 3.0, 2.38647043651461047433e-05),
+        (PI / 4.0, 4.2455377443222443279e-06),
+        (PI / 5.0, 1.11281001494389081528e-06),
+        (PI / 6.0, 3.72662000942734705475e-07),
+        (PI / 7.0, 1.47783685574284411325e-07),
+        (PI / 8.0, 6.63240432022601149057e-08),
+        (PI / 9.0, 3.2715520137536980553e-08),
+        (PI / 10.0, 1.73863223499021216974e-08),
+        (PI / 11.0, 9.81410988043554039085e-09),
+    ];
+    for (angle, err) in TABLE {
+        if err < tolerance {
+            return angle;
+        }
+    }
+    let mut angle = 0.0;
+    for i in TABLE.len()..1000 {
+        angle = PI / i as f64;
+        if arc_error_normalized(angle) <= tolerance {
+            break;
+        }
+    }
+    angle
 }
 
 /// Line cap modes (subset of z2d's).
@@ -469,30 +539,35 @@ impl Canvas {
     /// with z2d's default multisample anti-aliasing.
     fn rasterize(&mut self, path: &Path, stroke: Option<StrokeOptions>) -> bool {
         self.cov.fill(0);
-        let Some(p) = path.to_skia(f64::from(self.padding_x), f64::from(self.padding_y)) else {
+        let nodes = path.to_nodes(f64::from(self.padding_x), f64::from(self.padding_y));
+        if nodes.is_empty() {
             return false;
-        };
-        let p = match stroke {
-            None => p,
+        }
+        let edges = match stroke {
+            None => flatten_to_edges(&nodes),
             Some(opts) => {
-                let s = Stroke {
-                    width: opts.line_width as f32,
-                    miter_limit: 10.0,
-                    line_cap: match opts.line_cap_mode {
-                        CapMode::Butt => LineCap::Butt,
-                        CapMode::Round => LineCap::Round,
-                        CapMode::Square => LineCap::Square,
+                // z2d `painter.stroke`: thin lines revert to butt caps, and
+                // there is a minimum line width.
+                let params = stroke::StrokeParams {
+                    thickness: opts.line_width.max(0.00390625),
+                    cap_mode: if opts.line_width >= 2.0 {
+                        opts.line_cap_mode
+                    } else {
+                        CapMode::Butt
                     },
-                    line_join: LineJoin::Miter,
-                    dash: None,
+                    miter_limit: 10.0,
+                    tolerance: 0.1,
                 };
-                match p.stroke(&s, 1.0) {
-                    Some(o) => o,
-                    None => return false,
+                let mut edges = Vec::new();
+                for (p0, p1) in stroke::plot(&nodes, params) {
+                    add_edge(&mut edges, p0, p1);
                 }
+                edges
             }
         };
-        let edges = flatten_to_edges(&p);
+        if edges.is_empty() {
+            return false;
+        }
         multisample_fill(
             &edges,
             self.sfc_width as usize,
@@ -511,9 +586,11 @@ impl Canvas {
             if cov == 0 {
                 continue;
             }
-            let src = (cov * a + 127) / 255;
+            // z2d integer compositing truncates: `dst_in` of the pattern with
+            // the coverage, then `src_over`: `s + d - mul(s, d)`.
+            let src = cov * a / 255;
             let d = u32::from(*dst);
-            *dst = (src + (d * (255 - src) + 127) / 255).min(255) as u8;
+            *dst = (src + d - src * d / 255).min(255) as u8;
         }
     }
 
@@ -558,7 +635,7 @@ impl Canvas {
         if self.rasterize(path, Some(mut_opts)) {
             let a = u32::from(color.0);
             for (d, px) in stroke.iter_mut().zip(self.cov.iter()) {
-                *d = ((u32::from(*px) * a + 127) / 255) as u8;
+                *d = (u32::from(*px) * a / 255) as u8;
             }
         }
 
@@ -566,7 +643,7 @@ impl Canvas {
         for ((dst, f), s) in self.sfc.iter_mut().zip(&fill).zip(&stroke) {
             let m = (255.0 * (f64::from(*s) / 255.0) * (f64::from(*f) / 255.0)).round() as u32;
             let d = u32::from(*dst);
-            *dst = (m + (d * (255 - m) + 127) / 255).min(255) as u8;
+            *dst = (m + d - m * d / 255).min(255) as u8;
         }
         Ok(())
     }
@@ -728,9 +805,9 @@ fn flatten_cubic(
     out.push(d);
 }
 
-/// Flatten a tiny-skia path into scaled polygon edges. Every subpath is
+/// Flatten path nodes into scaled polygon edges. Every subpath is
 /// implicitly closed (fill semantics).
-fn flatten_to_edges(p: &tiny_skia::Path) -> Vec<Edge> {
+fn flatten_to_edges(nodes: &[stroke::Node]) -> Vec<Edge> {
     let mut edges = Vec::new();
     let mut pts: Vec<(f64, f64)> = Vec::new();
     let flush = |pts: &mut Vec<(f64, f64)>, edges: &mut Vec<Edge>| {
@@ -742,38 +819,23 @@ fn flatten_to_edges(p: &tiny_skia::Path) -> Vec<Edge> {
         }
         pts.clear();
     };
-    let f = |p: tiny_skia::Point| (f64::from(p.x), f64::from(p.y));
     let mut cur = (0.0, 0.0);
-    for seg in p.segments() {
-        match seg {
-            PathSegment::MoveTo(q) => {
+    for node in nodes {
+        match *node {
+            stroke::Node::MoveTo(q) => {
                 flush(&mut pts, &mut edges);
-                cur = f(q);
+                cur = q;
                 pts.push(cur);
             }
-            PathSegment::LineTo(q) => {
-                cur = f(q);
+            stroke::Node::LineTo(q) => {
+                cur = q;
                 pts.push(cur);
             }
-            PathSegment::QuadTo(c, q) => {
-                let (c, q) = (f(c), f(q));
-                // Elevate to a cubic.
-                let c1 = (
-                    cur.0 + 2.0 / 3.0 * (c.0 - cur.0),
-                    cur.1 + 2.0 / 3.0 * (c.1 - cur.1),
-                );
-                let c2 = (q.0 + 2.0 / 3.0 * (c.0 - q.0), q.1 + 2.0 / 3.0 * (c.1 - q.1));
+            stroke::Node::CurveTo(c1, c2, q) => {
                 flatten_cubic(cur, c1, c2, q, &mut pts);
                 cur = q;
             }
-            PathSegment::CubicTo(c1, c2, q) => {
-                let q = f(q);
-                flatten_cubic(cur, f(c1), f(c2), q, &mut pts);
-                cur = q;
-            }
-            PathSegment::Close => {
-                flush(&mut pts, &mut edges);
-            }
+            stroke::Node::ClosePath => flush(&mut pts, &mut edges),
         }
     }
     flush(&mut pts, &mut edges);

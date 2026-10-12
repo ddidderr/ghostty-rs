@@ -254,8 +254,7 @@ mod tests {
     }
 
     /// Per-pixel difference above which a pixel counts as a "big" difference.
-    /// z2d and tiny-skia antialias differently, so small differences are expected
-    /// along diagonals and curves.
+    /// Kept for the diagnostics only: the sheets are expected to match exactly.
     const BIG: u8 = 96;
 
     fn diff_sheet(test: &[u8], reference: &[u8]) -> Diff {
@@ -321,13 +320,11 @@ mod tests {
                 d.ink, d.differing, d.big, d.max
             );
 
-            // Tolerances: the multisample rasterizer matches z2d's coverage;
-            // remaining differences come from stroke geometry (tiny-skia's
-            // stroker) and are small. Practically no pixel may be off by a
-            // lot, relative to the amount of ink on the sheet.
+            // The multisample rasterizer, the stroker and the compositing are
+            // ports of z2d's, so every sheet must match the reference exactly.
             let big_ratio = d.big as f64 / d.ink.max(1) as f64;
-            let ok = big_ratio <= 0.001;
-            if !ok || d.differing > 0 {
+            let ok = d.differing == 0;
+            if !ok {
                 // Write a visual diff (red = reference, green = ours).
                 let mut rgb = Vec::with_capacity(atlas.len() * 3);
                 for (t, r) in atlas.iter().zip(&reference) {

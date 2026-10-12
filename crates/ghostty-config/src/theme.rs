@@ -151,6 +151,38 @@ fn check_regular(file: &File, theme: &str, diags: &mut DiagnosticList) -> bool {
     }
 }
 
+/// `std.fs.path.basename` (last `ComponentIterator` component; `.` and `..`
+/// are ordinary names). The caller only passes non-absolute paths, so the root
+/// is empty on POSIX and an optional `X:` drive designator on Windows.
+fn zig_basename(path: &str) -> &str {
+    let is_sep = |b: u8| b == b'/' || (cfg!(windows) && b == b'\\');
+    let bytes = path.as_bytes();
+    let root_end = if cfg!(windows)
+        && bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+    {
+        2
+    } else {
+        0
+    };
+    let mut end = bytes.len();
+    loop {
+        if end == root_end {
+            return "";
+        }
+        if !is_sep(bytes[end - 1]) {
+            break;
+        }
+        end -= 1;
+    }
+    let mut start = end;
+    while start != root_end && !is_sep(bytes[start - 1]) {
+        start -= 1;
+    }
+    &path[start..end]
+}
+
 /// Open the given named theme. If there are any errors then messages
 /// will be appended to the given error list and None is returned. If
 /// a Some return value is returned, there are never any errors added.
@@ -184,11 +216,7 @@ pub fn open(
         });
     }
 
-    let basename = theme_path
-        .file_name()
-        .map(EncodedOs::from_os)
-        .unwrap_or_default();
-    if *theme != basename {
+    if theme_text != zig_basename(theme_text) {
         diag(
             diags,
             format!(
@@ -333,6 +361,33 @@ mod tests {
             d.items()[0].message,
             "not reading theme from \"/tmp\": it is a directory"
         );
+    }
+
+    #[test]
+    fn zig_basename_matches_std() {
+        assert_eq!(zig_basename(""), "");
+        assert_eq!(zig_basename("."), ".");
+        assert_eq!(zig_basename(".."), "..");
+        assert_eq!(zig_basename("a/"), "a");
+        assert_eq!(zig_basename("a/b"), "b");
+        assert_eq!(zig_basename("a//"), "a");
+        assert_eq!(zig_basename("./"), ".");
+    }
+
+    #[test]
+    fn dot_theme_names_are_directories() {
+        let dir = std::env::temp_dir().join(format!("ghostty-theme-dot-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("themes")).unwrap();
+        for name in [".", ".."] {
+            let mut d = DiagnosticList::default();
+            assert!(open(&e(name), Some(&EncodedOs::from_path(&dir)), &mut d).is_none());
+            assert!(
+                d.items()[0].message.ends_with("it is a directory"),
+                "{}",
+                d.items()[0].message
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

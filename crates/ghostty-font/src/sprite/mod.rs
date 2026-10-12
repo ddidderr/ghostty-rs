@@ -5,6 +5,7 @@
 pub mod canvas;
 pub mod draw;
 pub mod face;
+pub mod stroke;
 
 pub use canvas::{Box, Canvas, Color, Point};
 pub use face::Face;

@@ -30,13 +30,13 @@
 
 | scenario | before | after |
 |---|---|---|
-| page (full frame) | 0.130% (1250 px, max 93) | 0.020% (196 px, max 86; 0.001% > 32 levels) |
-| page-bar | same as page | 0.020% |
+| page (full frame) | 0.130% (1250 px, max 93) | 0.000% (0 px; was 0.020% / 196 px before Z15) |
+| page-bar | same as page | 0.000% |
 | tabs + splits | 44.6% (a whole pane blank, bug) | 0.000% (bit-identical) |
 | chrome (headerbar, tab bar) | 0.000% | 0.000% |
 
-Sprite sheets (`ghostty-font` tests, Zig reference PNGs): differing pixels 5.76% -> 1.20%, pixels off by
-more than 96 levels 74 -> 0 (test tolerance tightened from 4% to 0.1% big diffs).
+Sprite sheets (`ghostty-font` tests, Zig reference PNGs): differing pixels 5.76% -> 1.20% -> 0 (bit-exact after Z15;
+test tolerance is now zero).
 
 Font metrics, cell size, baseline, glyph rasterization, colors, cursor, underline positions, padding,
 GTK CSS/headerbar/tab bar were already pixel-identical; no change was needed there.
@@ -51,12 +51,12 @@ GTK CSS/headerbar/tab bar were already pixel-identical; no change was needed the
 2. **Sprite antialiasing** (`ghostty-font/src/sprite/canvas.rs`): replaced tiny-skia's coverage with a port of
    z2d 0.10's default `multisample_4x` rasterizer (4x4 samples, scanline spans with edge x rounded at
    sample row centers, non-zero filter, alpha = `coverage * 16 - 1`, full = 255, z2d's Bezier
-   flattening with tolerance 0.1). Stroke outlines still come from tiny-skia's stroker.
+   flattening with tolerance 0.1). (Stroke outlines were still tiny-skia's until Z15, which ported z2d's stroker.)
 
-## Remaining differences (page: 196 px, all <= 86 levels)
+## Remaining differences
 
-- Curly underline: first/last pixels and peaks differ slightly. z2d builds its own stroke polygon (pen/joins)
-  for curves; tiny-skia's stroker offsets the Bezier differently.
-- Diagonal box glyphs (`U+2571..2573`) have a few edge pixels off by up to ~38 levels (same cause).
-- Porting z2d's stroker (`tess/stroke_plotter`, `Pen`) would remove the rest; judged not worth it
-  (0.02% of pixels, imperceptible).
+None (Z15). z2d's stroke plotter (pen, joins, caps, spline flattening), Cairo-style arc segmentation and
+z2d's truncating integer compositing were ported (`ghostty-font/src/sprite/stroke.rs`, `canvas.rs`;
+see `final-Z15.md`). Final `just visual-parity`: page, page-bar and tabs are 0 differing pixels on the
+full frame, the terminal area and the chrome (max delta 0). All sprite sheets in the `ghostty-font`
+reference test are bit-exact (tolerance now zero).
