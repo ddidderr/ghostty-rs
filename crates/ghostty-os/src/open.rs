@@ -147,14 +147,18 @@ fn collect_output(child: &mut Child) -> io::Result<(Vec<u8>, Vec<u8>)> {
 }
 
 fn open_thread(mut child: Child) {
-    let stderr = match collect_output(&mut child) {
+    let collected = collect_output(&mut child);
+    // Zig's `try collectOutput` skips `wait` on error; reap anyway so the
+    // child does not stay a zombie (the pipes are closed by now).
+    let waited = child.wait();
+    let stderr = match collected {
         Ok((_stdout, stderr)) => stderr,
         Err(e) => {
             log::warn!("error collecting open command output err={e}");
             return;
         }
     };
-    if let Err(e) = child.wait() {
+    if let Err(e) = waited {
         log::warn!("error waiting for open command err={e}");
         return;
     }
