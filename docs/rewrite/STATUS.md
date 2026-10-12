@@ -48,14 +48,15 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 ## Phase 8 — full scope
 | WP | Scope | Owner | State | Notes |
 |---|---|---|---|---|
-| L2 | libghostty-vt C API (lib_vt.zig, terminal/c/*, vt.h) + run example/c-vt* + wasm examples | sonnet | 🟨 | batch A |
-| W1 | WASM: main_wasm, config/Wasm, os/wasm, font web_canvas face+shaper | sonnet | 🟨 | batch A |
-| CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | 🟨 | batch A |
-| PF | perf: RenderState render 2.4x, parser SGR 1.5x | sonnet | 🟨 | batch A |
+| L2 | libghostty-vt C API (lib_vt.zig, terminal/c/*, vt.h) + run example/c-vt* + wasm examples | sonnet | ✅ | ABI-checked, examples run |
+| W1 | WASM: main_wasm, config/Wasm, os/wasm, font web_canvas face+shaper | sonnet | ✅ | W1b aligning zig-js ABI |
+| CR | crash/* (sentry envelope, local crash reports, thread context hooks) | sonnet | ✅ | uncommitted (shared files with VR) |
+| PF | perf: RenderState render 2.4x, parser SGR 1.5x | sonnet | ✅ | all benches ≤ Zig |
 | VR | verify IME, paste dialog confirm/deny, quick terminal (niri layer-shell), Flatpak via mock D-Bus | sonnet | 🟨 | batch A |
 | L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | – | ⬜ | batch B |
-| M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | – | ⬜ | batch B |
-| WIN | Windows: ConPTY pty, os/windows, Command | – | ⬜ | batch B |
+| M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | sonnet | 🟨 | |
+| WIN | Windows: ConPTY pty, os/windows, Command | sonnet | 🟨 | |
+| W1b | wasm: align JS imports with zig-js ABI | sonnet | 🟨 | |
 | GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators | – | ⬜ | batch B |
 
 ## Log
