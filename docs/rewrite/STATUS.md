@@ -56,7 +56,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | L1 | libghostty C API (apprt/embedded.zig, main_c.zig, config CApi/c_get, ghostty.h ABI) | – | ⬜ | batch B |
 | M1 | macOS: Metal renderer, CoreText face/shaper/discovery, KeymapDarwin, os macos/mach | sonnet | 🟨 | |
 | WIN | Windows: ConPTY pty, os/windows, Command | sonnet | 🟨 | |
-| W1b | wasm: align JS imports with zig-js ABI | sonnet | 🟨 | |
+| W1b | wasm: align JS imports with zig-js ABI | sonnet | ✅ | |
 | GC | GTK/adw compat fallbacks, bench wcwidth/uucode modes, helpgen generators | – | ⬜ | batch B |
 
 ## Log

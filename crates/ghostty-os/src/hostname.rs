@@ -84,12 +84,22 @@ pub fn is_valid(hostname: &str) -> bool {
     true
 }
 
+/// The current machine's hostname (`GetComputerNameA`).
+#[cfg(windows)]
+fn our_hostname() -> Option<String> {
+    crate::windows::computer_name()
+}
+
 /// The current machine's hostname (`gethostname`).
-fn our_hostname() -> String {
-    rustix::system::uname()
-        .nodename()
-        .to_string_lossy()
-        .into_owned()
+#[cfg(unix)]
+#[allow(clippy::unnecessary_wraps)]
+fn our_hostname() -> Option<String> {
+    Some(
+        rustix::system::uname()
+            .nodename()
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Checks if a hostname is local to the current machine. This matches
@@ -102,7 +112,7 @@ pub fn is_local(hostname: &str) -> Result<bool, LocalHostnameValidationError> {
     }
 
     // If hostname is not "localhost" it must match our hostname.
-    Ok(hostname == our_hostname())
+    Ok(our_hostname().is_some_and(|ours| hostname == ours))
 }
 
 #[cfg(test)]
@@ -147,7 +157,7 @@ mod tests {
 
     #[test]
     fn is_local_returns_true_when_hostname_is_local() {
-        let local = our_hostname();
+        let local = our_hostname().unwrap();
         assert!(is_local(&local).unwrap());
     }
 

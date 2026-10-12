@@ -90,8 +90,11 @@ use ghostty_font::{
 use ghostty_input::{Mods, MouseButton, MouseButtonState, ScrollMods};
 use ghostty_renderer::{
     Health,
-    Renderer,
-    generic::Host as RendererHost,
+    // The generic renderer over the OpenGL API (the GTK runtime's graphics
+    // API). `ghostty_renderer::Renderer` is the platform default, which is
+    // Metal on Apple targets; the embedded (macOS) runtime provides its own
+    // Metal-based surface setup (TODO(integration): L1).
+    generic::{Host as RendererHost, Renderer},
     message::{FontGridChange, Message as RendererMessage},
     opengl::OpenGL,
     options::Options as RendererOptions,
@@ -257,6 +260,9 @@ pub struct Surface {
 
     /// All our sizing information.
     pub(crate) size: Cell<Size>,
+
+    /// The dimensions recorded in crash reports (see `ghostty_crash`).
+    crash_dims: Arc<ghostty_crash::SurfaceDims>,
 
     /// The configuration derived from the main config.
     config: RefCell<Rc<DerivedConfig>>,
@@ -468,7 +474,7 @@ impl Surface {
         let renderer_state = Arc::clone(termio.renderer_state());
 
         // Create the renderer thread
-        let render_thread = ghostty_renderer::Thread::new(
+        let mut render_thread = ghostty_renderer::Thread::new(
             &config,
             Arc::clone(&renderer),
             Arc::clone(&renderer_state),
@@ -478,8 +484,13 @@ impl Surface {
         let _ = renderer_link.handle.set(renderer_handle.clone());
 
         // Create the IO thread
-        let io_thread = IoThread::new()?;
+        let mut io_thread = IoThread::new()?;
         let io_stop = io_thread.stop_handle();
+
+        // Crash context shared with the renderer and IO threads.
+        let crash_dims = ghostty_crash::SurfaceDims::new();
+        render_thread.crash_dims = Some(Arc::clone(&crash_dims));
+        io_thread.crash_dims = Some(Arc::clone(&crash_dims));
 
         let surface = Rc::new(Surface {
             id,
@@ -504,6 +515,7 @@ impl Surface {
             keyboard: RefCell::new(keyboard::Keyboard::default()),
             pressed_key: RefCell::new(None),
             size: Cell::new(size),
+            crash_dims,
             config: RefCell::new(derived_config),
             config_conditional_state: Cell::new(app.config_conditional_state.get()),
             child_exited: Cell::new(false),
@@ -971,8 +983,10 @@ impl Surface {
         // If our runtime was below some threshold then we assume that this
         // was an abnormal exit and we show an error message.
         if info.runtime_ms <= u64::from(self.cfg().abnormal_command_exit_runtime_ms) {
-            // If the exit code is 0 then it was a good exit.
-            if info.exit_code != 0 {
+            // On macOS, our exit code detection doesn't work, possibly
+            // because of our `login` wrapper. More investigation required.
+            // Elsewhere, if the exit code is 0 then it was a good exit.
+            if is_abnormal_exit(info.exit_code, cfg!(target_vendor = "apple")) {
                 log::warn!("abnormal process exit detected, showing error message");
 
                 // Try and show a GUI message. If it returns true, don't do
@@ -1084,13 +1098,17 @@ impl Surface {
         t.print_string(&runtime_str)?;
         t.set_attribute(Attribute::Unset)?;
 
-        let exit_code_str = info.exit_code.to_string();
-        t.carriage_return();
-        t.linefeed()?;
-        t.print_string("Exit Code: ")?;
-        t.set_attribute(Attribute::Fg8(ghostty_vt::color::Name::RED))?;
-        t.print_string(&exit_code_str)?;
-        t.set_attribute(Attribute::Unset)?;
+        // We don't print this on macOS because the exit code is always 0
+        // due to the way we launch the process.
+        if !cfg!(target_vendor = "apple") {
+            let exit_code_str = info.exit_code.to_string();
+            t.carriage_return();
+            t.linefeed()?;
+            t.print_string("Exit Code: ")?;
+            t.set_attribute(Attribute::Fg8(ghostty_vt::color::Name::RED))?;
+            t.print_string(&exit_code_str)?;
+            t.set_attribute(Attribute::Unset)?;
+        }
 
         t.carriage_return();
         t.linefeed()?;
@@ -1436,6 +1454,31 @@ impl Surface {
     // ------------------------------------------------------------------
     // Fonts and sizes
 
+    /// Publish the current size for crash reports (Zig reads the surface
+    /// size at crash time).
+    fn sync_crash_dims(&self) {
+        let s = self.size.get();
+        let g = s.grid();
+        self.crash_dims.set(ghostty_crash::DimsSnapshot {
+            screen_width: s.screen.width,
+            screen_height: s.screen.height,
+            grid_columns: u32::from(g.columns),
+            grid_rows: u32::from(g.rows),
+            cell_width: s.cell.width,
+            cell_height: s.cell.height,
+        });
+    }
+
+    /// Crash context for the main thread while inside a surface callback
+    /// (Zig: `crashThreadState`).
+    pub(crate) fn crash_guard(&self) -> ghostty_crash::ThreadGuard {
+        self.sync_crash_dims();
+        ghostty_crash::ThreadGuard::new(
+            ghostty_crash::ThreadType::Main,
+            Some(Arc::clone(&self.crash_dims)),
+        )
+    }
+
     /// Change the cell size for the terminal grid. This can happen as a
     /// result of changing the font size at runtime.
     fn set_cell_size(&self, size: CellSize) {
@@ -1444,6 +1487,7 @@ impl Surface {
         s.cell = size;
         self.size.set(s);
         self.balance_padding_if_needed();
+        self.sync_crash_dims();
 
         // Notify the terminal
         self.queue_io(IoMessage::Resize(self.size.get()));
@@ -1545,6 +1589,8 @@ impl Surface {
             );
         }
 
+        self.sync_crash_dims();
+
         // Mail the IO thread
         self.queue_io(IoMessage::Resize(s));
     }
@@ -1624,6 +1670,7 @@ impl Surface {
     /// Callback for when the surface is fully visible or not, regardless of
     /// focus state.
     pub fn occlusion_callback(&self, visible: bool) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         self.renderer_handle.send(RendererMessage::Visible(visible));
         self.queue_render();
         Ok(())
@@ -1666,6 +1713,7 @@ impl Surface {
 
     /// Schedule a render (Zig: `refreshCallback`).
     pub fn refresh_callback(&self) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         // The point of this callback is to schedule a render, so do that.
         self.queue_render();
         Ok(())
@@ -1837,6 +1885,13 @@ impl Drop for Surface {
 /// (`rt_surface.defaultTermioEnv()`, which already removed the variables it
 /// does not want to leak); only if it provides nothing (the Zig error path)
 /// do we fall back to the process environment (`getEnvMap`).
+/// Whether a quick child exit counts as abnormal. On Darwin our exit code
+/// detection doesn't work (the `login` wrapper), so every quick exit is
+/// treated as abnormal; elsewhere only non-zero exit codes are.
+fn is_abnormal_exit(exit_code: u32, darwin: bool) -> bool {
+    darwin || exit_code != 0
+}
+
 fn rt_surface_env(rt: &dyn RtSurface) -> ghostty_os::EnvMap {
     let rt_env = rt.default_termio_env();
     if rt_env.is_empty() {
@@ -1854,14 +1909,17 @@ impl CoreSurface for Surface {
     }
 
     fn key_callback(&self, event: ghostty_input::KeyEvent<'_>) -> Result<InputEffect, CoreError> {
+        let _crash = self.crash_guard();
         Surface::key_callback(self, event)
     }
 
     fn preedit_callback(&self, text: Option<&str>) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::preedit_callback(self, text)
     }
 
     fn focus_callback(&self, focused: bool) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::focus_callback(self, focused)
     }
 
@@ -1871,26 +1929,32 @@ impl CoreSurface for Surface {
         button: MouseButton,
         mods: Mods,
     ) -> Result<bool, CoreError> {
+        let _crash = self.crash_guard();
         Surface::mouse_button_callback(self, state, button, mods)
     }
 
     fn cursor_pos_callback(&self, pos: CursorPos, mods: Option<Mods>) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::cursor_pos_callback(self, pos, mods)
     }
 
     fn scroll_callback(&self, xoff: f64, yoff: f64, mods: ScrollMods) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::scroll_callback(self, xoff, yoff, mods)
     }
 
     fn mouse_pressure_callback(&self, stage: ghostty_input::MousePressureStage, pressure: f64) {
+        let _crash = self.crash_guard();
         Surface::mouse_pressure_callback(self, stage, pressure);
     }
 
     fn size_callback(&self, size: SurfaceSize) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::size_callback(self, size)
     }
 
     fn content_scale_callback(&self, scale: ContentScale) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::content_scale_callback(self, scale)
     }
 
@@ -1903,6 +1967,7 @@ impl CoreSurface for Surface {
     }
 
     fn color_scheme_callback(&self, scheme: ColorScheme) -> Result<(), CoreError> {
+        let _crash = self.crash_guard();
         Surface::color_scheme_callback(self, scheme)
     }
 
@@ -2010,5 +2075,18 @@ impl CoreSurface for Surface {
 
     fn render_inspector(&self, ui: &ghostty_inspector::imgui::Ui) {
         Surface::render_inspector(self, ui);
+    }
+}
+
+#[cfg(test)]
+mod darwin_tests {
+    use super::*;
+
+    #[test]
+    fn abnormal_exit_detection_per_platform() {
+        assert!(!is_abnormal_exit(0, false));
+        assert!(is_abnormal_exit(1, false));
+        assert!(is_abnormal_exit(0, true));
+        assert!(is_abnormal_exit(1, true));
     }
 }

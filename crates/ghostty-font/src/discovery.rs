@@ -1,144 +1,160 @@
-//! Font discovery. Port of `font/discovery.zig` (fontconfig backend only;
-//! the CoreText discoverer is macOS-only and out of scope).
+//! Font discovery. Port of `font/discovery.zig`: the fontconfig backend
+//! (Linux, in this file) and the CoreText backend (Apple targets, in
+//! `discovery_coretext.rs`).
 
-use std::sync::Arc;
+#[cfg(font_fontconfig)]
+pub use fc_impl::*;
 
-use crate::{
-    collection::Collection,
-    deferred_face::{DeferredFace, Fontconfig as DeferredFontconfig},
-    face::Variation,
-    fontconfig as fc,
-};
-
-/// Discover implementation for the compile options.
-pub type Discover = Fontconfig;
-
+#[cfg(font_coretext)]
+#[path = "discovery_coretext.rs"]
+mod coretext_impl;
+#[cfg(font_coretext)]
+pub use coretext_impl::*;
 /// Descriptor is used to search for fonts (canonical definition in `ghostty-config`).
 pub use ghostty_config::font_types::Descriptor;
 
-/// Convert to Fontconfig pattern to use for lookup. The pattern does
-/// not have defaults filled/substituted (Fontconfig thing) so callers
-/// must still do this. (`Descriptor.toFcPattern`)
-pub fn to_fc_pattern(desc: &Descriptor) -> fc::Pattern {
-    let mut pat = fc::Pattern::create();
-    if let Some(family) = &desc.family {
-        assert!(pat.add_string(fc::Property::Family, family));
-    }
-    if let Some(style) = &desc.style {
-        assert!(pat.add_string(fc::Property::Style, style));
-    }
-    if desc.codepoint > 0 {
-        let mut cs = fc::CharSet::create();
-        assert!(cs.add_char(desc.codepoint));
-        assert!(pat.add_charset(fc::Property::Charset, &cs));
-    }
-    if desc.size > 0.0 {
-        assert!(pat.add_integer(fc::Property::Size, desc.size.round() as i32));
-    }
-    if desc.bold {
-        assert!(pat.add_integer(fc::Property::Weight, fc::Weight::Bold as i32));
-    }
-    if desc.italic {
-        assert!(pat.add_integer(fc::Property::Slant, fc::Slant::Italic as i32));
+#[cfg(font_fontconfig)]
+mod fc_impl {
+    use std::sync::Arc;
+
+    use super::Descriptor;
+    use crate::{
+        collection::Collection,
+        deferred_face::{DeferredFace, Fontconfig as DeferredFontconfig},
+        face::Variation,
+        fontconfig as fc,
+    };
+
+    /// Discover implementation for the compile options.
+    pub type Discover = Fontconfig;
+
+    /// The error type of [`DiscoverIterator::next`].
+    pub type NextError = fc::Error;
+
+    /// Convert to Fontconfig pattern to use for lookup. The pattern does
+    /// not have defaults filled/substituted (Fontconfig thing) so callers
+    /// must still do this. (`Descriptor.toFcPattern`)
+    pub fn to_fc_pattern(desc: &Descriptor) -> fc::Pattern {
+        let mut pat = fc::Pattern::create();
+        if let Some(family) = &desc.family {
+            assert!(pat.add_string(fc::Property::Family, family));
+        }
+        if let Some(style) = &desc.style {
+            assert!(pat.add_string(fc::Property::Style, style));
+        }
+        if desc.codepoint > 0 {
+            let mut cs = fc::CharSet::create();
+            assert!(cs.add_char(desc.codepoint));
+            assert!(pat.add_charset(fc::Property::Charset, &cs));
+        }
+        if desc.size > 0.0 {
+            assert!(pat.add_integer(fc::Property::Size, desc.size.round() as i32));
+        }
+        if desc.bold {
+            assert!(pat.add_integer(fc::Property::Weight, fc::Weight::Bold as i32));
+        }
+        if desc.italic {
+            assert!(pat.add_integer(fc::Property::Slant, fc::Slant::Italic as i32));
+        }
+
+        // For fontconfig, we always add monospace in the pattern. Since
+        // fontconfig sorts by closeness to the pattern, this doesn't fully
+        // exclude non-monospace but helps prefer it.
+        assert!(pat.add_integer(fc::Property::Spacing, fc::Spacing::Mono as i32));
+
+        pat
     }
 
-    // For fontconfig, we always add monospace in the pattern. Since
-    // fontconfig sorts by closeness to the pattern, this doesn't fully
-    // exclude non-monospace but helps prefer it.
-    assert!(pat.add_integer(fc::Property::Spacing, fc::Spacing::Mono as i32));
+    #[derive(Clone)]
+    pub struct Fontconfig {
+        fc_config: Arc<fc::Config>,
+    }
 
-    pat
-}
+    #[derive(Debug, thiserror::Error)]
+    pub enum DiscoverError {
+        #[error("fontconfig failed")]
+        FontConfigFailed,
+        #[error(transparent)]
+        Fontconfig(#[from] fc::Error),
+    }
 
-#[derive(Clone)]
-pub struct Fontconfig {
-    fc_config: Arc<fc::Config>,
-}
+    impl Fontconfig {
+        pub fn init() -> Fontconfig {
+            // safe to call multiple times and concurrently
+            fc::init();
+            Fontconfig {
+                fc_config: Arc::new(
+                    fc::Config::init_load_config_and_fonts()
+                        .expect("FcInitLoadConfigAndFonts returned null"),
+                ),
+            }
+        }
 
-#[derive(Debug, thiserror::Error)]
-pub enum DiscoverError {
-    #[error("fontconfig failed")]
-    FontConfigFailed,
-    #[error(transparent)]
-    Fontconfig(#[from] fc::Error),
-}
+        /// Discover fonts from a descriptor. This returns an iterator that can
+        /// be used to build up the deferred fonts.
+        pub fn discover(&self, desc: &Descriptor) -> Result<DiscoverIterator, DiscoverError> {
+            // Build our pattern that we'll search for
+            let mut pat = to_fc_pattern(desc);
+            assert!(self.fc_config.substitute_with_pat_pattern(&mut pat));
+            pat.default_substitute();
 
-impl Fontconfig {
-    pub fn init() -> Fontconfig {
-        // safe to call multiple times and concurrently
-        fc::init();
-        Fontconfig {
-            fc_config: Arc::new(
-                fc::Config::init_load_config_and_fonts()
-                    .expect("FcInitLoadConfigAndFonts returned null"),
-            ),
+            // Search
+            let set = self
+                .fc_config
+                .font_sort(&mut pat, false)
+                .map_err(|_| DiscoverError::FontConfigFailed)?;
+
+            Ok(DiscoverIterator {
+                config: Arc::clone(&self.fc_config),
+                pattern: pat,
+                set,
+                variations: desc.variations.clone(),
+                i: 0,
+            })
+        }
+
+        pub fn discover_fallback(
+            &self,
+            _collection: &mut Collection,
+            desc: &Descriptor,
+        ) -> Result<DiscoverIterator, DiscoverError> {
+            self.discover(desc)
         }
     }
 
-    /// Discover fonts from a descriptor. This returns an iterator that can
-    /// be used to build up the deferred fonts.
-    pub fn discover(&self, desc: &Descriptor) -> Result<DiscoverIterator, DiscoverError> {
-        // Build our pattern that we'll search for
-        let mut pat = to_fc_pattern(desc);
-        assert!(self.fc_config.substitute_with_pat_pattern(&mut pat));
-        pat.default_substitute();
-
-        // Search
-        let set = self
-            .fc_config
-            .font_sort(&mut pat, false)
-            .map_err(|_| DiscoverError::FontConfigFailed)?;
-
-        Ok(DiscoverIterator {
-            config: Arc::clone(&self.fc_config),
-            pattern: pat,
-            set,
-            variations: desc.variations.clone(),
-            i: 0,
-        })
+    pub struct DiscoverIterator {
+        config: Arc<fc::Config>,
+        pattern: fc::Pattern,
+        set: fc::FontSet,
+        variations: Vec<Variation>,
+        i: usize,
     }
 
-    pub fn discover_fallback(
-        &self,
-        _collection: &Collection,
-        desc: &Descriptor,
-    ) -> Result<DiscoverIterator, DiscoverError> {
-        self.discover(desc)
-    }
-}
+    impl DiscoverIterator {
+        #[allow(clippy::should_implement_trait)]
+        pub fn next(&mut self) -> Result<Option<DeferredFace>, fc::Error> {
+            if self.i >= self.set.len() {
+                return Ok(None);
+            }
 
-pub struct DiscoverIterator {
-    config: Arc<fc::Config>,
-    pattern: fc::Pattern,
-    set: fc::FontSet,
-    variations: Vec<Variation>,
-    i: usize,
-}
+            // Get the copied pattern from our fontset that has the
+            // attributes configured for rendering.
+            let font_pattern =
+                self.config
+                    .font_render_prepare(&mut self.pattern, &self.set, self.i)?;
 
-impl DiscoverIterator {
-    #[allow(clippy::should_implement_trait)]
-    pub fn next(&mut self) -> Result<Option<DeferredFace>, fc::Error> {
-        if self.i >= self.set.len() {
-            return Ok(None);
+            // The charset and langset must exist (they are used for lookups).
+            font_pattern.charset_has_char(0)?;
+            font_pattern.langset_has_lang("")?;
+
+            // Increment after we return
+            self.i += 1;
+
+            Ok(Some(DeferredFace::from_fontconfig(DeferredFontconfig {
+                pattern: font_pattern,
+                variations: self.variations.clone(),
+            })))
         }
-
-        // Get the copied pattern from our fontset that has the
-        // attributes configured for rendering.
-        let font_pattern = self
-            .config
-            .font_render_prepare(&mut self.pattern, &self.set, self.i)?;
-
-        // The charset and langset must exist (they are used for lookups).
-        font_pattern.charset_has_char(0)?;
-        font_pattern.langset_has_lang("")?;
-
-        // Increment after we return
-        self.i += 1;
-
-        Ok(Some(DeferredFace::from_fontconfig(DeferredFontconfig {
-            pattern: font_pattern,
-            variations: self.variations.clone(),
-        })))
     }
 }
 
@@ -178,6 +194,7 @@ mod tests {
         assert_ne!(a.hashcode(), b.hashcode());
     }
 
+    #[cfg(font_fontconfig)]
     #[test]
     fn fontconfig() {
         let fc = Fontconfig::init();
@@ -190,6 +207,7 @@ mod tests {
             .unwrap();
     }
 
+    #[cfg(font_fontconfig)]
     #[test]
     fn fontconfig_codepoint() {
         let fc = Fontconfig::init();

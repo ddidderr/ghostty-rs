@@ -15,11 +15,18 @@ use ghostty_os::{file::Rlimit, resourcesdir::ResourcesDir};
 pub struct Logging {
     /// Whether to log to stderr.
     pub stderr: bool,
+
+    /// Whether to log to macOS's unified logging. Enabled by default on
+    /// macOS.
+    pub macos: bool,
 }
 
 impl Default for Logging {
     fn default() -> Self {
-        Logging { stderr: true }
+        Logging {
+            stderr: true,
+            macos: cfg!(target_vendor = "apple"),
+        }
     }
 }
 
@@ -32,8 +39,18 @@ impl Logging {
     #[must_use]
     pub fn parse(v: &str) -> Logging {
         match v {
-            "1" | "t" | "T" | "true" => return Logging { stderr: true },
-            "0" | "f" | "F" | "false" => return Logging { stderr: false },
+            "1" | "t" | "T" | "true" => {
+                return Logging {
+                    stderr: true,
+                    macos: true,
+                };
+            }
+            "0" | "f" | "F" | "false" => {
+                return Logging {
+                    stderr: false,
+                    macos: false,
+                };
+            }
             _ => {}
         }
         let mut out = Logging::default();
@@ -45,8 +62,7 @@ impl Logging {
             };
             match name {
                 "stderr" => out.stderr = value,
-                // The only other field (macOS unified logging) is a no-op.
-                "macos" => {}
+                "macos" => out.macos = value,
                 _ => return Logging::default(),
             }
         }
@@ -141,6 +157,14 @@ pub fn init(opts: InitOptions) -> &'static GlobalState {
         // As early as possible, initialize our resource limits.
         let rlimits = ResourceLimits::init();
 
+        // Initialize our crash reporting.
+        if let Err(err) = ghostty_crash::init(&ghostty_crash::Options {
+            release: ghostty_termio::stream_handler::VERSION_STRING.to_owned(),
+            ..ghostty_crash::Options::default()
+        }) {
+            log::warn!("sentry init failed, no crash capture available err={err}");
+        }
+
         // Find our resources directory once for the app so every launch
         // hereafter can use this cached value.
         let discover = opts
@@ -173,16 +197,74 @@ pub fn init(opts: InitOptions) -> &'static GlobalState {
 /// `info(scope): message` on stderr.
 struct Logger {
     stderr: bool,
+    /// macOS unified logging (`os_log`), only effective on Apple targets.
+    macos: bool,
     max: log::LevelFilter,
+}
+
+/// The scope shown in log output: the crate name without the `ghostty_`
+/// prefix (Zig scopes are `@tagName(scope)`).
+fn log_scope(target: &str) -> &str {
+    let target = target.strip_prefix("ghostty_").unwrap_or(target);
+    target.split("::").next().unwrap_or(target)
+}
+
+/// The prefix used for macOS unified logging messages: nothing for the
+/// default scope, `scope: ` otherwise.
+#[cfg_attr(not(any(target_vendor = "apple", test)), allow(dead_code))]
+fn macos_message(scope: &str, args: &std::fmt::Arguments<'_>) -> String {
+    if scope.is_empty() || scope == "default" {
+        format!("{args}")
+    } else {
+        format!("{scope}: {args}")
+    }
+}
+
+/// Bundle id used as the unified logging subsystem
+/// (`build_config.bundle_id`).
+#[cfg(target_vendor = "apple")]
+const BUNDLE_ID: &str = ghostty_os::i18n::BUNDLE_ID;
+
+#[cfg(target_vendor = "apple")]
+fn log_macos(record: &log::Record<'_>) {
+    // On Mac, we use unified logging. To view this:
+    //
+    //   sudo log stream --level debug --predicate 'subsystem=="com.mitchellh.ghostty"'
+    //
+    // macOS logging is thread safe so no need for locks/mutexes.
+    //
+    // Convert our levels to Mac levels.
+    let level = match record.level() {
+        log::Level::Debug | log::Level::Trace => oslog::Level::Debug,
+        log::Level::Info => oslog::Level::Info,
+        log::Level::Warn => oslog::Level::Error,
+        log::Level::Error => oslog::Level::Fault,
+    };
+    let scope = log_scope(record.target());
+
+    // Initialize a logger. This is slow to do on every operation but we
+    // shouldn't be logging too much.
+    let logger = oslog::OsLog::new(BUNDLE_ID, scope);
+    logger.with_level(level, &macos_message(scope, record.args()));
 }
 
 impl log::Log for Logger {
     fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        self.stderr && metadata.level() <= self.max
+        (self.stderr || self.macos) && metadata.level() <= self.max
     }
 
     fn log(&self, record: &log::Record<'_>) {
         if !self.enabled(record.metadata()) {
+            return;
+        }
+
+        #[cfg(target_vendor = "apple")]
+        if self.macos {
+            log_macos(record);
+        }
+
+        // skip if we are not logging to stderr
+        if !self.stderr {
             return;
         }
 
@@ -192,13 +274,7 @@ impl log::Log for Logger {
             log::Level::Info => "info",
             log::Level::Debug | log::Level::Trace => "debug",
         };
-        let target = record.target();
-        let scope = target
-            .strip_prefix("ghostty_")
-            .unwrap_or(target)
-            .split("::")
-            .next()
-            .unwrap_or(target);
+        let scope = log_scope(record.target());
         let _ = writeln!(
             std::io::stderr().lock(),
             "{level}({scope}): {}",
@@ -223,6 +299,7 @@ fn init_logger(logging: Logging) {
     };
     let logger = Box::new(Logger {
         stderr: logging.stderr,
+        macos: logging.macos,
         max,
     });
     if log::set_boxed_logger(logger).is_ok() {
@@ -230,9 +307,26 @@ fn init_logger(logging: Logging) {
     }
 }
 
+/// Cleans up the global state. This doesn't _need_ to be called (Zig:
+/// `GlobalState.deinit`); it deactivates crash capture ("flush crash logs").
+pub fn deinit() {
+    ghostty_crash::deinit();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn macos_log_message_prefix() {
+        assert_eq!(
+            macos_message("font", &format_args!("hi {}", 1)),
+            "font: hi 1"
+        );
+        assert_eq!(macos_message("default", &format_args!("hi")), "hi");
+        assert_eq!(log_scope("ghostty_font::collection"), "font");
+        assert_eq!(log_scope("other::x"), "other");
+    }
 
     #[test]
     fn logging_parse() {
@@ -240,6 +334,10 @@ mod tests {
         assert!(!Logging::parse("no-stderr").stderr);
         // Unmentioned fields keep their default (stderr on).
         assert!(Logging::parse("macos").stderr);
+        assert!(!Logging::parse("no-macos").macos);
+        assert!(Logging::parse("macos").macos);
+        assert!(Logging::parse("true").macos);
+        assert!(!Logging::parse("0").macos);
         assert!(!Logging::parse("false").stderr);
         assert!(!Logging::parse("0").stderr);
         assert!(Logging::parse("true").stderr);

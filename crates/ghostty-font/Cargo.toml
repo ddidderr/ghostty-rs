@@ -18,13 +18,49 @@ ghostty-terminal.workspace = true
 # The C font libraries are unavailable on wasm32, where the web_canvas
 # backend (browser Canvas API through JS imports) is used instead
 # (Zig: `font/backend.zig` `Backend.default`).
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple")))'.dependencies]
+yeslogic-fontconfig-sys = "6.0.1"
+
+[target.'cfg(not(any(target_arch = "wasm32", target_vendor = "apple", windows)))'.dependencies]
 freetype-sys = "0.23.0"
 harfbuzz-sys = "0.8.0"
-yeslogic-fontconfig-sys = "6.0.1"
+
+# Windows has no system freetype/harfbuzz to find via pkg-config (Zig builds
+# them from source): build them from the bundled sources. Fontconfig (the
+# default Zig backend there too, also built from source) must be provided
+# by the Windows toolchain (vcpkg / MSYS2) when linking.
+[target.'cfg(windows)'.dependencies]
+freetype-sys = { version = "0.23.0", features = ["bundled"] }
+harfbuzz-sys = { version = "0.8.0", features = ["bundled"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ghostty-os.workspace = true
+
+# Apple targets use CoreText (`coretext` backend) by default; FreeType and
+# HarfBuzz are only linked for the `coretext-freetype` / `coretext-harfbuzz`
+# backends (see `build.rs` and the `[features]` table).
+[target.'cfg(target_vendor = "apple")'.dependencies]
+# Like upstream (which builds them from source) the bundled copies are used,
+# so no system library is needed on macOS.
+freetype-sys = { version = "0.23.0", optional = true, features = ["bundled"] }
+harfbuzz-sys = { version = "0.8.0", optional = true, default-features = false, features = ["coretext", "bundled"] }
+objc2 = "0.6.5"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-core-text = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[features]
+default = []
+# CoreText for discovery, FreeType for rendering, HarfBuzz for shaping
+# (Zig `-Dfont-backend=coretext_freetype`; Apple targets only).
+coretext-freetype = ["dep:freetype-sys", "dep:harfbuzz-sys", "harfbuzz-sys/freetype"]
+# CoreText for discovery and rendering, HarfBuzz for shaping
+# (Zig `-Dfont-backend=coretext_harfbuzz`; Apple targets only).
+coretext-harfbuzz = ["dep:harfbuzz-sys"]
+# CoreText for discovery and rendering, no shaping
+# (Zig `-Dfont-backend=coretext_noshape`; Apple targets only).
+coretext-noshape = []
 
 # This crate wraps the freetype / harfbuzz / fontconfig C libraries through
 # their `-sys` crates; unsafe is denied by default and allowed on minimal,

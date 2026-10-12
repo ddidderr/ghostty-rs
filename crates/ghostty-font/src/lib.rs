@@ -1,7 +1,9 @@
-//! Font engine: metrics, atlas, sprite font, faces (FreeType), discovery
-//! (fontconfig), collections, codepoint resolution, shaping (HarfBuzz) and
-//! the shared glyph grid. Port of `ZIG/src/font/` for the Linux backend
-//! (`fontconfig_freetype`).
+//! Font engine: metrics, atlas, sprite font, faces (FreeType / CoreText),
+//! discovery (fontconfig / CoreText), collections, codepoint resolution,
+//! shaping (HarfBuzz / CoreText) and the shared glyph grid. Port of
+//! `ZIG/src/font/`. The backend is selected per target (see `backend.rs` and
+//! `build.rs`): `fontconfig_freetype` on Linux, `coretext` on Apple targets,
+//! `web_canvas` on wasm32.
 
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
@@ -13,7 +15,12 @@ pub mod codepoint_resolver;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod collection;
 pub mod config_types;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(font_coretext)]
+pub mod coretext_util;
+#[cfg(font_fontconfig)]
+pub mod deferred_face;
+#[cfg(font_coretext)]
+#[path = "deferred_face_coretext.rs"]
 pub mod deferred_face;
 #[cfg(target_arch = "wasm32")]
 #[path = "deferred_face_web_canvas.rs"]
@@ -23,7 +30,7 @@ pub mod discovery;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod embedded;
 pub mod face;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(font_fontconfig)]
 pub mod fontconfig;
 pub mod glyph;
 #[cfg(not(target_arch = "wasm32"))]

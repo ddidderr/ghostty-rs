@@ -213,16 +213,33 @@ impl Mods {
     /// Return the mods to use for key translation. This handles settings
     /// like macos-option-as-alt. The translation mods should be used for
     /// translation but never sent back in for the key callback.
-    ///
-    /// Only macOS changes anything here; this port targets Linux so the
-    /// mods are returned unchanged.
-    pub fn translation(self, _option_as_alt: OptionAsAlt) -> Mods {
-        self
+    pub fn translation(self, option_as_alt: OptionAsAlt) -> Mods {
+        let mut result = self;
+
+        // macos-option-as-alt for darwin
+        if crate::platform::is_darwin() {
+            // Alt has to be set only on the correct side
+            let applies = match option_as_alt {
+                OptionAsAlt::False => false,
+                OptionAsAlt::True => true,
+                OptionAsAlt::Left => self.sides.alt != ModSide::Right,
+                OptionAsAlt::Right => self.sides.alt != ModSide::Left,
+            };
+
+            // Unset alt
+            if applies {
+                result.alt = false;
+            }
+        }
+
+        result
     }
 
     /// Checks to see if super is on (MacOS) or ctrl.
     pub fn ctrl_or_super(self) -> bool {
-        // Non-darwin target.
+        if crate::platform::is_darwin() {
+            return self.super_;
+        }
         self.ctrl
     }
 }
@@ -577,12 +594,70 @@ mod tests {
 
     #[test]
     fn translation_macos_option_as_alt() {
-        // Darwin only upstream; on Linux it is the identity.
-        let mods = Mods {
-            alt: true,
-            ..Default::default()
-        };
-        assert_eq!(mods.translation(OptionAsAlt::True), mods);
+        crate::platform::with_darwin(true, || {
+            // Unset
+            {
+                let mods = Mods::default();
+                assert_eq!(mods.translation(OptionAsAlt::True), mods);
+            }
+
+            // Set
+            {
+                let mods = m(|x| x.alt = true);
+                assert_eq!(Mods::default(), mods.translation(OptionAsAlt::True));
+            }
+
+            // Set but disabled
+            {
+                let mods = m(|x| x.alt = true);
+                assert_eq!(mods.translation(OptionAsAlt::False), mods);
+            }
+
+            // Set wrong side
+            {
+                let mods = m(|x| {
+                    x.alt = true;
+                    x.sides.alt = ModSide::Right;
+                });
+                assert_eq!(mods.translation(OptionAsAlt::Left), mods);
+            }
+            {
+                let mods = m(|x| {
+                    x.alt = true;
+                    x.sides.alt = ModSide::Left;
+                });
+                assert_eq!(mods.translation(OptionAsAlt::Right), mods);
+            }
+
+            // Set with other mods
+            {
+                let mods = m(|x| {
+                    x.alt = true;
+                    x.shift = true;
+                });
+                assert_eq!(m(|x| x.shift = true), mods.translation(OptionAsAlt::True));
+            }
+        });
+
+        // Not darwin: identity.
+        crate::platform::with_darwin(false, || {
+            let mods = m(|x| x.alt = true);
+            assert_eq!(mods.translation(OptionAsAlt::True), mods);
+        });
+    }
+
+    #[test]
+    fn ctrl_or_super_follows_platform() {
+        let ctrl = m(|x| x.ctrl = true);
+        let sup = m(|x| x.super_ = true);
+        crate::platform::with_darwin(true, || {
+            assert!(sup.ctrl_or_super());
+            assert!(!ctrl.ctrl_or_super());
+        });
+        crate::platform::with_darwin(false, || {
+            assert!(ctrl.ctrl_or_super());
+            assert!(!sup.ctrl_or_super());
+        });
     }
 
     fn left(k: &str) -> Mods {

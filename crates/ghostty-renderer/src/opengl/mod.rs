@@ -5,6 +5,7 @@
 //! closure (see [`OpenGL::prepare_context`]) by the apprt once the context is
 //! current, and everything afterwards goes through the [`Gl`] handle.
 
+pub mod api;
 pub mod buffer;
 pub mod frame;
 #[allow(unsafe_code)]
@@ -16,7 +17,10 @@ pub mod shaders;
 pub mod target;
 pub mod texture;
 
-use std::{ffi::c_void, sync::Arc};
+use std::{
+    ffi::c_void,
+    sync::{Arc, Mutex, PoisonError},
+};
 
 use ghostty_font::atlas::{Atlas, Format as AtlasFormat};
 
@@ -32,6 +36,7 @@ use self::gl::{
     Wrap,
 };
 pub use self::{
+    api::GlFrame,
     buffer::Buffer,
     frame::Frame,
     gl::Gl,
@@ -42,8 +47,6 @@ pub use self::{
     texture::Texture,
 };
 use crate::shadertoy;
-
-pub type GraphicsApi = OpenGL;
 
 /// Custom shaders are converted to GLSL for OpenGL.
 pub const CUSTOM_SHADER_TARGET: shadertoy::Target = shadertoy::Target::Glsl;
@@ -85,27 +88,54 @@ pub struct OpenGL {
     pub blending: AlphaBlending,
 
     /// The most recently presented target, in case we need to present it again.
-    last_target: Option<Arc<Target>>,
+    /// Shared with in-flight [`Frame`]s, which record what they present.
+    last_target: LastTarget,
 }
 
-/// Pixel format for image texture options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImageTextureFormat {
-    /// 1 byte per pixel grayscale.
-    Gray,
-    /// 4 bytes per pixel RGBA.
-    Rgba,
-    /// 4 bytes per pixel BGRA.
-    Bgra,
+/// Slot holding the most recently presented target.
+pub type LastTarget = Arc<Mutex<Option<Arc<Target>>>>;
+
+/// Present `target` by blitting it to the default framebuffer, remembering it
+/// in `last_target` in case we need to repeat it.
+fn present_target(gl: &Gl, last_target: &LastTarget, target: &Arc<Target>) -> Result<(), Error> {
+    // In order to present a target we blit it to the default framebuffer.
+
+    // We disable GL_FRAMEBUFFER_SRGB while doing this blit, otherwise the
+    // values may be linearized as they're copied, but even though the draw
+    // framebuffer has a linear internal format, the values in it should be
+    // sRGB, not linear!
+    gl.disable(glow::FRAMEBUFFER_SRGB)?;
+
+    // Bind the target for reading.
+    let fbobind = gl.bind_framebuffer(target.framebuffer(), FramebufferTarget::Read);
+
+    // Blit
+    let (w, h) = (target.width as i32, target.height as i32);
+    gl.blit_framebuffer(
+        (0, 0, w, h),
+        (0, 0, w, h),
+        glow::COLOR_BUFFER_BIT,
+        glow::NEAREST,
+    );
+
+    gl.unbind_framebuffer(fbobind);
+    if let Err(err) = gl.enable(glow::FRAMEBUFFER_SRGB) {
+        log::error!("Error re-enabling GL_FRAMEBUFFER_SRGB, err={err}");
+    }
+
+    // Keep track of this target in case we need to repeat it.
+    *last_target.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(target));
+    Ok(())
 }
 
-impl ImageTextureFormat {
-    fn to_pixel_format(self) -> PixelFormat {
-        match self {
-            ImageTextureFormat::Gray => PixelFormat::Red,
-            ImageTextureFormat::Rgba => PixelFormat::Rgba,
-            ImageTextureFormat::Bgra => PixelFormat::Bgra,
-        }
+pub use crate::graphics_api::ImageTextureFormat;
+
+/// The GL pixel format of an [`ImageTextureFormat`].
+fn to_pixel_format(format: ImageTextureFormat) -> PixelFormat {
+    match format {
+        ImageTextureFormat::Gray => PixelFormat::Red,
+        ImageTextureFormat::Rgba => PixelFormat::Rgba,
+        ImageTextureFormat::Bgra => PixelFormat::Bgra,
     }
 }
 
@@ -116,7 +146,7 @@ impl OpenGL {
         OpenGL {
             gl: None,
             blending,
-            last_target: None,
+            last_target: LastTarget::default(),
         }
     }
 
@@ -126,7 +156,7 @@ impl OpenGL {
         OpenGL {
             gl: Some(gl),
             blending,
-            last_target: None,
+            last_target: LastTarget::default(),
         }
     }
 
@@ -247,42 +277,18 @@ impl OpenGL {
     }
 
     /// Present the provided target.
-    pub fn present(&mut self, target: &Arc<Target>) -> Result<(), Error> {
-        let gl = self.gl_or_err()?.clone();
-
-        // In order to present a target we blit it to the default framebuffer.
-
-        // We disable GL_FRAMEBUFFER_SRGB while doing this blit, otherwise the
-        // values may be linearized as they're copied, but even though the draw
-        // framebuffer has a linear internal format, the values in it should be
-        // sRGB, not linear!
-        gl.disable(glow::FRAMEBUFFER_SRGB)?;
-
-        // Bind the target for reading.
-        let fbobind = gl.bind_framebuffer(target.framebuffer(), FramebufferTarget::Read);
-
-        // Blit
-        let (w, h) = (target.width as i32, target.height as i32);
-        gl.blit_framebuffer(
-            (0, 0, w, h),
-            (0, 0, w, h),
-            glow::COLOR_BUFFER_BIT,
-            glow::NEAREST,
-        );
-
-        gl.unbind_framebuffer(fbobind);
-        if let Err(err) = gl.enable(glow::FRAMEBUFFER_SRGB) {
-            log::error!("Error re-enabling GL_FRAMEBUFFER_SRGB, err={err}");
-        }
-
-        // Keep track of this target in case we need to repeat it.
-        self.last_target = Some(Arc::clone(target));
-        Ok(())
+    pub fn present(&self, target: &Arc<Target>) -> Result<(), Error> {
+        present_target(self.gl_or_err()?, &self.last_target, target)
     }
 
     /// Present the last presented target again.
-    pub fn present_last_target(&mut self) -> Result<(), Error> {
-        if let Some(target) = self.last_target.clone() {
+    pub fn present_last_target(&self) -> Result<(), Error> {
+        let last = self
+            .last_target
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        if let Some(target) = last {
             self.present(&target)?;
         }
         Ok(())
@@ -290,14 +296,25 @@ impl OpenGL {
 
     /// The most recently presented target, if any (also set when the blit to
     /// the default framebuffer is a no-op, e.g. on a surfaceless context).
-    pub fn last_target(&self) -> Option<&Arc<Target>> {
-        self.last_target.as_ref()
+    pub fn last_target(&self) -> Option<Arc<Target>> {
+        self.last_target
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// Drop the remembered last-presented target (call when the target it
     /// refers to is being replaced, e.g. on resize).
-    pub fn clear_last_target(&mut self) {
-        self.last_target = None;
+    pub fn clear_last_target(&self) {
+        *self
+            .last_target
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
+    /// The slot [`Frame`]s record the target they present in.
+    pub(crate) fn last_target_slot(&self) -> LastTarget {
+        Arc::clone(&self.last_target)
     }
 
     /// Returns the options to use when constructing buffers.
@@ -357,7 +374,7 @@ impl OpenGL {
         srgb: bool,
     ) -> texture::Options {
         texture::Options {
-            format: format.to_pixel_format(),
+            format: to_pixel_format(format),
             internal_format: if srgb {
                 InternalFormat::Srgba
             } else {
@@ -404,7 +421,7 @@ impl OpenGL {
 
     /// Begin a frame. The target is presented via this API when the frame is
     /// completed (see [`Frame::complete`]).
-    pub fn begin_frame(&mut self, target: Arc<Target>) -> Frame<'_> {
+    pub fn begin_frame(&self, target: Arc<Target>) -> Frame {
         Frame::begin(frame::Options::default(), self, target)
     }
 }

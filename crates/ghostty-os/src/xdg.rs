@@ -21,6 +21,10 @@ pub struct Options<'a> {
 pub enum Error {
     #[error("no home directory could be determined")]
     NoHomeDir,
+    /// A macOS Foundation API (e.g. `NSFileManager`) failed (Zig:
+    /// `error.AppleAPIFailed`).
+    #[error("apple api failed")]
+    AppleApiFailed,
 }
 
 /// Get the XDG user config directory.
@@ -49,8 +53,12 @@ fn dir(opts: &Options<'_>, env: &str, default_subdir: &str) -> Result<String, Er
         ]));
     }
 
-    // First check the env var.
-    if let Some(env) = getenv_not_empty(env) {
+    // First check the env var. On Windows we treat `LOCALAPPDATA` as a
+    // fallback for the XDG variable.
+    let env_value = getenv_not_empty(env);
+    #[cfg(windows)]
+    let env_value = env_value.or_else(|| getenv_not_empty("LOCALAPPDATA"));
+    if let Some(env) = env_value {
         // If we have a subdir, then we join it.
         if let Some(subdir) = opts.subdir {
             return Ok(path_join(&[&env, subdir]));
@@ -90,7 +98,7 @@ pub fn parse_terminal_exec<'a>(argv: &'a [&'a CStr]) -> Option<&'a [&'a CStr]> {
     Some(&argv[start..])
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

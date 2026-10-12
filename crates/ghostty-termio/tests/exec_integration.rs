@@ -1,3 +1,4 @@
+#![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 //! End-to-end tests: real child processes on a real pty, driven through
 //! `Termio` + `Thread` (IO thread) + the pty read thread, against a real

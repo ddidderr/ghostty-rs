@@ -29,7 +29,20 @@ impl ResourcesDir {
 
 /// Sentinels we look for in the path to know we've found the resources
 /// directory (Linux).
+#[cfg(not(any(windows, target_os = "macos")))]
 const SENTINELS: [&str; 2] = ["terminfo/g/ghostty", "terminfo/x/xterm-ghostty"];
+
+/// Sentinel on macOS (terminfo directories are named by hex there).
+#[cfg(target_os = "macos")]
+const SENTINELS: [&str; 1] = ["terminfo/78/xterm-ghostty"];
+
+/// Sentinel on Windows (a single terminfo source file).
+#[cfg(windows)]
+const SENTINELS: [&str; 1] = ["terminfo/ghostty.terminfo"];
+
+/// The in-repo `resources/` tree always carries the Linux-style terminfo
+/// layout (also on macOS, where the installed layout uses hex dirs).
+const DEV_SENTINELS: [&str; 1] = ["terminfo/x/xterm-ghostty"];
 
 /// Gets the directory to the bundled resources directory, if it
 /// exists (not all platforms or packages have it).
@@ -70,6 +83,17 @@ fn resources_dir_impl(debug: bool, exe: Option<&Path>, env: Option<String>) -> R
     while let Some(dir) = exe.parent() {
         exe = dir;
         let dir_str = dir.to_string_lossy();
+
+        // On MacOS, we look for the app bundle path.
+        #[cfg(target_vendor = "apple")]
+        for sentinel in SENTINELS {
+            if let Some(v) = maybe_dir(&dir_str, "Contents/Resources", sentinel) {
+                return ResourcesDir {
+                    app_path: Some(path_join(&[&v, "ghostty"])),
+                    host_path: None,
+                };
+            }
+        }
 
         // We look for a /usr/share style path.
         for sentinel in SENTINELS {
@@ -122,6 +146,7 @@ fn dev_resources_dir(exe: &Path) -> Option<String> {
     let res = root.join("resources");
     SENTINELS
         .iter()
+        .chain(DEV_SENTINELS.iter())
         .any(|s| res.join(s).exists())
         .then(|| res.to_string_lossy().into_owned())
 }
@@ -142,7 +167,7 @@ pub fn maybe_dir(base: &str, sub: &str, suffix: &str) -> Option<String> {
     None
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 

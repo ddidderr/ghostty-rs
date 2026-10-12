@@ -8,6 +8,7 @@ license.workspace = true
 flate2 = "1.1.10"
 ghostty-apprt.workspace = true
 ghostty-config.workspace = true
+ghostty-crash.workspace = true
 ghostty-font.workspace = true
 ghostty-input.workspace = true
 ghostty-os.workspace = true

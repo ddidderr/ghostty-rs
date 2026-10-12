@@ -9,8 +9,10 @@ pub enum Backend {
 }
 
 impl Backend {
-    /// The default backend for the target. Metal/WebGL are out of scope for
-    /// the Rust port (Linux only), so this is always OpenGL on non-Darwin.
+    /// The default backend for the target (Metal on Apple platforms, OpenGL
+    /// otherwise). WebGL is only a name here: the wasm build has no GL renderer
+    /// in this crate. This is what [`crate::Api`] / [`crate::Renderer`] are
+    /// instantiated with.
     pub fn default_for_target() -> Backend {
         if cfg!(target_vendor = "apple") {
             Backend::Metal
@@ -26,4 +28,26 @@ impl Backend {
 pub enum Health {
     Healthy,
     Unhealthy,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_backend_matches_selected_api() {
+        // `renderer.zig` picks the graphics API from the backend.
+        if cfg!(target_vendor = "apple") {
+            assert_eq!(Backend::default_for_target(), Backend::Metal);
+        } else {
+            assert_eq!(Backend::default_for_target(), Backend::Opengl);
+        }
+    }
+
+    #[test]
+    fn health_values_match_ghostty_h() {
+        // `GHOSTTY_RENDERER_HEALTH_{OK,ERROR}`.
+        assert_eq!(Health::Healthy as i32, 0);
+        assert_eq!(Health::Unhealthy as i32, 1);
+    }
 }

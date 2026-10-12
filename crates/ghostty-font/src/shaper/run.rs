@@ -160,7 +160,21 @@ pub trait RunIteratorHook {
     fn finalize(&mut self);
 }
 
+#[cfg(font_harfbuzz)]
 impl RunIteratorHook for crate::shaper::harfbuzz::Shaper {
+    fn prepare(&mut self) {
+        Self::prepare(self);
+    }
+    fn add_codepoint(&mut self, cp: u32, cluster: u32) {
+        Self::add_codepoint(self, cp, cluster);
+    }
+    fn finalize(&mut self) {
+        Self::finalize(self);
+    }
+}
+
+#[cfg(font_coretext_shaper)]
+impl RunIteratorHook for crate::shaper::coretext::Shaper {
     fn prepare(&mut self) {
         Self::prepare(self);
     }

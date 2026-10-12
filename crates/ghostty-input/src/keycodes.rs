@@ -27,17 +27,58 @@ pub struct Entry {
 pub fn entries() -> &'static [Entry] {
     static ENTRIES: OnceLock<Vec<Entry>> = OnceLock::new();
     ENTRIES.get_or_init(|| {
-        // Linux/FreeBSD use the xkb column (index 2).
+        // Linux/FreeBSD use the xkb column (index 2), Windows the win column (3).
         RAW_ENTRIES
             .iter()
             .map(|raw| Entry {
                 key: code_to_key(raw.5).unwrap_or(Key::Unidentified),
                 usb: raw.0,
                 code: raw.5,
-                native: raw.2,
+                native: native_code(raw),
             })
             .collect()
     })
+}
+
+/// The native keycode column for the current platform (`native_idx` in Zig:
+/// xkb = 2 on Linux/BSD, win = 3 on Windows, mac = 4 on macOS/iOS).
+#[cfg(windows)]
+fn native_code(raw: &RawEntry) -> u32 {
+    raw.3
+}
+
+/// macOS / iOS use the mac column.
+#[cfg(target_vendor = "apple")]
+fn native_code(raw: &RawEntry) -> u32 {
+    raw.4
+}
+
+/// See the Windows variant.
+#[cfg(not(any(windows, target_vendor = "apple")))]
+fn native_code(raw: &RawEntry) -> u32 {
+    raw.2
+}
+
+/// The columns of [`RAW_ENTRIES`] holding native keycodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeColumn {
+    Xkb,
+    Win,
+    Mac,
+}
+
+/// The native keycode of the entry with the given W3C DOM `code` in a
+/// specific platform column (not only the current one). The Darwin keymap
+/// uses this to find the keycode of "Space".
+pub fn native_for_code(code: &str, column: NativeColumn) -> Option<u32> {
+    RAW_ENTRIES
+        .iter()
+        .find(|raw| raw.5 == code)
+        .map(|raw| match column {
+            NativeColumn::Xkb => raw.2,
+            NativeColumn::Win => raw.3,
+            NativeColumn::Mac => raw.4,
+        })
 }
 
 /// A map from code to key. This isn't meant to be used at runtime
@@ -685,7 +726,22 @@ mod tests {
         let a = e.iter().find(|e| e.code == "KeyA").unwrap();
         assert_eq!(a.key, Key::KeyA);
         assert_eq!(a.usb, 0x070004);
+        #[cfg(not(any(windows, target_vendor = "apple")))]
         assert_eq!(a.native, 0x0026);
+        #[cfg(windows)]
+        assert_eq!(a.native, 0x001e);
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(a.native, 0x0000);
+    }
+
+    #[test]
+    fn mac_native_column() {
+        // kVK_ANSI_A = 0x00, kVK_Space = 0x31, kVK_Return = 0x24.
+        assert_eq!(native_for_code("KeyA", NativeColumn::Mac), Some(0x00));
+        assert_eq!(native_for_code("Space", NativeColumn::Mac), Some(0x31));
+        assert_eq!(native_for_code("Enter", NativeColumn::Mac), Some(0x24));
+        assert_eq!(native_for_code("KeyA", NativeColumn::Xkb), Some(0x26));
+        assert_eq!(native_for_code("Nope", NativeColumn::Mac), None);
     }
 
     #[test]

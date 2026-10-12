@@ -37,7 +37,7 @@ pub struct Buffer<T: Pod> {
     /// Note this is the number of `T`s, not the size in bytes.
     pub len: usize,
 
-    _marker: PhantomData<T>,
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: Pod> Buffer<T> {

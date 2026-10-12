@@ -3,9 +3,24 @@
 //! font's glyph index.
 
 use crate::{
-    face::freetype::Face,
-    shape::{self, Cell},
+    face::Face,
+    shape::{self, Cell, TextRun},
+    shared_grid::SharedGrid,
 };
+
+/// Never produced (the no-op shaper can't fail to initialize); exists so the
+/// API matches the other shapers (`shape::ShapeError`).
+#[derive(Debug, thiserror::Error)]
+pub enum ShapeError {}
+
+/// Errors from [`Shaper::shape_run`].
+#[derive(Debug, thiserror::Error)]
+pub enum ShapeRunError {
+    #[error(transparent)]
+    GetFace(#[from] crate::collection::GetFaceError),
+    #[error(transparent)]
+    Shape(#[from] ShapeError),
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Codepoint {
@@ -24,8 +39,9 @@ pub struct Shaper {
 }
 
 impl Shaper {
-    pub fn new(_opts: &shape::Options) -> Shaper {
-        Shaper::default()
+    #[allow(clippy::unnecessary_wraps)]
+    pub fn new(_opts: &shape::Options) -> Result<Shaper, ShapeError> {
+        Ok(Shaper::default())
     }
 
     pub fn end_frame(&self) {}
@@ -44,6 +60,20 @@ impl Shaper {
     }
 
     pub fn finalize(&mut self) {}
+
+    /// Shape the given text run (looks the face up in `grid`).
+    pub fn shape_run(
+        &mut self,
+        grid: &SharedGrid,
+        run: &TextRun,
+    ) -> Result<&[Cell], ShapeRunError> {
+        if run.font_index.special().is_none() {
+            let mut guard = grid.write();
+            let face = guard.resolver.collection.get_face(run.font_index)?;
+            return Ok(self.shape(Some(face)));
+        }
+        Ok(self.shape(None))
+    }
 
     /// Shape the current run. `face` is `None` for special fonts (sprite),
     /// whose codepoint == glyph index.
@@ -76,7 +106,7 @@ mod tests {
 
     #[test]
     fn noop_special_passthrough() {
-        let mut s = Shaper::new(&shape::Options::default());
+        let mut s = Shaper::new(&shape::Options::default()).unwrap();
         s.prepare();
         s.add_codepoint(0x41, 0);
         s.add_codepoint(0x42, 2);

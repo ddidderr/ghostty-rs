@@ -120,7 +120,8 @@ impl Path {
         // Check if the path starts with a tilde and expand it to the
         // home directory. We explicitly look for "~/" because we don't
         // support alternate users such as "~alice/"
-        if path.starts_with("~/") {
+        // (Windows isn't supported yet: Zig skips this there.)
+        if !cfg!(windows) && path.starts_with("~/") {
             match ghostty_os::expand_home(&path) {
                 Ok(expanded) => {
                     log::debug!("expanding file path from home directory: path={expanded}");

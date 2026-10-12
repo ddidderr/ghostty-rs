@@ -234,6 +234,18 @@ impl Thread {
     pub fn thread_main(mut self) {
         log::debug!("starting search thread");
 
+        // On Darwin we name the thread explicitly and run with a lower
+        // priority than other threads.
+        #[cfg(target_vendor = "apple")]
+        {
+            ghostty_os::macos::pthread_setname_np(c"search");
+            let class = ghostty_os::macos::QosClass::Utility;
+            match ghostty_os::macos::set_qos_class(class) {
+                Ok(()) => log::debug!("thread QoS class set class={class:?}"),
+                Err(err) => log::warn!("error setting QoS class err={err}"),
+            }
+        }
+
         // Drain the mailbox immediately (Zig sends an initial wakeup).
         self.drain_mailbox();
         self.next_refresh = Instant::now() + REFRESH_INTERVAL;

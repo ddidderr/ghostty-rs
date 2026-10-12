@@ -12,6 +12,7 @@ use ghostty_input::{
         CopyToClipboard,
         Flags,
         InspectorMode,
+        NavigateSearch,
         Set,
         SplitDirection,
         SplitFocusDirection,
@@ -22,7 +23,6 @@ use ghostty_input::{
         WriteScreen,
         set::{EntryFormatter as BindingEntryFormatter, Value},
     },
-    ctrl_or_super,
 };
 
 use crate::{
@@ -93,23 +93,32 @@ fn to_arg_error(e: ghostty_input::binding::Error) -> ArgError {
 }
 
 impl Keybinds {
-    /// Reset to the default keybinds (Zig: `init`). Linux/GTK variant.
-    #[allow(clippy::too_many_lines)]
+    /// Reset to the default keybinds (Zig: `init`) for the build target.
     pub fn init(&mut self) {
+        self.init_for(ghostty_input::platform::is_darwin());
+    }
+
+    /// Reset to the default keybinds for Darwin (`true`) or non-Darwin
+    /// (`false`). Zig selects with `builtin.target.os.tag.isDarwin()` at
+    /// compile time; the parameter lets both variants be tested anywhere.
+    #[allow(clippy::too_many_lines)]
+    pub fn init_for(&mut self, darwin: bool) {
         self.set = Set::default();
         self.tables = Vec::new();
         self.chain_target = ChainTarget::Root;
 
         let none = Mods::default();
         let cs = mods(true, true, false, false);
+        // `inputpkg.ctrlOrSuper` for the requested platform.
+        let cos = |m: Mods| ghostty_input::key::ctrl_or_super_for(m, darwin);
         let set = &mut self.set;
 
         // keybinds for opening and reloading config
         set.put(
-            uni(',', ctrl_or_super(mods(false, true, false, false))),
+            uni(',', cos(mods(false, true, false, false))),
             Action::ReloadConfig,
         );
-        set.put(uni(',', ctrl_or_super(none)), Action::OpenConfig);
+        set.put(uni(',', cos(none)), Action::OpenConfig);
 
         {
             set.put(
@@ -124,44 +133,51 @@ impl Keybinds {
             // The order of these blocks is important. The *last* added keybind for a given action is
             // what will display in the menu. We want the more typical keybinds after this block to be
             // the standard
-            set.put(
-                phys(Key::Insert, mods(true, false, false, false)),
-                Action::CopyToClipboard(CopyToClipboard::Mixed),
-            );
-            set.put(
-                phys(Key::Insert, mods(false, true, false, false)),
-                Action::PasteFromClipboard,
-            );
+            if !darwin {
+                set.put(
+                    phys(Key::Insert, mods(true, false, false, false)),
+                    Action::CopyToClipboard(CopyToClipboard::Mixed),
+                );
+                set.put(
+                    phys(Key::Insert, mods(false, true, false, false)),
+                    Action::PasteFromClipboard,
+                );
+            }
 
             // On macOS we default to super but Linux ctrl+shift since
             // ctrl+c is to kill the process.
+            let m = if darwin {
+                mods(false, false, false, true)
+            } else {
+                cs
+            };
             set.put_flags(
-                uni('c', cs),
+                uni('c', m),
                 Action::CopyToClipboard(CopyToClipboard::Mixed),
                 performable(),
             );
-            set.put_flags(uni('v', cs), Action::PasteFromClipboard, performable());
+            set.put_flags(uni('v', m), Action::PasteFromClipboard, performable());
         }
 
         // Increase font size mapping for keyboards with dedicated plus keys (like german)
         // Note: this order matters below because the C API will only return
         // the last keybinding for a given action. The macOS app uses this to
         // set the expected keybind for the menu.
-        set.put(uni('=', ctrl_or_super(none)), Action::IncreaseFontSize(1.0));
-        set.put(uni('+', ctrl_or_super(none)), Action::IncreaseFontSize(1.0));
-        set.put(uni('-', ctrl_or_super(none)), Action::DecreaseFontSize(1.0));
-        set.put(uni('0', ctrl_or_super(none)), Action::ResetFontSize);
+        set.put(uni('=', cos(none)), Action::IncreaseFontSize(1.0));
+        set.put(uni('+', cos(none)), Action::IncreaseFontSize(1.0));
+        set.put(uni('-', cos(none)), Action::DecreaseFontSize(1.0));
+        set.put(uni('0', cos(none)), Action::ResetFontSize);
 
         set.put(
             uni('j', mods(true, true, false, true)),
             Action::WriteScreenFile(WriteScreen::COPY),
         );
         set.put(
-            uni('j', ctrl_or_super(mods(false, true, false, false))),
+            uni('j', cos(mods(false, true, false, false))),
             Action::WriteScreenFile(WriteScreen::PASTE),
         );
         set.put(
-            uni('j', ctrl_or_super(mods(false, true, true, false))),
+            uni('j', cos(mods(false, true, true, false))),
             Action::WriteScreenFile(WriteScreen::OPEN),
         );
 
@@ -181,92 +197,94 @@ impl Keybinds {
         }
 
         // Tabs common to all platforms
+        let ctrl = mods(true, false, false, false);
         set.put(phys(Key::Tab, cs), Action::PreviousTab);
-        set.put(
-            phys(Key::Tab, mods(true, false, false, false)),
-            Action::NextTab,
-        );
+        set.put(phys(Key::Tab, ctrl), Action::NextTab);
 
         // Windowing
-        set.put(uni('n', cs), Action::NewWindow);
-        set.put(uni('w', cs), Action::CloseSurface);
-        set.put(uni('q', cs), Action::Quit);
-        set.put(
-            phys(Key::F4, mods(false, false, true, false)),
-            Action::CloseWindow,
-        );
-        set.put(uni('t', cs), Action::NewTab);
-        set.put(uni('w', cs), Action::CloseTab(CloseTabMode::This));
-        set.put_flags(phys(Key::ArrowLeft, cs), Action::PreviousTab, performable());
-        set.put_flags(phys(Key::ArrowRight, cs), Action::NextTab, performable());
-        let ctrl = mods(true, false, false, false);
-        set.put_flags(phys(Key::PageUp, ctrl), Action::PreviousTab, performable());
-        set.put_flags(phys(Key::PageDown, ctrl), Action::NextTab, performable());
-        set.put(uni('o', cs), Action::NewSplit(SplitDirection::Right));
-        set.put(uni('e', cs), Action::NewSplit(SplitDirection::Down));
-        let ctrl_super = mods(true, false, false, true);
-        set.put_flags(
-            uni('[', ctrl_super),
-            Action::GotoSplit(SplitFocusDirection::Previous),
-            performable(),
-        );
-        set.put_flags(
-            uni(']', ctrl_super),
-            Action::GotoSplit(SplitFocusDirection::Next),
-            performable(),
-        );
-        let ctrl_alt = mods(true, false, true, false);
-        for (k, d) in [
-            (Key::ArrowUp, SplitFocusDirection::Up),
-            (Key::ArrowDown, SplitFocusDirection::Down),
-            (Key::ArrowLeft, SplitFocusDirection::Left),
-            (Key::ArrowRight, SplitFocusDirection::Right),
-        ] {
-            set.put_flags(phys(k, ctrl_alt), Action::GotoSplit(d), performable());
-        }
-
-        // Resizing splits
-        let super_ctrl_shift = mods(true, true, false, true);
-        for (k, d) in [
-            (Key::ArrowUp, SplitResizeDirection::Up),
-            (Key::ArrowDown, SplitResizeDirection::Down),
-            (Key::ArrowLeft, SplitResizeDirection::Left),
-            (Key::ArrowRight, SplitResizeDirection::Right),
-        ] {
+        if !darwin {
+            set.put(uni('n', cs), Action::NewWindow);
+            set.put(uni('w', cs), Action::CloseSurface);
+            set.put(uni('q', cs), Action::Quit);
+            set.put(
+                phys(Key::F4, mods(false, false, true, false)),
+                Action::CloseWindow,
+            );
+            set.put(uni('t', cs), Action::NewTab);
+            set.put(uni('w', cs), Action::CloseTab(CloseTabMode::This));
+            set.put_flags(phys(Key::ArrowLeft, cs), Action::PreviousTab, performable());
+            set.put_flags(phys(Key::ArrowRight, cs), Action::NextTab, performable());
+            set.put_flags(phys(Key::PageUp, ctrl), Action::PreviousTab, performable());
+            set.put_flags(phys(Key::PageDown, ctrl), Action::NextTab, performable());
+            set.put(uni('o', cs), Action::NewSplit(SplitDirection::Right));
+            set.put(uni('e', cs), Action::NewSplit(SplitDirection::Down));
+            let ctrl_super = mods(true, false, false, true);
             set.put_flags(
-                phys(k, super_ctrl_shift),
-                Action::ResizeSplit(SplitResizeParameter(d, 10)),
+                uni('[', ctrl_super),
+                Action::GotoSplit(SplitFocusDirection::Previous),
                 performable(),
             );
+            set.put_flags(
+                uni(']', ctrl_super),
+                Action::GotoSplit(SplitFocusDirection::Next),
+                performable(),
+            );
+            let ctrl_alt = mods(true, false, true, false);
+            for (k, d) in [
+                (Key::ArrowUp, SplitFocusDirection::Up),
+                (Key::ArrowDown, SplitFocusDirection::Down),
+                (Key::ArrowLeft, SplitFocusDirection::Left),
+                (Key::ArrowRight, SplitFocusDirection::Right),
+            ] {
+                set.put_flags(phys(k, ctrl_alt), Action::GotoSplit(d), performable());
+            }
+
+            // Resizing splits
+            let super_ctrl_shift = mods(true, true, false, true);
+            for (k, d) in [
+                (Key::ArrowUp, SplitResizeDirection::Up),
+                (Key::ArrowDown, SplitResizeDirection::Down),
+                (Key::ArrowLeft, SplitResizeDirection::Left),
+                (Key::ArrowRight, SplitResizeDirection::Right),
+            ] {
+                set.put_flags(
+                    phys(k, super_ctrl_shift),
+                    Action::ResizeSplit(SplitResizeParameter(d, 10)),
+                    performable(),
+                );
+            }
+
+            // Viewport scrolling
+            set.put(phys(Key::Home, shift), Action::ScrollToTop);
+            set.put(phys(Key::End, shift), Action::ScrollToBottom);
+            set.put(phys(Key::PageUp, shift), Action::ScrollPageUp);
+            set.put(phys(Key::PageDown, shift), Action::ScrollPageDown);
+
+            // Semantic prompts
+            set.put(phys(Key::PageUp, cs), Action::JumpToPrompt(-1));
+            set.put(phys(Key::PageDown, cs), Action::JumpToPrompt(1));
+
+            // Search
+            set.put_flags(uni('f', cs), Action::StartSearch, performable());
+            set.put_flags(phys(Key::Escape, none), Action::EndSearch, performable());
+
+            // Inspector, matching Chromium
+            set.put(uni('i', cs), Action::Inspector(InspectorMode::Toggle));
+
+            // Terminal
+            set.put(uni('a', cs), Action::SelectAll);
+
+            // Selection clipboard paste
+            set.put(phys(Key::Insert, shift), Action::PasteFromSelection);
         }
-
-        // Viewport scrolling
-        set.put(phys(Key::Home, shift), Action::ScrollToTop);
-        set.put(phys(Key::End, shift), Action::ScrollToBottom);
-        set.put(phys(Key::PageUp, shift), Action::ScrollPageUp);
-        set.put(phys(Key::PageDown, shift), Action::ScrollPageDown);
-
-        // Semantic prompts
-        set.put(phys(Key::PageUp, cs), Action::JumpToPrompt(-1));
-        set.put(phys(Key::PageDown, cs), Action::JumpToPrompt(1));
-
-        // Search
-        set.put_flags(uni('f', cs), Action::StartSearch, performable());
-        set.put_flags(phys(Key::Escape, none), Action::EndSearch, performable());
-
-        // Inspector, matching Chromium
-        set.put(uni('i', cs), Action::Inspector(InspectorMode::Toggle));
-
-        // Terminal
-        set.put(uni('a', cs), Action::SelectAll);
-
-        // Selection clipboard paste
-        set.put(phys(Key::Insert, shift), Action::PasteFromSelection);
-
         {
             // On macOS we default to super but everywhere else
             // is alt.
-            let m = mods(false, false, true, false);
+            let m = if darwin {
+                mods(false, false, false, true)
+            } else {
+                mods(false, false, true, false)
+            };
 
             // Cmd/Alt+N for goto tab N
             let digits = [
@@ -279,6 +297,14 @@ impl Keybinds {
                 Key::Digit7,
                 Key::Digit8,
             ];
+            // On macOS we keep these not performable so that the keyboard
+            // shortcuts in tabs work. In the future the correct fix is to
+            // fix the reverse mapping lookup to allow us to lookup
+            // performable keybinds conditionally.
+            let tab_flags = Flags {
+                performable: !darwin,
+                ..Flags::default()
+            };
             for (i, key) in digits.into_iter().enumerate() {
                 let n = i + 1;
                 let c = char::from(b'0' + n as u8);
@@ -287,30 +313,149 @@ impl Keybinds {
                 // this shortcut. Namely, AZERTY doesn't produce unicode `N`
                 // for their digit keys (they're on shifted keys on the same
                 // physical keys).
-                set.put_flags(phys(key, m), Action::GotoTab(n), performable());
+                set.put_flags(phys(key, m), Action::GotoTab(n), tab_flags);
                 // Important: this must be the LAST binding set so that the
                 // libghostty trigger API returns this one for the action,
                 // so that things like the macOS tab bar key equivalent label
                 // work properly.
-                set.put_flags(uni(c, m), Action::GotoTab(n), performable());
+                set.put_flags(uni(c, m), Action::GotoTab(n), tab_flags);
             }
-            set.put_flags(uni('9', m), Action::LastTab, performable());
+            // See comment above with the numeric goto_tab
+            set.put_flags(uni('9', m), Action::LastTab, tab_flags);
         }
 
         // Toggle fullscreen
-        set.put(
-            phys(Key::Enter, ctrl_or_super(none)),
-            Action::ToggleFullscreen,
-        );
+        set.put(phys(Key::Enter, cos(none)), Action::ToggleFullscreen);
 
         // Toggle zoom a split
-        set.put(
-            phys(Key::Enter, ctrl_or_super(shift)),
-            Action::ToggleSplitZoom,
-        );
+        set.put(phys(Key::Enter, cos(shift)), Action::ToggleSplitZoom);
 
         // Toggle command palette, matches VSCode
-        set.put(uni('p', ctrl_or_super(shift)), Action::ToggleCommandPalette);
+        set.put(uni('p', cos(shift)), Action::ToggleCommandPalette);
+
+        // Mac-specific keyboard bindings.
+        if darwin {
+            Self::init_mac_bindings(set);
+        }
+    }
+
+    /// The Mac-specific default keybinds (tail of Zig `Keybinds.init`).
+    #[allow(clippy::too_many_lines)]
+    fn init_mac_bindings(set: &mut Set) {
+        let sup = mods(false, false, false, true);
+        let sup_shift = mods(false, true, false, true);
+        let sup_alt = mods(false, false, true, true);
+        let sup_ctrl = mods(true, false, false, true);
+
+        set.put(uni('q', sup), Action::Quit);
+        set.put_flags(uni('k', sup), Action::ClearScreen, performable());
+        set.put(uni('a', sup), Action::SelectAll);
+
+        // Undo/redo
+        set.put_flags(uni('t', sup_shift), Action::Undo, performable());
+        set.put_flags(uni('z', sup), Action::Undo, performable());
+        set.put_flags(uni('z', sup_shift), Action::Redo, performable());
+
+        // Viewport scrolling
+        set.put(phys(Key::Home, sup), Action::ScrollToTop);
+        set.put(phys(Key::End, sup), Action::ScrollToBottom);
+        set.put(phys(Key::PageUp, sup), Action::ScrollPageUp);
+        set.put(phys(Key::PageDown, sup), Action::ScrollPageDown);
+        set.put_flags(uni('j', sup), Action::ScrollToSelection, performable());
+
+        // Semantic prompts
+        set.put(phys(Key::ArrowUp, sup_shift), Action::JumpToPrompt(-1));
+        set.put(phys(Key::ArrowDown, sup_shift), Action::JumpToPrompt(1));
+
+        // Mac windowing
+        set.put(uni('n', sup), Action::NewWindow);
+        set.put(uni('w', sup), Action::CloseSurface);
+        set.put(uni('w', sup_alt), Action::CloseTab(CloseTabMode::This));
+        set.put(uni('w', sup_shift), Action::CloseWindow);
+        set.put(
+            uni('w', mods(false, true, true, true)),
+            Action::CloseAllWindows,
+        );
+        set.put(uni('t', sup), Action::NewTab);
+        set.put(uni('[', sup_shift), Action::PreviousTab);
+        set.put(uni(']', sup_shift), Action::NextTab);
+        set.put(uni('d', sup), Action::NewSplit(SplitDirection::Right));
+        set.put(uni('d', sup_shift), Action::NewSplit(SplitDirection::Down));
+        set.put(
+            uni('[', sup),
+            Action::GotoSplit(SplitFocusDirection::Previous),
+        );
+        set.put(uni(']', sup), Action::GotoSplit(SplitFocusDirection::Next));
+        for (k, d) in [
+            (Key::ArrowUp, SplitFocusDirection::Up),
+            (Key::ArrowDown, SplitFocusDirection::Down),
+            (Key::ArrowLeft, SplitFocusDirection::Left),
+            (Key::ArrowRight, SplitFocusDirection::Right),
+        ] {
+            set.put(phys(k, sup_alt), Action::GotoSplit(d));
+        }
+        for (k, d) in [
+            (Key::ArrowUp, SplitResizeDirection::Up),
+            (Key::ArrowDown, SplitResizeDirection::Down),
+            (Key::ArrowLeft, SplitResizeDirection::Left),
+            (Key::ArrowRight, SplitResizeDirection::Right),
+        ] {
+            set.put(
+                phys(k, sup_ctrl),
+                Action::ResizeSplit(SplitResizeParameter(d, 10)),
+            );
+        }
+        set.put(uni('=', sup_ctrl), Action::EqualizeSplits);
+
+        // Jump to prompt, matches Terminal.app
+        set.put(phys(Key::ArrowUp, sup), Action::JumpToPrompt(-1));
+        set.put(phys(Key::ArrowDown, sup), Action::JumpToPrompt(1));
+
+        // Search
+        set.put_flags(uni('f', sup), Action::StartSearch, performable());
+        set.put_flags(uni('e', sup), Action::SearchSelection, performable());
+        set.put_flags(uni('f', sup_shift), Action::EndSearch, performable());
+        set.put_flags(
+            phys(Key::Escape, Mods::default()),
+            Action::EndSearch,
+            performable(),
+        );
+        set.put_flags(
+            uni('g', sup),
+            Action::NavigateSearch(NavigateSearch::Next),
+            performable(),
+        );
+        set.put_flags(
+            uni('g', sup_shift),
+            Action::NavigateSearch(NavigateSearch::Previous),
+            performable(),
+        );
+
+        // Inspector, matching Chromium
+        set.put(uni('i', sup_alt), Action::Inspector(InspectorMode::Toggle));
+
+        // Alternate keybind, common to Mac programs
+        set.put(uni('f', sup_ctrl), Action::ToggleFullscreen);
+
+        // Selection clipboard paste, matches Terminal.app
+        set.put(uni('v', sup_shift), Action::PasteFromSelection);
+
+        // "Natural text editing" keybinds. This forces these keys to go back
+        // to legacy encoding (not fixterms). It seems macOS users more than
+        // others are used to these keys so we set them as defaults. If
+        // people want to get back to the fixterm encoding they can set
+        // the keybinds to `unbind`.
+        set.put(phys(Key::ArrowRight, sup), Action::Text("\\x05".to_owned()));
+        set.put(phys(Key::ArrowLeft, sup), Action::Text("\\x01".to_owned()));
+        set.put(phys(Key::Backspace, sup), Action::Text("\\x15".to_owned()));
+        set.put(
+            phys(Key::ArrowLeft, mods(false, false, true, false)),
+            Action::Esc("b".to_owned()),
+        );
+        set.put(
+            phys(Key::ArrowRight, mods(false, false, true, false)),
+            Action::Esc("f".to_owned()),
+        );
     }
 
     fn table_index(&self, name: &str) -> Option<usize> {
@@ -849,5 +994,76 @@ mod tests {
             again.parse_cli(Some(v)).unwrap();
         }
         assert_eq!(kb.set.bindings.len(), again.set.bindings.len());
+    }
+
+    fn lookup(kb: &Keybinds, trigger: Trigger) -> Option<&Value> {
+        kb.set.get(trigger)
+    }
+
+    #[test]
+    fn default_keybinds_darwin_use_super() {
+        let mut kb = Keybinds::default();
+        kb.init_for(true);
+        let sup = mods(false, false, false, true);
+
+        // cmd+c copies (performable), cmd+q quits, cmd+t opens a tab.
+        for (c, want) in [
+            ('c', Action::CopyToClipboard(CopyToClipboard::Mixed)),
+            ('q', Action::Quit),
+            ('t', Action::NewTab),
+            ('1', Action::GotoTab(1)),
+        ] {
+            let Some(Value::Leaf(l)) = lookup(&kb, uni(c, sup)) else {
+                panic!("missing super+{c}");
+            };
+            assert_eq!(l.action, want);
+        }
+
+        // tab shortcuts are NOT performable on macOS.
+        let Some(Value::Leaf(l)) = lookup(&kb, uni('1', sup)) else {
+            panic!()
+        };
+        assert!(!l.flags.performable);
+        let Some(Value::Leaf(l)) = lookup(&kb, uni('c', sup)) else {
+            panic!()
+        };
+        assert!(l.flags.performable);
+
+        // No ctrl+shift+n window binding on macOS, no ctrl+insert copy.
+        assert!(lookup(&kb, uni('n', mods(true, true, false, false))).is_none());
+        assert!(lookup(&kb, phys(Key::Insert, mods(true, false, false, false))).is_none());
+
+        // Natural text editing.
+        let Some(Value::Leaf(l)) = lookup(&kb, phys(Key::ArrowLeft, sup)) else {
+            panic!()
+        };
+        assert_eq!(l.action, Action::Text("\\x01".to_owned()));
+
+        // ctrlOrSuper picks super: super+comma opens the config.
+        let Some(Value::Leaf(l)) = lookup(&kb, uni(',', sup)) else {
+            panic!()
+        };
+        assert_eq!(l.action, Action::OpenConfig);
+
+        // Formatted defaults re-parse to the same number of bindings.
+        let out = fmt_kb("keybind", &kb);
+        let mut again = Keybinds::default();
+        for line in out.lines() {
+            let v = line.strip_prefix("keybind = ").unwrap();
+            again.parse_cli(Some(v)).unwrap();
+        }
+        assert_eq!(kb.set.bindings.len(), again.set.bindings.len());
+    }
+
+    #[test]
+    fn default_keybinds_non_darwin_use_ctrl_shift() {
+        let mut kb = Keybinds::default();
+        kb.init_for(false);
+        let cs = mods(true, true, false, false);
+        let Some(Value::Leaf(l)) = lookup(&kb, uni('c', cs)) else {
+            panic!()
+        };
+        assert_eq!(l.action, Action::CopyToClipboard(CopyToClipboard::Mixed));
+        assert!(lookup(&kb, uni('q', mods(false, false, false, true))).is_none());
     }
 }

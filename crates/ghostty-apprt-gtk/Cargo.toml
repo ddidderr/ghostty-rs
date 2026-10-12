@@ -31,6 +31,7 @@ signal-hook = "0.4.5"
 libloading = "0.9.0"
 dear-imgui-glow = "0.19"
 glow = "0.18"
+wayland-sys = { version = "0.31.11", features = ["client", "dlopen"] }
 
 [build-dependencies]
 glib-build-tools = "0.22"

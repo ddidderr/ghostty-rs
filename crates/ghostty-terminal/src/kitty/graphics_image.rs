@@ -174,7 +174,16 @@ impl LoadingImage {
     }
 
     /// Reads the data from a shared memory segment.
-    #[cfg(not(target_arch = "wasm32"))]
+    ///
+    /// Windows is currently unsupported (as in Zig).
+    #[cfg(windows)]
+    #[allow(clippy::unused_self)]
+    fn read_shared_memory(&mut self, _offset: u32, _size: u32, _path: &[u8]) -> Result<(), Error> {
+        Err(Error::UnsupportedMedium)
+    }
+
+    /// Reads the data from a shared memory segment.
+    #[cfg(not(any(target_arch = "wasm32", windows)))]
     fn read_shared_memory(&mut self, offset: u32, size: u32, path: &[u8]) -> Result<(), Error> {
         use rustix::{fs::Mode, shm};
 
@@ -192,7 +201,7 @@ impl LoadingImage {
         result
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", windows)))]
     fn read_shm_fd(
         &mut self,
         fd: rustix::fd::OwnedFd,
@@ -521,8 +530,7 @@ fn is_path_in_temp_dir(path: &[u8]) -> bool {
     if path.starts_with(b"/dev/shm") {
         return true;
     }
-    {
-        let dir = alloc_tmp_dir();
+    if let Some(dir) = alloc_tmp_dir() {
         if path.starts_with(dir.as_bytes()) {
             return true;
         }
@@ -539,13 +547,21 @@ fn is_path_in_temp_dir(path: &[u8]) -> bool {
 }
 
 /// `os/file.zig allocTmpDir` on POSIX (TMPDIR, TMP, then /tmp).
-fn alloc_tmp_dir() -> String {
+#[cfg(not(windows))]
+#[allow(clippy::unnecessary_wraps)]
+fn alloc_tmp_dir() -> Option<String> {
     for key in ["TMPDIR", "TMP"] {
         if let Some(v) = std::env::var_os(key) {
-            return v.to_string_lossy().into_owned();
+            return Some(v.to_string_lossy().into_owned());
         }
     }
-    "/tmp".to_owned()
+    Some("/tmp".to_owned())
+}
+
+/// `os/file.zig allocTmpDir` on Windows (`TMP` only).
+#[cfg(windows)]
+fn alloc_tmp_dir() -> Option<String> {
+    std::env::var_os("TMP").map(|v| v.to_string_lossy().into_owned())
 }
 
 /// Image represents a single fully loaded image.
@@ -931,7 +947,7 @@ mod tests {
         assert!(loading.complete().is_ok());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(any(target_arch = "wasm32", windows)))]
     #[test]
     fn image_load_shared_memory() {
         use std::io::Write;

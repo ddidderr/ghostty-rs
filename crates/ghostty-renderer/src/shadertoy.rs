@@ -12,7 +12,7 @@ use std::{io::Read, path::Path};
 
 use bytemuck::{Pod, Zeroable};
 use naga::{
-    back::glsl as glsl_out,
+    back::{glsl as glsl_out, msl as msl_out},
     front::glsl as glsl_in,
     valid::{Capabilities, ModuleInfo, ValidationFlags, Validator},
 };
@@ -71,8 +71,7 @@ impl Default for Uniforms {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Glsl,
-    /// Metal is out of scope for the Rust port; converting to it fails with
-    /// [`Error::Unsupported`].
+    /// Metal Shading Language (naga's `msl-out` replaces spirv-cross).
     Msl,
 }
 
@@ -101,7 +100,7 @@ pub enum Error {
     #[error("shader validation failed")]
     ValidationFailed,
     /// Writing the target GLSL failed (upstream: `error.SpvcFailed`).
-    #[error("GLSL generation failed: {0}")]
+    #[error("shader generation failed: {0}")]
     SpvcFailed(String),
     #[error("unsupported shader target")]
     Unsupported,
@@ -171,7 +170,7 @@ pub fn load_from_file(path: &Path, target: Target) -> Result<String, Error> {
 
     match target {
         Target::Glsl => glsl_from_compiled(&compiled),
-        Target::Msl => Err(Error::Unsupported),
+        Target::Msl => msl_from_compiled(&compiled),
     }
 }
 
@@ -295,6 +294,86 @@ fn adapt_for_naga(full: &str) -> String {
     s
 }
 
+/// The name of the fragment entry point in generated MSL. spirv-cross calls
+/// it `main0` because `main` is reserved in MSL; naga would turn `main0` into
+/// `main0_` (it suffixes names ending in a digit), so we use a name it keeps
+/// as is. The Metal renderer looks the function up by this name.
+pub const MSL_ENTRY_POINT: &str = "ghostty_main";
+
+/// Convert a compiled shader to MSL (`mslFromSpv`).
+///
+/// The resource slots follow what spirv-cross produces with
+/// `SPVC_COMPILER_OPTION_MSL_ENABLE_DECORATION_BINDING` for the shadertoy
+/// prefix: the `Globals` uniform block at `[[buffer(1)]]` ("we need this to
+/// properly locate the uniform block to index 1") and `iChannel0` as
+/// `[[texture(0)]]` / `[[sampler(0)]]`, which is where the Metal render pass
+/// binds them.
+pub fn msl_from_compiled(compiled: &Compiled) -> Result<String, Error> {
+    let fail = |e: &dyn std::fmt::Display| {
+        log::warn!("spirv-cross error message={e}");
+        Error::SpvcFailed(e.to_string())
+    };
+
+    // Rename the entry point (info is indexed by entry point order, which
+    // doesn't change).
+    let mut module = compiled.module.clone();
+    for ep in &mut module.entry_points {
+        if ep.name == "main" {
+            ep.name = MSL_ENTRY_POINT.into();
+        }
+    }
+
+    let mut resources = msl_out::EntryPointResources::default();
+    let mut bind = |binding: u32, target: msl_out::BindTarget| {
+        resources
+            .resources
+            .insert(naga::ResourceBinding { group: 0, binding }, target);
+    };
+    // iChannel0 texture (the sampler is split off at binding 2, see
+    // `adapt_for_naga`).
+    bind(
+        0,
+        msl_out::BindTarget {
+            texture: Some(0),
+            ..Default::default()
+        },
+    );
+    bind(
+        1,
+        msl_out::BindTarget {
+            buffer: Some(1),
+            ..Default::default()
+        },
+    );
+    bind(
+        2,
+        msl_out::BindTarget {
+            sampler: Some(msl_out::BindSamplerTarget::Resource(0)),
+            ..Default::default()
+        },
+    );
+
+    let mut options = msl_out::Options {
+        // Needed for `[[position]]` fragment inputs etc. on all supported
+        // macOS versions (the metallib is built for macOS 10.14 / MSL 2.1).
+        lang_version: (2, 1),
+        fake_missing_bindings: false,
+        ..Default::default()
+    };
+    options
+        .per_entry_point_map
+        .insert(MSL_ENTRY_POINT.into(), resources);
+
+    let pipeline = msl_out::PipelineOptions {
+        entry_point: Some((naga::ShaderStage::Fragment, MSL_ENTRY_POINT.into())),
+        ..Default::default()
+    };
+
+    let (msl, _info) = msl_out::write_string(&module, &compiled.info, &options, &pipeline)
+        .map_err(|e| fail(&e))?;
+    Ok(msl)
+}
+
 /// Convert a compiled shader to GLSL 430 core (`glslFromSpv`).
 pub fn glsl_from_compiled(compiled: &Compiled) -> Result<String, Error> {
     const GLSL_VERSION: u16 = 430;
@@ -383,17 +462,38 @@ mod tests {
     }
 
     #[test]
-    fn shadertoy_to_msl_unsupported() {
+    fn shadertoy_to_msl() {
+        // `shadertoy to msl`
         let compiled = compile_shadertoy(TEST_CRT, None).unwrap();
         assert_eq!(compiled.module.entry_points.len(), 1);
+        let msl = msl_from_compiled(&compiled).unwrap();
+        assert!(msl.contains("#include <metal_stdlib>"));
+        // The Metal renderer looks the fragment function up by this name.
+        assert!(
+            msl.contains("fragment ghostty_mainOutput ghostty_main("),
+            "{msl}"
+        );
+        // Uniform block at buffer 1, channel at texture 0 / sampler 0.
+        assert!(msl.contains("[[buffer(1)]]"), "{msl}");
+        assert!(msl.contains("[[texture(0)]]"), "{msl}");
+        assert!(msl.contains("[[sampler(0)]]"), "{msl}");
+    }
+
+    #[test]
+    fn shadertoy_focus_to_msl() {
+        let compiled = compile_shadertoy(TEST_FOCUS, None).unwrap();
+        let msl = msl_from_compiled(&compiled).unwrap();
+        assert!(msl.contains("ghostty_main("));
+    }
+
+    #[test]
+    fn load_from_file_msl() {
         let dir = std::env::temp_dir().join(format!("ghostty-shadertoy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("crt.glsl");
         std::fs::write(&path, TEST_CRT).unwrap();
-        assert!(matches!(
-            load_from_file(&path, Target::Msl),
-            Err(Error::Unsupported)
-        ));
+        let msl = load_from_file(&path, Target::Msl).unwrap();
+        assert!(msl.contains("ghostty_main("));
         std::fs::remove_dir_all(&dir).ok();
     }
 

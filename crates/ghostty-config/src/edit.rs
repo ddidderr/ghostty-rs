@@ -9,8 +9,8 @@ use crate::file_load;
 /// On Linux, this will use the file at the XDG config path. This is the
 /// only valid path for Linux so we don't need to check for other paths.
 ///
-/// (On macOS both XDG and AppSupport paths are valid; macOS is not
-/// supported by this port.)
+/// On macOS, both XDG and AppSupport paths are valid; the AppSupport paths
+/// come first.
 ///
 /// The config file (and its directory) is created if it doesn't exist.
 pub fn open_path() -> io::Result<String> {
@@ -80,8 +80,15 @@ fn config_path() -> io::Result<String> {
 /// Returns a list of possible paths the main config file could be
 /// in for the current OS.
 fn config_path_candidates() -> io::Result<Vec<String>> {
-    Ok(vec![
-        file_load::default_xdg_path().map_err(xdg_err)?,
-        file_load::legacy_default_xdg_path().map_err(xdg_err)?,
-    ])
+    let mut paths = Vec::with_capacity(4);
+
+    #[cfg(target_os = "macos")]
+    {
+        paths.push(file_load::default_app_support_path().map_err(xdg_err)?);
+        paths.push(file_load::legacy_default_app_support_path().map_err(xdg_err)?);
+    }
+
+    paths.push(file_load::default_xdg_path().map_err(xdg_err)?);
+    paths.push(file_load::legacy_default_xdg_path().map_err(xdg_err)?);
+    Ok(paths)
 }

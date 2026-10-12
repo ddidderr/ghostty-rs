@@ -152,6 +152,31 @@ mod tests {
         assert!(matches!(back, Message::Focused(true)));
     }
 
+    /// Block until the wakeup is signaled.
+    #[cfg(unix)]
+    fn wait_readable(w: &Wakeup) {
+        let mut fds = [rustix::event::PollFd::from_borrowed_fd(
+            w.as_fd(),
+            rustix::event::PollFlags::IN,
+        )];
+        rustix::event::poll(&mut fds, None).unwrap();
+    }
+
+    /// Block until the wakeup is signaled (this consumes the auto-reset
+    /// event; the callers' `drain` after it is then a harmless no-op).
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn wait_readable(w: &Wakeup) {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: valid event handle owned by the wakeup.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                w.as_handle().as_raw_handle().cast(),
+                windows_sys::Win32::System::Threading::INFINITE,
+            )
+        };
+    }
+
     #[test]
     fn blocking_send_wakes_consumer_and_completes() {
         let mb = Mailbox::new().unwrap();
@@ -161,11 +186,7 @@ mod tests {
         let consumer = mb.clone();
         let t = std::thread::spawn(move || {
             // Wait for the wakeup the full-queue path posts, then drain.
-            let mut fds = [rustix::event::PollFd::from_borrowed_fd(
-                consumer.wakeup().as_fd(),
-                rustix::event::PollFlags::IN,
-            )];
-            rustix::event::poll(&mut fds, None).unwrap();
+            wait_readable(consumer.wakeup());
             consumer.wakeup().drain();
             consumer.drain().count()
         });
@@ -185,11 +206,7 @@ mod tests {
         let m2 = Arc::clone(&m);
         // The consumer needs the lock to make progress (like the IO thread).
         let t = std::thread::spawn(move || {
-            let mut fds = [rustix::event::PollFd::from_borrowed_fd(
-                consumer.wakeup().as_fd(),
-                rustix::event::PollFlags::IN,
-            )];
-            rustix::event::poll(&mut fds, None).unwrap();
+            wait_readable(consumer.wakeup());
             let mut g = m2.lock().unwrap();
             *g += 1;
             consumer.drain().count()

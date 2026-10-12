@@ -538,7 +538,9 @@ impl Key {
     /// true if this key is one of the left or right versions of super (MacOS)
     /// or ctrl.
     pub fn ctrl_or_super(self) -> bool {
-        // Non-darwin target.
+        if crate::platform::is_darwin() {
+            return self == Key::MetaLeft || self == Key::MetaRight;
+        }
         self == Key::ControlLeft || self == Key::ControlRight
     }
 
@@ -558,9 +560,18 @@ impl Key {
 /// Mac, we default to super (i.e. super+c for copy) and on
 /// non-Mac we default to ctrl (i.e. ctrl+c for copy).
 pub fn ctrl_or_super(mods: Mods) -> Mods {
+    ctrl_or_super_for(mods, crate::platform::is_darwin())
+}
+
+/// [`ctrl_or_super`] for an explicit platform (`darwin == true` sets super).
+pub fn ctrl_or_super_for(mods: Mods, darwin: bool) -> Mods {
     let mut copy = mods;
-    // Non-darwin target.
-    copy.ctrl = true;
+    if darwin {
+        copy.super_ = true;
+    } else {
+        copy.ctrl = true;
+    }
+
     copy
 }
 
@@ -602,6 +613,23 @@ mod tests {
         assert!(!Key::Slash.should_be_remappable());
         assert!(Key::AltLeft.should_be_remappable());
         assert!(Key::Unidentified.should_be_remappable());
+    }
+
+    #[test]
+    fn key_ctrl_or_super_follows_platform() {
+        crate::platform::with_darwin(true, || {
+            assert!(Key::MetaLeft.ctrl_or_super());
+            assert!(Key::MetaRight.ctrl_or_super());
+            assert!(!Key::ControlLeft.ctrl_or_super());
+            assert!(ctrl_or_super(Mods::default()).super_);
+            assert!(!ctrl_or_super(Mods::default()).ctrl);
+        });
+        crate::platform::with_darwin(false, || {
+            assert!(Key::ControlLeft.ctrl_or_super());
+            assert!(!Key::MetaLeft.ctrl_or_super());
+            assert!(ctrl_or_super(Mods::default()).ctrl);
+            assert!(!ctrl_or_super(Mods::default()).super_);
+        });
     }
 
     #[test]

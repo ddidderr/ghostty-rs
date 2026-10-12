@@ -1,3 +1,4 @@
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use crate::flatpak::is_flatpak;
 
 /// Entry that is retrieved from the passwd API. This only contains the fields
@@ -28,6 +29,7 @@ pub fn get() -> std::io::Result<Entry> {
     // If we're in flatpak then our entry is always empty so we grab it
     // by shelling out to the host. note that we do HAVE an entry in the
     // sandbox but only the username is correct.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     if is_flatpak() {
         log::info!("flatpak detected, will use host command to get our entry");
         return host_entry(&user.name);
@@ -46,6 +48,7 @@ pub fn get() -> std::io::Result<Entry> {
 /// Dependency note: Zig uses `pty.zig`; `ghostty-termio` (which owns the Rust
 /// `Pty`) depends on this crate, so a minimal openpt/ptsname pair is opened
 /// here with rustix instead. Like Zig, only `shell` and `home` are filled in.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn host_entry(name: &str) -> std::io::Result<Entry> {
     use std::io::Read;
 
@@ -112,7 +115,9 @@ fn host_entry(name: &str) -> std::io::Result<Entry> {
     Ok(parse_getent(&String::from_utf8_lossy(&output)))
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
 /// Shell and home are the last two `:`-separated fields of the output.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn parse_getent(output: &str) -> Entry {
     let mut it = output.trim_end_matches([' ', '\r', '\n']).rsplit(':');
     let shell = it.next().map(str::to_owned);
@@ -128,6 +133,7 @@ fn parse_getent(output: &str) -> Entry {
 mod tests {
     use super::*;
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn parse_getent_output() {
         let e = parse_getent("mitchell:x:1000:1000:Mitchell:/home/mitchell:/bin/zsh\r\n");

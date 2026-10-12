@@ -11,11 +11,35 @@ thiserror = "2.0.21"
 
 # Zig's wasm build only compiles `os/wasm.zig`; the POSIX / D-Bus / gettext
 # dependencies are unavailable on wasm32.
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+[target.'cfg(not(any(target_arch = "wasm32", windows)))'.dependencies]
 gettext-rs = { version = "0.8.0", features = ["gettext-system"] }
 nix = { version = "0.31.3", features = ["user"] }
 rustix = { version = "1.1.5", features = ["fs", "process", "system", "pipe", "net", "time", "rand", "pty"] }
 zbus = "5.19.0"
+
+# Windows: ConPTY / pipes / process APIs (`os/windows.zig`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+libc = "0.2.190"
+objc2 = "0.6.5"
+objc2-app-kit = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+crossbeam-channel = "0.5.17"
 
 [features]
 # Mirrors Zig's `wasm_shared` build option (SharedArrayBuffer-backed memory).

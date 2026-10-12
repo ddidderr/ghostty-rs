@@ -10,15 +10,24 @@ pub mod key_encode;
 pub mod key_mods;
 pub mod keyboard;
 pub mod keycodes;
+pub mod keymap_darwin;
+pub mod keymap_noop;
 pub mod kitty;
 pub mod link;
 pub mod mouse;
 pub mod paste;
+pub mod platform;
 
 pub use config::OptionAsAlt;
 pub use key::{Action, Key, KeyEvent, ctrl_or_super};
 pub use key_mods::{Mods, RemapSet as KeyRemapSet};
 pub use keyboard::Layout as KeyboardLayout;
+/// The platform keymap: Carbon `UCKeyTranslate` on macOS, a no-op elsewhere
+/// (Zig: `input.Keymap`).
+#[cfg(target_os = "macos")]
+pub use keymap_darwin::{Keymap, State as KeymapState, Translation as KeymapTranslation};
+#[cfg(not(target_os = "macos"))]
+pub use keymap_noop::{Keymap, State as KeymapState, Translation as KeymapTranslation};
 pub use link::Link;
 pub use mouse::{
     Button as MouseButton,

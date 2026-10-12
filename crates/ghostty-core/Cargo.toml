@@ -9,6 +9,7 @@ base64 = "0.23.1"
 crossbeam-channel = "0.5.17"
 ghostty-apprt.workspace = true
 ghostty-config.workspace = true
+ghostty-crash.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
 ghostty-inspector.workspace = true
@@ -26,3 +27,6 @@ thiserror = "2"
 
 [lints]
 workspace = true
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+oslog = { version = "0.2.0", default-features = false }

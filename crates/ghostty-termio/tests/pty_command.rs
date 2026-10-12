@@ -1,5 +1,6 @@
 //! Integration test: run a real child attached to a pty.
 
+#![cfg(unix)]
 #![allow(clippy::unwrap_used)]
 
 use std::{

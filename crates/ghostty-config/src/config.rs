@@ -204,7 +204,13 @@ crate::config_struct! {
         /// On Linux with GTK, font size is scaled according to both display-wide and
         /// text-specific scaling factors, which are often managed by your desktop
         /// environment (e.g. the GNOME display scale and large text settings).
-        "font-size" => font_size: f32 = 12.0,
+        "font-size" => font_size: f32 = if cfg!(target_os = "macos") {
+            // On macOS we default a little bigger since this tends to look
+            // better. This is purely subjective but this is easy to modify.
+            13.0
+        } else {
+            12.0
+        },
 
         /// A repeatable configuration to set one or more font variations values for
         /// a variable font. A variable font is a single font, usually with a filename
@@ -339,7 +345,11 @@ crate::config_struct! {
         ///   but without any of the darkening artifacts.
         ///
         /// Available since: 1.1.0
-        "alpha-blending" => alpha_blending: AlphaBlending = AlphaBlending::LinearCorrected,
+        "alpha-blending" => alpha_blending: AlphaBlending = if cfg!(target_os = "macos") {
+            AlphaBlending::Native
+        } else {
+            AlphaBlending::LinearCorrected
+        },
 
         /// All of the configurations behavior adjust various metrics determined by the
         /// font. The values can be integers (1, -1, etc.) or a percentage (20%, -15%,
@@ -2353,7 +2363,11 @@ crate::config_struct! {
         /// paste is always enabled even if this is `false`.
         ///
         /// The default value is true on Linux and macOS.
-        "copy-on-select" => copy_on_select: CopyOnSelect = CopyOnSelect::True,
+        "copy-on-select" => copy_on_select: CopyOnSelect = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            CopyOnSelect::True
+        } else {
+            CopyOnSelect::False
+        },
 
         /// The action to take when the user right-clicks on the terminal surface.
         ///
@@ -2433,7 +2447,7 @@ crate::config_struct! {
         /// On Linux, if this is `true`, Ghostty can delay quitting fully until a
         /// configurable amount of time has passed after the last window is closed.
         /// See the documentation of `quit-after-last-window-closed-delay`.
-        "quit-after-last-window-closed" => quit_after_last_window_closed: bool = true,
+        "quit-after-last-window-closed" => quit_after_last_window_closed: bool = cfg!(target_os = "linux"),
 
         /// Controls how long Ghostty will stay running after the last open surface has
         /// been closed. This only has an effect if `quit-after-last-window-closed` is
@@ -2649,7 +2663,7 @@ crate::config_struct! {
         /// accessible than on macOS, meaning that it is more preferable to keep the
         /// quick terminal open until the user has completed their task.
         /// This default may change in the future.
-        "quick-terminal-autohide" => quick_terminal_autohide: bool = false,
+        "quick-terminal-autohide" => quick_terminal_autohide: bool = cfg!(target_os = "macos"),
 
         /// This configuration option determines the behavior of the quick terminal
         /// when switching between macOS spaces. macOS spaces are virtual desktops
@@ -3430,7 +3444,11 @@ crate::config_struct! {
         ///   * `always` - Always use cgroups.
         ///   * `single-instance` - Enable cgroups only for Ghostty instances launched
         ///     as single-instance applications (see gtk-single-instance).
-        "linux-cgroup" => linux_cgroup: LinuxCgroup = LinuxCgroup::SingleInstance,
+        "linux-cgroup" => linux_cgroup: LinuxCgroup = if cfg!(target_os = "linux") {
+            LinuxCgroup::SingleInstance
+        } else {
+            LinuxCgroup::Never
+        },
 
         /// Memory limit for any individual terminal process (tab, split, window,
         /// etc.) in bytes. If this is unset then no memory limit will be set.
@@ -3947,6 +3965,48 @@ impl Config {
             }
         };
 
+        // On macOS load the app support directory as well
+        #[cfg(target_os = "macos")]
+        {
+            let legacy_app_support_path = crate::file_load::legacy_default_app_support_path()
+                .map_err(|e| Error::Other(e.to_string()))?;
+            let app_support_path = crate::file_load::preferred_app_support_path()
+                .map_err(|e| Error::Other(e.to_string()))?;
+            let app_support_loaded = {
+                let legacy_app_support_action = self.load_optional_file(&legacy_app_support_path);
+
+                // The app support path and legacy may be the same, since we
+                // use the `preferred` call above. If its the same, avoid
+                // a double-load.
+                let app_support_action = if legacy_app_support_path == app_support_path {
+                    OptionalFileAction::NotFound
+                } else {
+                    self.load_optional_file(&app_support_path)
+                };
+
+                if app_support_action != OptionalFileAction::NotFound
+                    && legacy_app_support_action != OptionalFileAction::NotFound
+                {
+                    log::warn!(
+                        "both config files `{legacy_app_support_path}` and `{app_support_path}` exist."
+                    );
+                    log::warn!("loading them both in that order");
+                    true
+                } else {
+                    app_support_action != OptionalFileAction::NotFound
+                        || legacy_app_support_action != OptionalFileAction::NotFound
+                }
+            };
+
+            // If both files are not found, then we create a template file.
+            // For macOS, we only create the template file in the app support
+            if !app_support_loaded && !xdg_loaded {
+                if let Err(err) = Self::write_config_template(&app_support_path) {
+                    log::warn!("error creating template config file err={err}");
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
         if !xdg_loaded {
             if let Err(err) = Self::write_config_template(&xdg_path) {
                 log::warn!("error creating template config file err={err}");
@@ -3957,10 +4017,14 @@ impl Config {
 
     /// Load and parse the CLI args.
     pub fn load_cli_args(&mut self) -> Result<(), Error> {
-        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        // (On macOS this reads NSProcessInfo, libc argc/argv are not valid
+        // for NSApplicationMain-based applications.)
+        let argv: Vec<std::ffi::OsString> = ghostty_os::args::iterator().collect();
 
-        // Fast-path if we are Linux/BSD and have no args.
-        if argv.len() <= 1 {
+        // Fast-path if we are Linux/BSD and have no args. Everything else
+        // (Windows, macOS) has to at least try because it may not use
+        // std.os.argv.
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) && argv.len() <= 1 {
             return Ok(());
         }
 
@@ -3975,19 +4039,9 @@ impl Config {
         //     styling, etc. based on the command.
         //
         // See: https://github.com/Vladimir-csp/xdg-terminal-exec
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         {
-            #[cfg(unix)]
             use std::os::unix::ffi::OsStrExt;
-            #[cfg(not(unix))]
-            trait OsStrExt {
-                fn as_bytes(&self) -> &[u8];
-            }
-            #[cfg(not(unix))]
-            impl OsStrExt for std::ffi::OsString {
-                fn as_bytes(&self) -> &[u8] {
-                    self.as_encoded_bytes()
-                }
-            }
             let cargs: Vec<std::ffi::CString> = argv
                 .iter()
                 .filter_map(|a| std::ffi::CString::new(a.as_bytes()).ok())
@@ -4533,7 +4587,31 @@ impl Config {
             }
         }
 
-        // We need the passwd entry for the remainder
+        self.platform_defaults(wd)
+    }
+
+    /// Windows has no passwd database: default to cmd.exe and the
+    /// %HOMEDRIVE%%HOMEPATH% home directory.
+    #[cfg(windows)]
+    #[allow(clippy::unnecessary_wraps)]
+    fn platform_defaults(&mut self, wd: &mut WorkingDirectory) -> Result<(), Error> {
+        if self.command.is_none() {
+            log::warn!("no default shell found, will default to using cmd");
+            self.command = Some(Command::Shell("cmd.exe".to_owned()));
+        }
+
+        if *wd == WorkingDirectory::Home {
+            *wd = match ghostty_os::homedir::home() {
+                Ok(Some(home)) => WorkingDirectory::Path(home),
+                _ => WorkingDirectory::Inherit,
+            };
+        }
+        Ok(())
+    }
+
+    /// The passwd-based part of [`Config::lookup_shell_defaults`].
+    #[cfg(not(windows))]
+    fn platform_defaults(&mut self, wd: &mut WorkingDirectory) -> Result<(), Error> {
         let pw = ghostty_os::passwd::get()?;
         if self.command.is_none() {
             if let Some(sh) = pw.shell {
@@ -4645,6 +4723,21 @@ fn file_kind_name(meta: &std::fs::Metadata) -> &'static str {
 /// We should keep the set of behaviors that depend on this as small
 /// as possible because magic sucks, but each place is well documented.
 fn probable_cli_environment() -> bool {
+    // Windows has its own problems, just ignore it for now since its not a
+    // real supported target.
+    if cfg!(windows) {
+        return false;
+    }
+
+    // On macOS, we don't want to detect `open` calls as CLI envs.
+    // Our desktop detection on macOS is very accurate due to how
+    // processes are launched on macOS, so if we detect we're launched
+    // from the app bundle then we're not in a CLI environment.
+    #[cfg(target_os = "macos")]
+    if ghostty_os::launched_from_desktop() {
+        return false;
+    }
+
     // If we have TERM_PROGRAM set to a non-empty value, we assume
     // a graphical terminal environment.
     if let Some(v) = std::env::var_os("TERM_PROGRAM") {

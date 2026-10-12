@@ -8,6 +8,7 @@ license.workspace = true
 bytemuck = { version = "1.25.2", features = ["derive"] }
 crossbeam-channel = "0.5.17"
 ghostty-config.workspace = true
+ghostty-crash.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
 ghostty-input.workspace = true
@@ -18,7 +19,7 @@ glow = "0.18.0"
 jpeg-decoder = { version = "0.3.2", default-features = false }
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 log = "0.4.34"
-naga = { version = "30.0.1", features = ["glsl-in", "glsl-out", "wgsl-in"] }
+naga = { version = "30.0.1", features = ["glsl-in", "glsl-out", "msl-out", "wgsl-in"] }
 onig = "6.5.3"
 png = "0.18.1"
 thiserror = "2.0.21"
@@ -54,3 +55,21 @@ return_self_not_must_use = "allow"
 used_underscore_binding = "allow"
 large_stack_arrays = "allow"
 inline_always = "allow"
+
+# The Metal graphics API (`renderer/Metal.zig`) and the CoreVideo display
+# link; compiled on macOS and iOS only.
+[target.'cfg(target_vendor = "apple")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+ghostty-os.workspace = true
+objc2 = "0.6.5"
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-io-surface = "0.3.2"
+objc2-metal = { version = "0.3.2", features = ["block2", "objc2-io-surface"] }
+objc2-quartz-core = "0.3.2"
+
+# CVDisplayLink does not exist on iOS.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-core-video = "0.3.2"

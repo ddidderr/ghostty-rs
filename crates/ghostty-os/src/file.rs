@@ -1,17 +1,23 @@
+#[cfg(unix)]
 use rustix::process::{Resource, Rlimit as RustixRlimit, getrlimit, setrlimit};
 
 /// Resource limit (`rlimit` in Zig). `None` means infinity.
+#[cfg(unix)]
 pub type Rlimit = RustixRlimit;
 
 /// rlim_t value for infinity in the Zig implementation.
+#[cfg(unix)]
 const INFINITY: u64 = u64::MAX;
 
+#[cfg(unix)]
 fn cur(l: &Rlimit) -> u64 {
     l.current.unwrap_or(INFINITY)
 }
+#[cfg(unix)]
 fn max(l: &Rlimit) -> u64 {
     l.maximum.unwrap_or(INFINITY)
 }
+#[cfg(unix)]
 fn mk(cur: u64, max: Option<u64>) -> Rlimit {
     Rlimit {
         current: if cur == INFINITY { None } else { Some(cur) },
@@ -22,6 +28,7 @@ fn mk(cur: u64, max: Option<u64>) -> Rlimit {
 /// This maximizes the number of file descriptors we can have open. We
 /// need to do this because each window consumes at least a handful of fds.
 /// This is extracted from the Zig compiler source code.
+#[cfg(unix)]
 pub fn fix_max_files() -> Option<Rlimit> {
     let old = getrlimit(Resource::Nofile);
 
@@ -58,12 +65,17 @@ pub fn fix_max_files() -> Option<Rlimit> {
     Some(old)
 }
 
+#[cfg(unix)]
 pub fn restore_max_files(lim: Rlimit) {
     let _ = setrlimit(Resource::Nofile, lim);
 }
 
 /// Return the recommended path for temporary files.
 pub fn alloc_tmp_dir() -> Option<String> {
+    if cfg!(windows) {
+        // TODO: what is a good fallback path on windows? (same as Zig)
+        return std::env::var_os("TMP").map(|v| v.to_string_lossy().into_owned());
+    }
     if let Some(v) = std::env::var_os("TMPDIR") {
         return Some(v.to_string_lossy().into_owned());
     }
@@ -73,10 +85,11 @@ pub fn alloc_tmp_dir() -> Option<String> {
     Some("/tmp".to_owned())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn tmp_dir_env_precedence() {
         temp_env::with_vars([("TMPDIR", Some("/a")), ("TMP", Some("/b"))], || {
@@ -90,6 +103,7 @@ mod tests {
         });
     }
 
+    #[cfg(unix)]
     #[test]
     fn fix_and_restore_max_files() {
         let old = fix_max_files().unwrap();

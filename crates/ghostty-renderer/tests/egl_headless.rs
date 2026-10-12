@@ -5,6 +5,8 @@
 //! Skipped (returns early with a message) when no EGL display / GL 4.3 core
 //! context can be created, e.g. on CI without Mesa.
 
+// These tests drive the OpenGL backend (Mesa); Apple platforms render with Metal.
+#![cfg(not(target_vendor = "apple"))]
 // The EGL loader calls are `unsafe fn`s in khronos-egl (test-only usage).
 #![allow(unsafe_code, clippy::unwrap_used)]
 
@@ -128,7 +130,7 @@ fn px(buf: &[u8], w: usize, x: usize, y: usize) -> [u8; 4] {
 
 #[test]
 fn headless_shaders_compile_and_render() {
-    let Some((_h, mut api)) = setup() else {
+    let Some((_h, api)) = setup() else {
         return;
     };
     let gl: Gl = api.gl().unwrap().clone();

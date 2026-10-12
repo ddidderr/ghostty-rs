@@ -12,7 +12,7 @@
 
 use super::hb;
 use crate::{
-    face::freetype::Face,
+    face::Face,
     shape::{self, Cell, DEFAULT_FEATURES, FeatureList, TextRun},
     shared_grid::SharedGrid,
 };

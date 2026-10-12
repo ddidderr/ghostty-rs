@@ -25,6 +25,19 @@ _fix:
 
 fix: _fix fmt
 
+# Build libghostty-vt (C ABI, include/ghostty/vt.h) as target/<profile>/libghostty-vt.{so,a}
+# and, if the target is installed, target/wasm32-unknown-unknown/<profile>/ghostty-vt.wasm.
+vt-lib profile="release":
+    cargo build -p ghostty-vt-capi --profile {{profile}}
+    cp target/{{profile}}/libghostty_vt_capi.so target/{{profile}}/libghostty-vt.so
+    cp target/{{profile}}/libghostty_vt_capi.a target/{{profile}}/libghostty-vt.a
+    cargo build -p ghostty-vt-capi --profile {{profile}} --target wasm32-unknown-unknown
+    cp target/wasm32-unknown-unknown/{{profile}}/ghostty_vt_capi.wasm target/wasm32-unknown-unknown/{{profile}}/ghostty-vt.wasm
+
+# Run the libghostty-vt ABI check and the C/wasm example tests.
+vt-test:
+    cargo test -p ghostty-vt-capi
+
 clippy:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 

@@ -21,39 +21,34 @@ use ghostty_terminal::{
 };
 
 use crate::{
-    opengl::{
-        Buffer,
-        Texture,
-        buffer,
-        gl::{Gl, Primitive},
-        pipeline::Pipeline,
-        render_pass::{Draw, RenderPass, Step},
-        shaders::Image as ImageVertex,
-        texture,
+    graphics_api::{
+        Draw,
+        GpuBuffer,
+        GpuRenderPass,
+        GraphicsApi,
+        ImageTextureFormat,
+        Primitive,
+        Step,
+        TextureKind,
     },
     overlay::Overlay,
+    shader_types::Image as ImageVertex,
     size::CellSize,
 };
 
 /// The GPU objects needed to upload and draw images. Built per frame from
-/// the graphics API (the API itself is mutably borrowed by the frame while
-/// drawing).
-pub struct Gpu<'a> {
-    pub gl: &'a Gl,
-    /// `api.imageTextureOptions(.rgba, true)`.
-    pub texture_options: texture::Options,
-    /// `api.imageBufferOptions()`.
-    pub buffer_options: buffer::Options,
+/// the graphics API.
+pub struct Gpu<'a, G: GraphicsApi> {
+    pub api: &'a G,
 }
 
 /// Generic image rendering state for the renderer. This stores all
 /// images and their placements and exposes only a limited public API
 /// for adding images and placements and drawing them.
-#[derive(Default)]
-pub struct State {
+pub struct State<G: GraphicsApi> {
     /// The full image state for the renderer that specifies what images
     /// need to be uploaded, pruned, etc.
-    pub images: HashMap<Id, Entry>,
+    pub images: HashMap<Id, Entry<G>>,
 
     /// The placements for the Kitty image protocol.
     pub kitty_placements: Vec<Placement>,
@@ -77,8 +72,8 @@ pub struct State {
 }
 
 /// An image in the map plus the time it was transmitted.
-pub struct Entry {
-    pub image: Image,
+pub struct Entry<G: GraphicsApi> {
+    pub image: Image<G>,
     pub transmit_time: Instant,
 }
 
@@ -96,8 +91,22 @@ pub enum PrepImageError {
     ImageConversionError,
 }
 
-impl State {
-    pub fn new() -> State {
+impl<G: GraphicsApi> Default for State<G> {
+    fn default() -> Self {
+        State {
+            images: HashMap::new(),
+            kitty_placements: Vec::new(),
+            kitty_bg_end: 0,
+            kitty_text_end: 0,
+            kitty_virtual: false,
+            overlay_placements: Vec::new(),
+            force_kitty_update: false,
+        }
+    }
+}
+
+impl<G: GraphicsApi> State<G> {
+    pub fn new() -> State<G> {
         State::default()
     }
 
@@ -107,7 +116,7 @@ impl State {
     /// If any uploads fail, they are ignored. The return value
     /// can be used to detect if upload was a total success (true)
     /// or not (false).
-    pub fn upload(&mut self, gpu: &Gpu<'_>) -> bool {
+    pub fn upload(&mut self, gpu: &Gpu<'_, G>) -> bool {
         let mut success = true;
         self.images.retain(|_, entry| {
             let img = &mut entry.image;
@@ -131,11 +140,11 @@ impl State {
     ///
     /// Any placements that have non-uploaded images are ignored. Any
     /// graphics API errors during drawing are also ignored.
-    pub fn draw(
+    pub fn draw<'p, P: GpuRenderPass<'p, G>>(
         &self,
-        gpu: &Gpu<'_>,
-        pipeline: &Pipeline,
-        pass: &mut RenderPass<'_>,
+        gpu: &Gpu<'_, G>,
+        pipeline: &G::Pipeline,
+        pass: &mut P,
         placement_type: DrawPlacements,
     ) {
         let bg_end = self.kitty_bg_end as usize;
@@ -162,22 +171,18 @@ impl State {
 
             // Create our vertex buffer, which is always exactly one item.
             // future(mitchellh): we can group rendering multiple instances of a single image
-            let buf = match Buffer::<ImageVertex>::init_fill(
-                gpu.gl,
-                gpu.buffer_options,
-                &[ImageVertex {
-                    grid_pos: [p.x as f32, p.y as f32],
-                    cell_offset: [p.cell_offset_x as f32, p.cell_offset_y as f32],
-                    source_rect: [
-                        p.source_x as f32,
-                        p.source_y as f32,
-                        p.source_width as f32,
-                        p.source_height as f32,
-                    ],
-                    dest_size: [p.width as f32, p.height as f32],
-                    pad: [0.0; 2],
-                }],
-            ) {
+            let buf = match gpu.api.init_buffer_fill::<ImageVertex>(&[ImageVertex {
+                grid_pos: [p.x as f32, p.y as f32],
+                cell_offset: [p.cell_offset_x as f32, p.cell_offset_y as f32],
+                source_rect: [
+                    p.source_x as f32,
+                    p.source_y as f32,
+                    p.source_width as f32,
+                    p.source_height as f32,
+                ],
+                dest_size: [p.width as f32, p.height as f32],
+                pad: [0.0; 2],
+            }]) {
                 Ok(b) => b,
                 Err(err) => {
                     log::warn!("error creating image vertex buffer err={err}");
@@ -770,27 +775,33 @@ pub enum UploadError {
 }
 
 /// The state for a single image that is to be rendered.
-pub enum Image {
+pub enum Image<G: GraphicsApi> {
     /// The image data is pending upload to the GPU.
     Pending(Pending),
 
     /// This is the same as the pending states but there is
     /// a texture already allocated that we want to replace.
-    Replace { texture: Texture, pending: Pending },
+    Replace {
+        texture: G::Texture,
+        pending: Pending,
+    },
 
     /// The image is uploaded and ready to be used.
-    Ready(Texture),
+    Ready(G::Texture),
 
     /// The image isn't uploaded yet but is scheduled to be unloaded.
     UnloadPending(Pending),
     /// The image is uploaded and is scheduled to be unloaded.
-    UnloadReady(Texture),
+    UnloadReady(G::Texture),
     /// The image is uploaded and scheduled to be replaced
     /// with new data, but it's also scheduled to be unloaded.
-    UnloadReplace { texture: Texture, pending: Pending },
+    UnloadReplace {
+        texture: G::Texture,
+        pending: Pending,
+    },
 }
 
-impl Image {
+impl<G: GraphicsApi> Image<G> {
     /// Mark this image for unload whatever state it is in.
     pub fn mark_for_unload(&mut self) {
         let old = std::mem::replace(self, Image::Pending(Pending::empty()));
@@ -807,7 +818,7 @@ impl Image {
     /// Mark the current image to be replaced with a pending one. This will
     /// attempt to update the existing texture if we have one, otherwise it
     /// will act like a new upload.
-    pub fn mark_for_replace(&mut self, img: Image) {
+    pub fn mark_for_replace(&mut self, img: Image<G>) {
         let Image::Pending(new_pending) = img else {
             debug_assert!(false, "mark_for_replace requires a pending image");
             return;
@@ -850,7 +861,7 @@ impl Image {
     }
 
     /// The texture if the image is ready or unload_ready (usable for drawing).
-    pub fn ready_texture(&self) -> Option<&Texture> {
+    pub fn ready_texture(&self) -> Option<&G::Texture> {
         match self {
             Image::Ready(t) | Image::UnloadReady(t) => Some(t),
             _ => None,
@@ -873,7 +884,7 @@ impl Image {
         }
     }
 
-    fn texture(&self) -> Option<&Texture> {
+    fn texture(&self) -> Option<&G::Texture> {
         match self {
             Image::Ready(t) | Image::UnloadReady(t) => Some(t),
             Image::Replace { texture, .. } | Image::UnloadReplace { texture, .. } => Some(texture),
@@ -894,7 +905,7 @@ impl Image {
 
     /// Upload the pending image to the GPU and change the state of this
     /// image to ready.
-    pub fn upload(&mut self, gpu: &Gpu<'_>) -> Result<(), UploadError> {
+    pub fn upload(&mut self, gpu: &Gpu<'_, G>) -> Result<(), UploadError> {
         // No error recovery is required after this call because it just
         // converts in place and is idempotent.
         self.prep_for_upload()?;
@@ -905,14 +916,19 @@ impl Image {
         };
 
         // Create our texture
-        let texture = Texture::init(
-            gpu.gl,
-            gpu.texture_options,
-            p.width as usize,
-            p.height as usize,
-            Some(&p.data),
-        )
-        .map_err(|_| UploadError::UploadFailed)?;
+        // (`api.imageTextureOptions(.rgba, true)`)
+        let texture = gpu
+            .api
+            .init_texture(
+                TextureKind::Image {
+                    format: ImageTextureFormat::Rgba,
+                    srgb: true,
+                },
+                p.width as usize,
+                p.height as usize,
+                Some(&p.data),
+            )
+            .map_err(|_| UploadError::UploadFailed)?;
 
         // Uploaded. We can now clear our data and change our state.
         //
@@ -938,6 +954,7 @@ impl Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::opengl::OpenGL;
 
     fn pending(fmt: PixelFormat, data: Vec<u8>, w: u32, h: u32) -> Pending {
         Pending {
@@ -1001,7 +1018,7 @@ mod tests {
 
     #[test]
     fn state_transitions_without_gpu() {
-        let mut img = Image::Pending(pending(PixelFormat::Rgb, vec![1, 2, 3], 1, 1));
+        let mut img: Image<OpenGL> = Image::Pending(pending(PixelFormat::Rgb, vec![1, 2, 3], 1, 1));
         assert!(img.is_pending());
         assert!(!img.is_unloading());
         assert!(!img.has_texture());
@@ -1028,7 +1045,7 @@ mod tests {
 
     #[test]
     fn prep_image_same_transmit_time_is_noop() {
-        let mut s = State::new();
+        let mut s: State<OpenGL> = State::new();
         let t = Instant::now();
         s.prep_image(
             Id::Kitty(1),
@@ -1118,7 +1135,7 @@ mod tests {
             .unwrap();
 
         let info = TerminalInfo::from_terminal(&t);
-        let mut s = State::new();
+        let mut s: State<OpenGL> = State::new();
         s.kitty_update(
             &storage,
             &t.screen().pages,

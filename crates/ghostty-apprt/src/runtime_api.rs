@@ -270,6 +270,13 @@ pub trait RtApp {
     /// `App.performAction`. Returns whether the action was performed.
     /// Runs on the main thread.
     fn perform_action(&self, target: Target<SurfaceId>, action: Action) -> bool;
+
+    /// The current keyboard layout (embedded `App.keyboardLayout`, used on
+    /// macOS to derive the default `macos-option-as-alt`). Runtimes that
+    /// can't tell report `Unknown`.
+    fn keyboard_layout(&self) -> ghostty_input::KeyboardLayout {
+        ghostty_input::KeyboardLayout::Unknown
+    }
 }
 
 /// Implemented by this crate (GTK `Surface`); handed to core. Mirrors

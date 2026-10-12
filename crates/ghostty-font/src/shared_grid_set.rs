@@ -33,7 +33,7 @@ use crate::{
     codepoint_map::CodepointMap,
     codepoint_resolver::{CodepointResolver, StyleStatus},
     collection::{self, AddOptions, Collection, LoadOptions, SizeAdjustment},
-    discovery::{Descriptor, Discover, Fontconfig},
+    discovery::{Descriptor, Discover},
     embedded,
     face::{self, DesiredSize, FontData},
     library::{Library, LibraryError},
@@ -47,7 +47,7 @@ pub enum RefError {
     #[error(transparent)]
     Discover(#[from] crate::discovery::DiscoverError),
     #[error("font discovery failed: {0}")]
-    DiscoverNext(#[from] crate::fontconfig::Error),
+    DiscoverNext(#[from] crate::discovery::NextError),
     #[error(transparent)]
     Add(#[from] collection::AddError),
     #[error(transparent)]
@@ -57,7 +57,7 @@ pub enum RefError {
     #[error(transparent)]
     GetFace(#[from] collection::GetFaceError),
     #[error(transparent)]
-    Face(#[from] face::freetype::FaceError),
+    Face(#[from] face::FaceError),
     #[error(transparent)]
     Grid(#[from] shared_grid::InitError),
     #[error(transparent)]
@@ -321,20 +321,49 @@ impl SharedGridSet {
             fallback(Style::Regular, SizeAdjustment::None),
         )?;
 
-        // Emoji fallback. (Zig skips this on macOS, which is out of scope.)
-        c.add(
-            Face::init(&self.font_lib, FontData::Static(embedded::EMOJI), face_opts)?,
-            // No size adjustment for emojis.
-            fallback(Style::Regular, SizeAdjustment::None),
-        )?;
-        c.add(
-            Face::init(
-                &self.font_lib,
-                FontData::Static(embedded::EMOJI_TEXT),
-                face_opts,
-            )?,
-            fallback(Style::Regular, SizeAdjustment::None),
-        )?;
+        // On macOS, always search for and add the Apple Emoji font
+        // as our preferred emoji font for fallback. We do this in case
+        // people add other emoji fonts to their system, we always want to
+        // prefer the official one. Users can override this by explicitly
+        // specifying a font-family for emoji.
+        #[cfg(font_coretext)]
+        {
+            let disco = Self::discover(inner);
+            let mut disco_it = disco.discover(&Descriptor {
+                family: Some("Apple Color Emoji".into()),
+                ..Default::default()
+            })?;
+            if let Some(face) = disco_it.next()? {
+                c.add_deferred(
+                    face,
+                    AddOptions {
+                        style: Style::Regular,
+                        fallback: true,
+                        // No size adjustment for emojis.
+                        size_adjustment: SizeAdjustment::None,
+                    },
+                )?;
+            }
+        }
+
+        // Emoji fallback. We don't include this on Mac since Mac is expected
+        // to always have the Apple Emoji available on the system.
+        #[cfg(not(font_coretext))]
+        {
+            c.add(
+                Face::init(&self.font_lib, FontData::Static(embedded::EMOJI), face_opts)?,
+                // No size adjustment for emojis.
+                fallback(Style::Regular, SizeAdjustment::None),
+            )?;
+            c.add(
+                Face::init(
+                    &self.font_lib,
+                    FontData::Static(embedded::EMOJI_TEXT),
+                    face_opts,
+                )?,
+                fallback(Style::Regular, SizeAdjustment::None),
+            )?;
+        }
 
         Ok(c)
     }
@@ -361,8 +390,8 @@ impl SharedGridSet {
     /// Initialize once and return the font discovery mechanism. This remains
     /// initialized throughout the lifetime of the application because some
     /// font discovery mechanisms (i.e. fontconfig) are unsafe to reinit.
-    fn discover(inner: &mut Inner) -> &Fontconfig {
-        inner.font_discover.get_or_insert_with(Fontconfig::init)
+    fn discover(inner: &mut Inner) -> &Discover {
+        inner.font_discover.get_or_insert_with(Discover::init)
     }
 }
 

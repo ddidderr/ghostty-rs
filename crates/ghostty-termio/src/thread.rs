@@ -27,16 +27,21 @@ use ghostty_apprt::surface::Message as SurfaceMessage;
 use ghostty_datastruct::blocking_queue::Timeout;
 use ghostty_renderer::size::Size;
 use ghostty_vt::{csi, modes::Mode};
+#[cfg(unix)]
 use rustix::event::{PollFd, PollFlags};
 
 use crate::{
     backend::ThreadData as BackendThreadData,
-    exec,
     message::Message,
     state::SharedStateExt,
     termio::{Error, Termio, ThreadData},
     wakeup::Wakeup,
 };
+
+/// The Windows event loop (`WaitForMultipleObjects`).
+#[cfg(windows)]
+#[path = "thread_windows.rs"]
+mod windows_loop;
 
 /// The number of milliseconds to coalesce certain messages like resize for.
 /// Not all message types are coalesced.
@@ -81,6 +86,9 @@ pub struct Thread {
     sync_reset_deadline: Option<Instant>,
 
     flags: Flags,
+
+    /// The surface dimensions recorded in crash reports.
+    pub crash_dims: Option<std::sync::Arc<ghostty_crash::SurfaceDims>>,
 }
 
 impl Thread {
@@ -96,6 +104,7 @@ impl Thread {
             coalesce_resize: None,
             sync_reset_deadline: None,
             flags: Flags::default(),
+            crash_dims: None,
         })
     }
 
@@ -109,6 +118,10 @@ impl Thread {
     /// once the stop handle was notified; dropping the termio afterwards
     /// cleans everything up.
     pub fn thread_main(mut self, mut io: Termio) {
+        // Setup our crash metadata
+        let _crash =
+            ghostty_crash::ThreadGuard::new(ghostty_crash::ThreadType::Io, self.crash_dims.clone());
+
         // Call child function so we can use errors...
         let result = self.thread_main_(&mut io);
         if let Err(err) = result {
@@ -140,6 +153,7 @@ impl Thread {
     }
 
     /// After an abnormal failure: discard messages until the stop signal.
+    #[cfg(unix)]
     fn drain_until_stop(&mut self, io: &Termio) {
         let mailbox = io.mailbox().clone();
         loop {
@@ -183,6 +197,7 @@ impl Thread {
     }
 
     /// The event loop. Returns when stopped.
+    #[cfg(unix)]
     fn run(&mut self, io: &mut Termio, td: &mut ThreadData) {
         let mailbox = io.mailbox().clone();
 
@@ -386,7 +401,8 @@ fn report_start_error(io: &Termio, err: &Error) {
     t.modes.set(Mode::CursorVisible, false);
 
     let msg: String = match err {
-        Error::Exec(exec::Error::Pty(crate::pty::Error::OpenptyFailed)) => "\
+        #[cfg(unix)]
+        Error::Exec(crate::exec::Error::Pty(crate::pty::Error::OpenptyFailed)) => "\
 Your system cannot allocate any more pty devices.
 
 Ghostty requires a pty device to launch a new terminal.

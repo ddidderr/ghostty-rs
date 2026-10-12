@@ -1,9 +1,10 @@
 //! Creates a temporary directory at runtime that can be safely used to
 //! store temporary data and is destroyed on drop.
 
+#[cfg(unix)]
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     io,
-    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
 
@@ -43,6 +44,48 @@ pub struct TempDir {
     name: String,
 }
 
+/// Fill `buf` with random bytes (Zig: `std.crypto.random.bytes`).
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+    rustix::rand::getrandom(buf, rustix::rand::GetRandomFlags::empty())?;
+    Ok(())
+}
+
+/// Darwin has no `getrandom` syscall (Zig uses `getentropy`); read the
+/// kernel CSPRNG device instead.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(buf)
+}
+
+/// Windows: the system preferred RNG (`BCryptGenRandom`).
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn fill_random(buf: &mut [u8]) -> io::Result<()> {
+    use windows_sys::Win32::Security::Cryptography::{
+        BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        BCryptGenRandom,
+    };
+
+    // SAFETY: `buf` is valid for `len` bytes; a null algorithm handle is
+    // allowed together with BCRYPT_USE_SYSTEM_PREFERRED_RNG.
+    let status = unsafe {
+        BCryptGenRandom(
+            std::ptr::null_mut(),
+            buf.as_mut_ptr(),
+            buf.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(io::Error::other(format!(
+            "BCryptGenRandom failed: {status:#x}"
+        )));
+    }
+    Ok(())
+}
+
 impl TempDir {
     /// Create the temporary directory.
     pub fn init() -> io::Result<TempDir> {
@@ -56,13 +99,14 @@ impl TempDir {
         // We now loop forever until we can find a directory that we can create.
         loop {
             let mut rand_buf = [0u8; RANDOM_BYTES];
-            rustix::rand::getrandom(&mut rand_buf, rustix::rand::GetRandomFlags::empty())?;
+            fill_random(&mut rand_buf)?;
             let name = b64_encode(&rand_buf);
 
-            match std::fs::DirBuilder::new()
-                .mode(0o755)
-                .create(parent.join(&name))
-            {
+            #[allow(unused_mut)]
+            let mut builder = std::fs::DirBuilder::new();
+            #[cfg(unix)]
+            builder.mode(0o755);
+            match builder.create(parent.join(&name)) {
                 Ok(()) => return Ok(TempDir { parent, name }),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e),

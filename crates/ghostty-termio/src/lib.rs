@@ -1,6 +1,7 @@
 //! ghostty-termio: see docs/rewrite/ARCHITECTURE.md for the module map.
 //!
-//! Linux only. Ported: `pty.zig`, `Command.zig`, the `terminfo/*` source
+//! Linux, with a Windows (ConPTY) port behind `cfg(windows)` (the `*_windows.rs`
+//! files, selected with `#[path]`). Ported: `pty.zig`, `Command.zig`, the `terminfo/*` source
 //! generator and everything in `termio/` (`Options`, `backend`, `message`,
 //! `mailbox`, `Termio`, `Thread`, `Exec`, `stream_handler`,
 //! `shell_integration`). See `docs/rewrite/notes/ghostty-termio-IO1.md` and
@@ -19,11 +20,14 @@
 )]
 
 pub mod backend;
+#[cfg_attr(windows, path = "command_windows.rs")]
 pub mod command;
+#[cfg_attr(windows, path = "exec_windows.rs")]
 pub mod exec;
 pub mod mailbox;
 pub mod message;
 pub mod options;
+#[cfg_attr(windows, path = "pty_windows.rs")]
 pub mod pty;
 pub mod shell_integration;
 pub mod sinks;
@@ -32,7 +36,10 @@ pub mod stream_handler;
 pub mod terminfo;
 pub mod termio;
 pub mod thread;
+#[cfg_attr(windows, path = "wakeup_windows.rs")]
 pub mod wakeup;
+/// Pure Windows `CreateProcessW` input encoders (tested on every host).
+pub mod windows_args;
 
 pub use backend::Backend;
 pub use command::Command;

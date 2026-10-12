@@ -16,6 +16,8 @@
 
 pub mod args;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod cf_release_thread;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cgroup;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod dbus;
@@ -26,8 +28,17 @@ pub mod env;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod file;
 pub mod file_type;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub mod flatpak;
+#[cfg(windows)]
+pub mod flatpak {
+    //! Flatpak does not exist on Windows.
+
+    /// Always false on Windows.
+    pub fn is_flatpak() -> bool {
+        false
+    }
+}
 #[cfg(not(target_arch = "wasm32"))]
 pub mod homedir;
 #[cfg(not(target_arch = "wasm32"))]
@@ -39,11 +50,34 @@ pub mod i18n_locales;
 pub mod kernel_info;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod locale;
+#[cfg(unix)]
+pub mod mach;
+#[cfg(unix)]
+pub mod macos;
 pub mod mouse;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod open;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub mod passwd;
+#[cfg(windows)]
+pub mod passwd {
+    //! `passwd.zig` does not exist on Windows (it `@compileError`s). This
+    //! stand-in reports an empty entry, which is what Zig callers' fallback
+    //! paths expect.
+
+    /// Entry retrieved from the passwd API (same shape as the Unix one).
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct Entry {
+        pub shell: Option<String>,
+        pub home: Option<String>,
+        pub name: Option<String>,
+    }
+
+    /// No passwd database on Windows: always an empty entry.
+    pub fn get() -> std::io::Result<Entry> {
+        Ok(Entry::default())
+    }
+}
 #[cfg(not(target_arch = "wasm32"))]
 pub mod path;
 #[cfg(not(target_arch = "wasm32"))]
@@ -52,13 +86,15 @@ pub mod pipe;
 pub mod resourcesdir;
 pub mod shell;
 pub mod string_encoding;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub mod systemd;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod temp_dir;
 pub mod uri;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+#[cfg(windows)]
+pub mod windows;
 
 #[cfg(target_arch = "wasm32")]
 mod unsupported;
@@ -91,9 +127,13 @@ pub use env::{
     prepend_env_os,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use file::{Rlimit, alloc_tmp_dir, fix_max_files, restore_max_files};
+pub use file::alloc_tmp_dir;
+#[cfg(unix)]
+pub use file::{Rlimit, fix_max_files, restore_max_files};
+#[cfg(unix)]
+pub use flatpak::FlatpakHostCommand;
 #[cfg(not(target_arch = "wasm32"))]
-pub use flatpak::{FlatpakHostCommand, is_flatpak};
+pub use flatpak::is_flatpak;
 #[cfg(not(target_arch = "wasm32"))]
 pub use homedir::{expand_home, home};
 #[cfg(not(target_arch = "wasm32"))]
@@ -108,15 +148,32 @@ pub use pipe::pipe;
 #[cfg(not(target_arch = "wasm32"))]
 pub use resourcesdir::{ResourcesDir, resources_dir};
 pub use shell::ShellEscapeWriter;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 pub use systemd::launched_by_systemd;
 #[cfg(not(target_arch = "wasm32"))]
 pub use temp_dir::TempDir;
 
-/// Join path components like `std.fs.path.join` (POSIX): empty components
-/// are skipped and exactly one separator is placed between components.
+/// The native path separator (`std.fs.path.sep`).
+#[cfg(windows)]
+const SEP: char = '\\';
+#[cfg(not(any(windows, target_arch = "wasm32")))]
+const SEP: char = '/';
+
+/// Join path components like `std.fs.path.join` for the host platform:
+/// empty components are skipped and exactly one separator is placed
+/// between components.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn path_join(parts: &[&str]) -> String {
+    path_join_with(SEP, parts)
+}
+
+/// [`path_join`] with an explicit separator (so both flavours are testable
+/// on any host).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn path_join_with(sep: char, parts: &[&str]) -> String {
+    // Windows accepts `/` as a separator too; Zig treats both as separators
+    // when joining.
+    let is_sep = |c: char| c == sep || (sep == '\\' && c == '/');
     let mut out = String::new();
     for p in parts {
         if p.is_empty() {
@@ -126,12 +183,12 @@ pub(crate) fn path_join(parts: &[&str]) -> String {
             out.push_str(p);
             continue;
         }
-        let prev_sep = out.ends_with('/');
-        let this_sep = p.starts_with('/');
+        let prev_sep = out.ends_with(is_sep);
+        let this_sep = p.starts_with(is_sep);
         match (prev_sep, this_sep) {
             (true, true) => out.push_str(&p[1..]),
             (false, false) => {
-                out.push('/');
+                out.push(sep);
                 out.push_str(p);
             }
             _ => out.push_str(p),
@@ -142,13 +199,23 @@ pub(crate) fn path_join(parts: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::path_join;
+    use super::path_join_with;
 
     #[test]
     fn path_join_basics() {
-        assert_eq!(path_join(&["/a", ".cache", ""]), "/a/.cache");
-        assert_eq!(path_join(&["/a/", "/b"]), "/a/b");
-        assert_eq!(path_join(&["", "b"]), "b");
-        assert_eq!(path_join(&["/a", "b", "c"]), "/a/b/c");
+        let j = |p: &[&str]| path_join_with('/', p);
+        assert_eq!(j(&["/a", ".cache", ""]), "/a/.cache");
+        assert_eq!(j(&["/a/", "/b"]), "/a/b");
+        assert_eq!(j(&["", "b"]), "b");
+        assert_eq!(j(&["/a", "b", "c"]), "/a/b/c");
+    }
+
+    #[test]
+    fn path_join_windows_flavour() {
+        let j = |p: &[&str]| path_join_with('\\', p);
+        assert_eq!(j(&["C:\\a", ".cache", ""]), "C:\\a\\.cache");
+        assert_eq!(j(&["C:\\a\\", "\\b"]), "C:\\a\\b");
+        assert_eq!(j(&["C:\\a", "/b"]), "C:\\a/b");
+        assert_eq!(j(&["", "b"]), "b");
     }
 }

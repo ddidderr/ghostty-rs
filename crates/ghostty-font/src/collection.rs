@@ -124,7 +124,7 @@ pub enum GetFaceError {
     #[error("face load failed: {0}")]
     Load(#[from] crate::deferred_face::LoadError),
     #[error("face error: {0}")]
-    Face(#[from] face::freetype::FaceError),
+    Face(#[from] face::FaceError),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -158,7 +158,7 @@ enum SyntheticError {
     #[error(transparent)]
     GetFace(#[from] GetFaceError),
     #[error(transparent)]
-    Face(#[from] face::freetype::FaceError),
+    Face(#[from] face::FaceError),
 }
 
 impl Collection {
@@ -1270,6 +1270,7 @@ mod tests {
         assert!(!c.has_codepoint(idx, '🥸' as u32, PresentationMode::Any));
     }
 
+    #[cfg(not(font_coretext))]
     #[test]
     fn has_codepoint_emoji_default_graphical() {
         let lib = Library::init().unwrap();

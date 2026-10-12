@@ -8,16 +8,32 @@ license.workspace = true
 crossbeam-channel = "0.5.17"
 ghostty-apprt.workspace = true
 ghostty-config.workspace = true
+ghostty-crash.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-os.workspace = true
 ghostty-renderer.workspace = true
 ghostty-terminal.workspace = true
 ghostty-vt.workspace = true
-libc = "0.2.190"
 log = "0.4.34"
+thiserror = "2.0.21"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
 nix = { version = "0.31.3", features = ["signal"] }
 rustix = { version = "1.1.5", features = ["fs", "process", "pty", "termios", "stdio", "event", "pipe"] }
-thiserror = "2.0.21"
+
+# ConPTY, pipes, process creation and waits (Zig: `pty.zig` WindowsPty,
+# `Command.zig` startWindows, `termio/Exec.zig` Windows branches).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
 
 # Termio forks/execs children and sets up ptys; unsafe is denied by default
 # and only allowed on minimal, SAFETY-commented items.
@@ -55,3 +71,11 @@ inline_always = "allow"
 
 [dev-dependencies]
 temp-env = "0.3.6"
+
+[target.'cfg(unix)'.dev-dependencies]
+zbus = "5.19.0"
+rustix = { version = "1.1.5", features = ["process"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"

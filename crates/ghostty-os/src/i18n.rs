@@ -1,3 +1,4 @@
+#[cfg(not(windows))]
 use std::path::Path;
 
 use crate::i18n_locales::LOCALES;
@@ -27,6 +28,15 @@ pub enum InitError {
 /// of translations. This does NOT call `textdomain` as we don't
 /// want to set the domain for the entire application since this is also
 /// used by libghostty.
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+pub fn init(_resources_dir: &str) -> Result<(), InitError> {
+    // i18n is unsupported on Windows
+    Ok(())
+}
+
+/// See the Windows variant above.
+#[cfg(not(windows))]
 pub fn init(resources_dir: &str) -> Result<(), InitError> {
     // Our resources dir is always nested below the share dir that
     // is standard for translations.
@@ -52,12 +62,16 @@ pub fn init(resources_dir: &str) -> Result<(), InitError> {
 /// This should only be called for apprts that are fully owning the
 /// Ghostty application. This should not be called for libghostty users.
 pub fn init_global_domain() -> Result<(), InitError> {
+    #[cfg(not(windows))]
     gettextrs::textdomain(BUNDLE_ID).map_err(|_| InitError::OutOfMemory)?;
     Ok(())
 }
 
 /// Translate a message for the Ghostty domain (Zig: `_`).
 pub fn tr(msgid: &str) -> String {
+    #[cfg(windows)]
+    return msgid.to_owned();
+    #[cfg(not(windows))]
     gettextrs::dgettext(BUNDLE_ID, msgid)
 }
 

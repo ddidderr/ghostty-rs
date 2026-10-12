@@ -2,7 +2,9 @@
 use std::sync::Arc;
 
 use super::{
+    LastTarget,
     OpenGL,
+    gl::Gl,
     render_pass::{Attachment, Options as RenderPassOptions, RenderPass},
     target::Target,
 };
@@ -15,26 +17,31 @@ pub struct Options {}
 /// A frame being encoded.
 ///
 /// Upstream holds `*Renderer` and calls `renderer.frameCompleted(health)`
-/// after presenting; here the frame borrows the graphics API and
-/// [`Frame::complete`] returns the [`Health`] for the renderer to report.
-pub struct Frame<'a> {
-    api: &'a mut OpenGL,
+/// after presenting; here [`Frame::complete`] returns the [`Health`] for the
+/// renderer to report. The frame holds its own handles (GL context and the
+/// API's last-presented-target slot) rather than borrowing the API.
+pub struct Frame {
+    gl: Gl,
+    last_target: LastTarget,
     target: Arc<Target>,
 }
 
-impl<'a> Frame<'a> {
+impl Frame {
     /// Begin encoding a frame.
     ///
     /// The target is presented via the provided API when completed.
-    pub fn begin(_opts: Options, api: &'a mut OpenGL, target: Arc<Target>) -> Frame<'a> {
-        Frame { api, target }
+    pub fn begin(_opts: Options, api: &OpenGL, target: Arc<Target>) -> Frame {
+        Frame {
+            gl: api.gl().expect("OpenGL context not initialized").clone(),
+            last_target: api.last_target_slot(),
+            target,
+        }
     }
 
     /// Add a render pass to this frame with the provided attachments.
     /// Returns a RenderPass which allows render steps to be added.
     pub fn render_pass<'b>(&self, attachments: &'b [Attachment<'b>]) -> RenderPass<'b> {
-        let gl = self.api.gl().expect("OpenGL context not initialized");
-        RenderPass::begin(gl, RenderPassOptions { attachments })
+        RenderPass::begin(&self.gl, RenderPassOptions { attachments })
     }
 
     /// Complete this frame and present the target.
@@ -43,13 +50,10 @@ impl<'a> Frame<'a> {
     ///
     /// NOTE: For OpenGL, `sync` is ignored and we always block.
     pub fn complete(self, _sync: bool) -> Health {
-        let Some(gl) = self.api.gl().cloned() else {
-            return Health::Unhealthy;
-        };
-        gl.finish();
+        self.gl.finish();
 
         // If there are any GL errors, consider the frame unhealthy.
-        let health = if gl.get_error().is_ok() {
+        let health = if self.gl.get_error().is_ok() {
             Health::Healthy
         } else {
             Health::Unhealthy
@@ -57,7 +61,7 @@ impl<'a> Frame<'a> {
 
         // If the frame is healthy, present it.
         if health == Health::Healthy
-            && let Err(err) = self.api.present(&self.target)
+            && let Err(err) = super::present_target(&self.gl, &self.last_target, &self.target)
         {
             log::error!("Failed to present render target: err={err}");
         }

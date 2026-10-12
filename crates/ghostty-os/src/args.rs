@@ -5,8 +5,26 @@
 //! don't panic).
 
 /// Returns an iterator over the command line arguments.
+#[cfg(not(target_os = "macos"))]
 pub fn iterator() -> std::env::ArgsOs {
     std::env::args_os()
+}
+
+/// Returns an iterator over the command line arguments.
+///
+/// On macOS this reads `NSProcessInfo.arguments` instead of libc
+/// argc/argv, which are not valid for `NSApplicationMain`-based
+/// applications (Zig: `IteratorMacOS`).
+#[cfg(target_os = "macos")]
+pub fn iterator() -> std::vec::IntoIter<std::ffi::OsString> {
+    use objc2_foundation::NSProcessInfo;
+
+    NSProcessInfo::processInfo()
+        .arguments()
+        .iter()
+        .map(|s| std::ffi::OsString::from(s.to_string()))
+        .collect::<Vec<_>>()
+        .into_iter()
 }
 
 /// Collect the process arguments as `String`s without ever panicking on
@@ -30,6 +48,7 @@ mod tests {
         assert!(!iter.next().unwrap().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
     fn lossy_does_not_panic_on_non_utf8() {
         use std::os::unix::ffi::OsStringExt;

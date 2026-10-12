@@ -4,7 +4,9 @@
 
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 
-use rustix::{fs, process, pty, termios};
+#[cfg(not(target_vendor = "apple"))]
+use rustix::{fs, pty};
+use rustix::{process, termios};
 
 /// Redeclare the winsize struct so we can just use a Rust struct. The
 /// defaults on this are some reasonable screen size but you should probably
@@ -106,25 +108,82 @@ pub struct Pty {
     pub slave: Option<OwnedFd>,
 }
 
+/// Equivalent of glibc openpty(): the master is CLOEXEC (Ghostty sets this
+/// explicitly: only the slave fd should be inherited by the child), the
+/// slave is not.
+#[cfg(not(target_vendor = "apple"))]
+fn open_pair(_size: Winsize) -> Result<(OwnedFd, OwnedFd), Error> {
+    let master =
+        pty::openpt(pty::OpenptFlags::RDWR | pty::OpenptFlags::NOCTTY | pty::OpenptFlags::CLOEXEC)
+            .map_err(|_| Error::OpenptyFailed)?;
+    pty::grantpt(&master).map_err(|_| Error::OpenptyFailed)?;
+    pty::unlockpt(&master).map_err(|_| Error::OpenptyFailed)?;
+    let name = pty::ptsname(&master, Vec::new()).map_err(|_| Error::OpenptyFailed)?;
+    let slave = fs::open(
+        name.as_c_str(),
+        fs::OFlags::RDWR | fs::OFlags::NOCTTY,
+        fs::Mode::empty(),
+    )
+    .map_err(|_| Error::OpenptyFailed)?;
+    Ok((master, slave))
+}
+
+/// Darwin: libc `openpty()` (`util.h`), exactly as Zig does, followed by
+/// setting CLOEXEC on the master fd (only the slave fd should be inherited
+/// by the child process).
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)]
+fn open_pair(size: Winsize) -> Result<(OwnedFd, OwnedFd), Error> {
+    use std::os::fd::FromRawFd;
+
+    let mut ws = libc::winsize {
+        ws_row: size.ws_row,
+        ws_col: size.ws_col,
+        ws_xpixel: size.ws_xpixel,
+        ws_ypixel: size.ws_ypixel,
+    };
+    let mut master_fd: libc::c_int = -1;
+    let mut slave_fd: libc::c_int = -1;
+    // SAFETY: out-pointers reference live locals; the name/termios
+    // arguments are allowed to be null; `ws` is only read.
+    let rc = unsafe {
+        libc::openpty(
+            &raw mut master_fd,
+            &raw mut slave_fd,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &raw mut ws,
+        )
+    };
+    if rc < 0 {
+        return Err(Error::OpenptyFailed);
+    }
+    // SAFETY: openpty succeeded so both fds are valid and exclusively ours.
+    let (master, slave) = unsafe {
+        (
+            OwnedFd::from_raw_fd(master_fd),
+            OwnedFd::from_raw_fd(slave_fd),
+        )
+    };
+
+    // Set CLOEXEC on the master fd, only the slave fd should be inherited
+    // by the child process (shell/command).
+    match rustix::io::fcntl_getfd(&master) {
+        Ok(flags) => {
+            if let Err(err) = rustix::io::fcntl_setfd(&master, flags | rustix::io::FdFlags::CLOEXEC)
+            {
+                log::warn!("error setting CLOEXEC on master fd err={err}");
+            }
+        }
+        Err(err) => log::warn!("error getting flags for master fd err={err}"),
+    }
+    Ok((master, slave))
+}
+
 impl Pty {
     /// Open a new PTY with the given initial size.
     pub fn open(size: Winsize) -> Result<Pty, Error> {
-        // Equivalent of glibc openpty(): the master is CLOEXEC (Ghostty sets
-        // this explicitly: only the slave fd should be inherited by the
-        // child), the slave is not.
-        let master = pty::openpt(
-            pty::OpenptFlags::RDWR | pty::OpenptFlags::NOCTTY | pty::OpenptFlags::CLOEXEC,
-        )
-        .map_err(|_| Error::OpenptyFailed)?;
-        pty::grantpt(&master).map_err(|_| Error::OpenptyFailed)?;
-        pty::unlockpt(&master).map_err(|_| Error::OpenptyFailed)?;
-        let name = pty::ptsname(&master, Vec::new()).map_err(|_| Error::OpenptyFailed)?;
-        let slave = fs::open(
-            name.as_c_str(),
-            fs::OFlags::RDWR | fs::OFlags::NOCTTY,
-            fs::Mode::empty(),
-        )
-        .map_err(|_| Error::OpenptyFailed)?;
+        let (master, slave) = open_pair(size)?;
 
         termios::tcsetwinsize(&master, size.into()).map_err(|_| Error::OpenptyFailed)?;
 

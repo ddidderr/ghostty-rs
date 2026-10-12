@@ -41,7 +41,9 @@ use ghostty_config::{config::Config, types_a::CustomShaderAnimation};
 use ghostty_datastruct::blocking_queue::{BlockingQueue, Timeout};
 
 use crate::{
+    Api,
     generic::{Host, Renderer},
+    graphics_api::GraphicsApi,
     message::Message,
     state::SharedState,
 };
@@ -161,12 +163,72 @@ impl Drop for Running {
     }
 }
 
+/// Runs `Renderer::loop_exit` when the thread leaves its main loop.
+struct LoopGuard<G: GraphicsApi>(Arc<Renderer<G>>);
+
+impl<G: GraphicsApi> Drop for LoopGuard<G> {
+    fn drop(&mut self) {
+        self.0.loop_exit();
+    }
+}
+
+/// Runs `Renderer::thread_exit` when the thread exits.
+struct ThreadGuard<G: GraphicsApi>(Arc<Renderer<G>>);
+
+impl<G: GraphicsApi> Drop for ThreadGuard<G> {
+    fn drop(&mut self) {
+        self.0.thread_exit();
+    }
+}
+
+/// Run `f` inside an autorelease pool on Darwin ("This is effectively an
+/// @autoreleasepool{} block, which we need in order to ensure that
+/// autoreleased objects are properly released."); just calls `f` elsewhere.
+fn with_autorelease_pool<R>(f: impl FnOnce() -> R) -> R {
+    #[cfg(target_vendor = "apple")]
+    {
+        objc2::rc::autoreleasepool(|_| f())
+    }
+    #[cfg(not(target_vendor = "apple"))]
+    {
+        f()
+    }
+}
+
+/// The QoS class for the thread's visibility / focus state
+/// (`setQosClass`): "If we aren't visible (our view is fully occluded) then we
+/// always drop our rendering priority down because it's just mostly wasted
+/// work. If we're not focused, but we're visible, then we set a higher than
+/// default priority because framerates still matter but it isn't as important
+/// as when we're focused. We are focused and visible, we are the definition of
+/// user interactive."
+#[cfg(any(target_vendor = "apple", test))]
+fn qos_for(visible: bool, focused: bool) -> QosClass {
+    if !visible {
+        QosClass::Utility
+    } else if !focused {
+        QosClass::UserInitiated
+    } else {
+        QosClass::UserInteractive
+    }
+}
+
+/// `ghostty_os::macos::QosClass` (re-declared so the policy can be tested on
+/// every platform).
+#[cfg(any(target_vendor = "apple", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QosClass {
+    UserInteractive,
+    UserInitiated,
+    Utility,
+}
+
 /// The renderer thread state. Construct with [`Thread::new`] then start it
 /// with [`Thread::spawn`] (or run [`Thread::thread_main`] on a thread you
 /// manage).
-pub struct Thread {
+pub struct Thread<G: GraphicsApi = Api> {
     /// The underlying renderer implementation.
-    renderer: Arc<Renderer>,
+    renderer: Arc<Renderer<G>>,
 
     /// Pointer to the shared state that is used to generate the final render.
     state: SharedState,
@@ -177,12 +239,15 @@ pub struct Thread {
     /// Configuration we need derived from the main config.
     config: DerivedConfig,
 
-    /// If true (the default, GTK), draws are requested from the apprt via
+    /// If true (the default, except on Apple platforms), draws are requested from the apprt via
     /// [`Host::redraw_surface`] instead of being performed on this thread
     /// (`must_draw_from_app_thread`).
     pub draw_on_app_thread: bool,
 
     flags: Flags,
+
+    /// The surface dimensions recorded in crash reports.
+    pub crash_dims: Option<Arc<ghostty_crash::SurfaceDims>>,
 
     handle: Handle,
     wakeup_rx: Receiver<()>,
@@ -198,16 +263,16 @@ pub struct Thread {
     draw_deadline: Option<Instant>,
 }
 
-impl Thread {
+impl<G: GraphicsApi> Thread<G> {
     /// Initialize the thread. This does not START the thread. This only sets
     /// up all the internal state necessary prior to starting the thread. It
     /// is up to the caller to start the thread with [`Thread::spawn`].
     pub fn new(
         config: &Config,
-        renderer: Arc<Renderer>,
+        renderer: Arc<Renderer<G>>,
         state: SharedState,
         host: Arc<dyn Host>,
-    ) -> Thread {
+    ) -> Thread<G> {
         // Wakeups, stop and draw-now coalesce (xev.Async semantics).
         let (wakeup_tx, wakeup_rx) = bounded(1);
         let (stop_tx, stop_rx) = bounded(1);
@@ -225,13 +290,17 @@ impl Thread {
             state,
             host,
             config: DerivedConfig::new(config),
-            draw_on_app_thread: true,
+            // Only the GTK apprt must draw from the app thread
+            // (`apprt.App.must_draw_from_app_thread`); the embedded macOS /
+            // iOS apprt lets the renderer thread draw (Metal is thread-safe).
+            draw_on_app_thread: !cfg!(target_vendor = "apple"),
             flags: Flags {
                 cursor_blink_visible: false,
                 has_inspector: false,
                 visible: true,
                 focused: true,
             },
+            crash_dims: None,
             handle,
             wakeup_rx,
             wakeup_tx,
@@ -266,8 +335,34 @@ impl Thread {
     pub fn thread_main(mut self) {
         log::debug!("starting renderer thread");
 
-        // Run our thread start/end callbacks. For OpenGL on GTK these are
+        // Right now, on Darwin, `std.Thread.setName` can only name the current
+        // thread, and we have no way to get the current thread from within it,
+        // so instead we use this code to name the thread instead.
+        #[cfg(target_vendor = "apple")]
+        ghostty_os::macos::pthread_setname_np(c"renderer");
+
+        // Setup our crash metadata
+        let _crash = ghostty_crash::ThreadGuard::new(
+            ghostty_crash::ThreadType::Renderer,
+            self.crash_dims.clone(),
+        );
+
+        // Setup our thread QoS
+        self.set_qos_class();
+
+        // Run our loop start/end callbacks if the renderer cares (Metal's
+        // display callback, the macOS display link).
+        let draw_now = self.handle.draw_now.clone();
+        self.renderer.loop_enter(Arc::new(move || {
+            let _ = draw_now.try_send(());
+        }));
+        let _loop_guard = LoopGuard(Arc::clone(&self.renderer));
+
+        // Run our thread start/end callbacks. This is important because some
+        // renderers have to do per-thread setup. For OpenGL on GTK these are
         // no-ops: all GL work is on the main thread.
+        self.renderer.thread_enter();
+        let _thread_guard = ThreadGuard(Arc::clone(&self.renderer));
 
         // Send an initial wakeup message so that we render right away.
         let _ = self.wakeup_tx.try_send(());
@@ -344,6 +439,31 @@ impl Thread {
 
     /// Drain the mailbox.
     fn drain_mailbox(&mut self) {
+        with_autorelease_pool(|| self.drain_mailbox_inner());
+    }
+
+    /// Set the QoS class of this thread. Thread QoS classes are only
+    /// relevant on macOS.
+    #[cfg_attr(not(target_vendor = "apple"), allow(clippy::unused_self))]
+    fn set_qos_class(&self) {
+        #[cfg(target_vendor = "apple")]
+        {
+            use ghostty_os::macos::{self, QosClass as OsQosClass};
+
+            let class = qos_for(self.flags.visible, self.flags.focused);
+            let os_class = match class {
+                QosClass::UserInteractive => OsQosClass::UserInteractive,
+                QosClass::UserInitiated => OsQosClass::UserInitiated,
+                QosClass::Utility => OsQosClass::Utility,
+            };
+            match macos::set_qos_class(os_class) {
+                Ok(()) => log::debug!("thread QoS class set class={class:?}"),
+                Err(err) => log::warn!("error setting QoS class err={err}"),
+            }
+        }
+    }
+
+    fn drain_mailbox_inner(&mut self) {
         while let Some(message) = self.handle.mailbox.pop() {
             match message {
                 Message::Crash => panic!("crash request, crashing intentionally"),
@@ -356,6 +476,9 @@ impl Thread {
 
                     // Set our visible state
                     self.flags.visible = v;
+
+                    // Visibility affects our QoS class
+                    self.set_qos_class();
 
                     // If we became visible then we immediately trigger a draw.
                     // We don't need to update frame data because that should
@@ -383,6 +506,9 @@ impl Thread {
 
                     // Set our state
                     self.flags.focused = v;
+
+                    // Focus affects our QoS class
+                    self.set_qos_class();
 
                     // Set it on the renderer
                     self.renderer.set_focus(v);
@@ -441,7 +567,7 @@ impl Thread {
                     self.flags.has_inspector = v;
                 }
 
-                Message::MacosDisplayId(_) => {}
+                Message::MacosDisplayId(id) => self.renderer.set_macos_display_id(id),
             }
         }
     }
@@ -544,6 +670,14 @@ mod tests {
         assert!(should_draw_timer_run(true, True, true));
         assert!(!should_draw_timer_run(true, True, false));
         assert!(!should_draw_timer_run(true, False, true));
+    }
+
+    #[test]
+    fn qos_class_policy() {
+        assert_eq!(qos_for(false, true), QosClass::Utility);
+        assert_eq!(qos_for(false, false), QosClass::Utility);
+        assert_eq!(qos_for(true, false), QosClass::UserInitiated);
+        assert_eq!(qos_for(true, true), QosClass::UserInteractive);
     }
 
     #[test]

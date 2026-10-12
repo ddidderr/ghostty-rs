@@ -44,10 +44,11 @@ use std::{
     collections::HashSet,
     sync::{
         Arc,
+        Condvar,
         Mutex,
         MutexGuard,
         PoisonError,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     time::Instant,
 };
@@ -92,56 +93,58 @@ use crate::{
     backend::Health,
     cell::{self, Contents, Key as CellKey},
     cursor::{self, Style as CursorStyle},
+    display_link::DisplayLink,
+    graphics_api::{
+        ApiError,
+        Attachment,
+        AttachmentTarget,
+        Draw,
+        FrameCompletion,
+        GpuBuffer,
+        GpuFrame,
+        GpuRenderPass,
+        GpuShaders,
+        GpuTarget,
+        GpuTexture,
+        GraphicsApi,
+        Primitive,
+        Step,
+        TextureKind,
+    },
     image::{self, Gpu},
     link,
     math,
-    opengl::{
-        self,
-        OpenGL,
-        Sampler,
-        Target,
-        Texture,
-        buffer::Buffer,
-        gl::{self, Gl, Primitive},
-        render_pass::{Attachment, AttachmentTarget, Draw, Step},
-        shaders::{
-            BgImage,
-            BgImageFit,
-            BgImageInfo,
-            BgImagePosition,
-            Bools,
-            CellBg,
-            CellText,
-            CellTextAtlas,
-            PaddingExtend,
-            Shaders,
-            Uniforms,
-        },
-    },
+    opengl::OpenGL,
     options::Options,
     overlay::{self, Overlay},
     row::never_extend_bg,
+    shader_types::{
+        BgImage,
+        BgImageFit,
+        BgImageInfo,
+        BgImagePosition,
+        Bools,
+        CellBg,
+        CellText,
+        CellTextAtlas,
+        PaddingExtend,
+        Uniforms,
+    },
     shadertoy::{self, PathItem},
     size::{CellSize, GridSize, Padding, Size},
     state::{Preedit, SharedState},
 };
 
 /// The graphics API used by the renderer on Linux.
-pub type GraphicsApi = OpenGL;
-
 /// Errors surfaced by the generic renderer.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error(transparent)]
-    Api(#[from] opengl::Error),
+    Api(#[from] ApiError),
     #[error(transparent)]
-    Gl(#[from] gl::Error),
+    Shaper(#[from] ghostty_font::shape::ShapeError),
     #[error(transparent)]
-    Texture(#[from] opengl::texture::Error),
-    #[error(transparent)]
-    Shaper(#[from] ghostty_font::shaper::harfbuzz::ShapeError),
-    #[error(transparent)]
-    ShapeRun(#[from] ghostty_font::shaper::harfbuzz::ShapeRunError),
+    ShapeRun(#[from] ghostty_font::shape::ShapeRunError),
     #[error(transparent)]
     Grid(#[from] ghostty_font::shared_grid::Error),
     #[error(transparent)]
@@ -317,47 +320,48 @@ impl std::fmt::Debug for DerivedConfig {
 /// With OpenGL `swap_chain_count == 1` and frames complete synchronously
 /// (`glFinish`), so the semaphore of the Zig swap chain is not needed: the
 /// draw mutex already serializes `draw_frame`.
-struct FrameState {
-    uniforms: Buffer<Uniforms>,
-    cells: Buffer<CellText>,
-    cells_bg: Buffer<CellBg>,
+struct FrameState<G: GraphicsApi> {
+    uniforms: G::Buffer<G::GpuUniforms>,
+    cells: G::Buffer<CellText>,
+    cells_bg: G::Buffer<CellBg>,
 
-    grayscale: Texture,
+    grayscale: G::Texture,
     grayscale_modified: usize,
-    color: Texture,
+    color: G::Texture,
     color_modified: usize,
 
-    target: Arc<Target>,
+    target: Arc<G::Target>,
     /// See property of same name on Renderer for explanation.
     target_config_modified: usize,
 
     /// Buffer with the vertex data for our background image.
-    bg_image_buffer: Buffer<BgImage>,
+    bg_image_buffer: G::Buffer<BgImage>,
     /// See property of same name on Renderer for explanation.
     bg_image_buffer_modified: usize,
 
     /// Custom shader state, this is None if we have no custom shaders.
-    custom_shader_state: Option<CustomShaderState>,
+    custom_shader_state: Option<CustomShaderState<G>>,
+
+    /// The swap chain's atlas epoch this frame state last synced with.
+    atlas_epoch: usize,
 }
 
-impl FrameState {
-    fn new(api: &OpenGL, custom_shaders: bool) -> Result<FrameState, Error> {
-        let gl = api.gl().ok_or(opengl::Error::NoContext)?;
-
+impl<G: GraphicsApi> FrameState<G> {
+    fn new(api: &G, custom_shaders: bool) -> Result<FrameState<G>, Error> {
         // Uniform buffer contains exactly 1 uniform struct. The
         // uniform data will be zeroed so this must be set before
         // a frame is drawn.
-        let uniforms = Buffer::<Uniforms>::init(gl, api.uniform_buffer_options(), 1)?;
+        let uniforms = api.init_buffer::<G::GpuUniforms>(1)?;
 
         // Create GPU buffers for our cells.
         //
         // We start them off with a size of 1, which will of course be
         // too small, but they will be resized as needed.
-        let cells = Buffer::<CellText>::init(gl, api.fg_buffer_options(), 1)?;
-        let cells_bg = Buffer::<CellBg>::init(gl, api.bg_buffer_options(), 1)?;
+        let cells = api.init_buffer::<CellText>(1)?;
+        let cells_bg = api.init_buffer::<CellBg>(1)?;
 
         // Create a GPU buffer for our background image info.
-        let bg_image_buffer = Buffer::<BgImage>::init(gl, api.bg_image_buffer_options(), 1)?;
+        let bg_image_buffer = api.init_buffer::<BgImage>(1)?;
 
         // Initialize our textures for our font atlas.
         //
@@ -393,10 +397,11 @@ impl FrameState {
             bg_image_buffer,
             bg_image_buffer_modified: 0,
             custom_shader_state,
+            atlas_epoch: 0,
         })
     }
 
-    fn resize(&mut self, api: &OpenGL, width: usize, height: usize) -> Result<(), Error> {
+    fn resize(&mut self, api: &G, width: usize, height: usize) -> Result<(), Error> {
         if let Some(state) = &mut self.custom_shader_state {
             state.resize(api, width, height)?;
         }
@@ -406,35 +411,32 @@ impl FrameState {
 }
 
 /// State relevant to our custom shaders if we have any.
-struct CustomShaderState {
+struct CustomShaderState<G: GraphicsApi> {
     /// When we have a custom shader state, we maintain a front
     /// and back texture which we use as a swap chain to render
     /// between when multiple custom shaders are defined.
-    front_texture: Texture,
-    back_texture: Texture,
+    front_texture: G::Texture,
+    back_texture: G::Texture,
 
     /// Shadertoy uses a sampler for accessing the various channel textures.
     /// Samplers are immutable and describe sampling properties so we can
     /// share the sampler across front/back textures.
-    sampler: Sampler,
+    sampler: G::Sampler,
 
-    uniforms: Buffer<shadertoy::Uniforms>,
+    uniforms: G::Buffer<shadertoy::Uniforms>,
 }
 
-impl CustomShaderState {
-    fn new(api: &OpenGL) -> Result<CustomShaderState, Error> {
-        let gl = api.gl().ok_or(opengl::Error::NoContext)?;
-
+impl<G: GraphicsApi> CustomShaderState<G> {
+    fn new(api: &G) -> Result<CustomShaderState<G>, Error> {
         // Create a GPU buffer to hold our uniforms.
-        let uniforms = Buffer::<shadertoy::Uniforms>::init(gl, api.uniform_buffer_options(), 1)?;
+        let uniforms = api.init_buffer::<shadertoy::Uniforms>(1)?;
 
         // Initialize the front and back textures at 1x1 px, this
         // is slightly wasteful but it's only done once so whatever.
-        let front_texture = Texture::init(gl, api.texture_options(), 1, 1, None)?;
-        let back_texture = Texture::init(gl, api.texture_options(), 1, 1, None)?;
+        let front_texture = api.init_texture(TextureKind::CustomShader, 1, 1, None)?;
+        let back_texture = api.init_texture(TextureKind::CustomShader, 1, 1, None)?;
 
-        let sampler = Sampler::init(gl, api.sampler_options())
-            .map_err(|_| gl::Error::CreateFailed("sampler".into()))?;
+        let sampler = api.init_sampler()?;
 
         Ok(CustomShaderState {
             front_texture,
@@ -449,18 +451,35 @@ impl CustomShaderState {
         std::mem::swap(&mut self.front_texture, &mut self.back_texture);
     }
 
-    fn resize(&mut self, api: &OpenGL, width: usize, height: usize) -> Result<(), Error> {
-        let gl = api.gl().ok_or(opengl::Error::NoContext)?;
-        self.front_texture = Texture::init(gl, api.texture_options(), width, height, None)?;
-        self.back_texture = Texture::init(gl, api.texture_options(), width, height, None)?;
+    fn resize(&mut self, api: &G, width: usize, height: usize) -> Result<(), Error> {
+        self.front_texture = api.init_texture(TextureKind::CustomShader, width, height, None)?;
+        self.back_texture = api.init_texture(TextureKind::CustomShader, width, height, None)?;
         Ok(())
     }
 }
 
+/// The frame slots of a [`SwapChain`], shared with the frame completion
+/// callbacks (which may run on another thread and hand the frame state back).
+struct SwapChainInner<G: GraphicsApi> {
+    /// `None` while the slot's frame is in flight (or being drawn).
+    slots: Mutex<Vec<Option<FrameState<G>>>>,
+    /// Signalled when a frame is returned (Zig: `frame_sema.post`).
+    returned: Condvar,
+    /// Bumped to force every frame's atlas textures to re-sync, including
+    /// the ones that are in flight right now (see `FrameState::atlas_epoch`).
+    atlas_epoch: AtomicUsize,
+}
+
 /// Swap chain which maintains multiple copies of the state needed to render
-/// a frame (always one for OpenGL, see [`FrameState`]).
-struct SwapChain {
-    frames: Vec<Option<FrameState>>,
+/// a frame, so that we can start building the next frame while the previous
+/// frame is still being processed on the GPU (always one for OpenGL, see
+/// [`FrameState`]; three for Metal).
+///
+/// Zig guards the frames with a semaphore; here taking a frame waits (on a
+/// condition variable) until its slot has been handed back by the frame's
+/// completion callback.
+struct SwapChain<G: GraphicsApi> {
+    inner: Arc<SwapChainInner<G>>,
     /// Index of the most recently used frame state struct.
     frame_index: usize,
     /// Set to true when deinited, so that a defunct swap chain is ignored
@@ -468,14 +487,18 @@ struct SwapChain {
     defunct: bool,
 }
 
-impl SwapChain {
-    fn new(api: &OpenGL, custom_shaders: bool) -> Result<SwapChain, Error> {
-        let mut frames = Vec::with_capacity(opengl::SWAP_CHAIN_COUNT);
-        for _ in 0..opengl::SWAP_CHAIN_COUNT {
+impl<G: GraphicsApi> SwapChain<G> {
+    fn new(api: &G, custom_shaders: bool) -> Result<SwapChain<G>, Error> {
+        let mut frames = Vec::with_capacity(G::SWAP_CHAIN_COUNT);
+        for _ in 0..G::SWAP_CHAIN_COUNT {
             frames.push(Some(FrameState::new(api, custom_shaders)?));
         }
         Ok(SwapChain {
-            frames,
+            inner: Arc::new(SwapChainInner {
+                slots: Mutex::new(frames),
+                returned: Condvar::new(),
+                atlas_epoch: AtomicUsize::new(0),
+            }),
             frame_index: 0,
             defunct: false,
         })
@@ -486,39 +509,91 @@ impl SwapChain {
             return;
         }
         self.defunct = true;
-        self.frames.clear();
+
+        // Wait for all of our inflight draws to complete
+        // so that we can cleanly deinit our GPU state.
+        let mut slots = lock(&self.inner.slots);
+        while slots.iter().any(Option::is_none) {
+            slots = self
+                .inner
+                .returned
+                .wait(slots)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        slots.clear();
     }
 
-    /// Get the next frame state to draw to.
-    fn next_frame(&mut self) -> Result<(usize, FrameState), Error> {
-        if self.defunct || self.frames.is_empty() {
+    /// Get the next frame state to draw to. This waits until the frame is
+    /// available. It must always be paired with a [`SwapChain::release_frame`]
+    /// (directly, or through the frame completion callback).
+    fn next_frame(&mut self) -> Result<(usize, FrameState<G>), Error> {
+        if self.defunct {
             return Err(Error::Defunct);
         }
-        self.frame_index = (self.frame_index + 1) % self.frames.len();
-        let frame = self.frames[self.frame_index].take().ok_or(Error::Defunct)?;
-        Ok((self.frame_index, frame))
+        let mut slots = lock(&self.inner.slots);
+        if slots.is_empty() {
+            return Err(Error::Defunct);
+        }
+        self.frame_index = (self.frame_index + 1) % slots.len();
+        let idx = self.frame_index;
+        let mut frame = loop {
+            if let Some(frame) = slots[idx].take() {
+                break frame;
+            }
+            slots = self
+                .inner
+                .returned
+                .wait(slots)
+                .unwrap_or_else(PoisonError::into_inner);
+        };
+        drop(slots);
+
+        // Update all our textures so that they sync on the next frame, if
+        // the font grid changed since this frame state was last used.
+        let epoch = self.inner.atlas_epoch.load(Ordering::SeqCst);
+        if frame.atlas_epoch != epoch {
+            frame.atlas_epoch = epoch;
+            frame.grayscale_modified = 0;
+            frame.color_modified = 0;
+        }
+        Ok((idx, frame))
     }
 
-    fn release_frame(&mut self, idx: usize, frame: FrameState) {
-        if let Some(slot) = self.frames.get_mut(idx) {
+    /// A handle that hands a frame state back to its slot.
+    fn releaser(&self) -> Arc<SwapChainInner<G>> {
+        Arc::clone(&self.inner)
+    }
+
+    fn release_frame(&self, idx: usize, frame: FrameState<G>) {
+        SwapChainInner::release(&self.inner, idx, frame);
+    }
+
+    /// Make every frame re-upload its atlas textures on its next use.
+    fn invalidate_atlases(&self) {
+        self.inner.atlas_epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl<G: GraphicsApi> SwapChainInner<G> {
+    /// Hand a frame state back to its slot (Zig: `releaseFrame`).
+    fn release(this: &Arc<Self>, idx: usize, frame: FrameState<G>) {
+        let mut slots = lock(&this.slots);
+        if let Some(slot) = slots.get_mut(idx) {
             *slot = Some(frame);
         }
-    }
-
-    /// Mutable access to all frames (for invalidating atlas textures).
-    fn frames_mut(&mut self) -> impl Iterator<Item = &mut FrameState> {
-        self.frames.iter_mut().flatten()
+        drop(slots);
+        this.returned.notify_all();
     }
 }
 
 /// The background image state (`bg_image: ?imagepkg.Image`).
-type BgImageState = Option<image::Image>;
+type BgImageState<G> = Option<image::Image<G>>;
 
 // ---------------------------------------------------------------------------
 // Renderer state
 
 /// State protected by the draw mutex: everything `draw_frame` reads.
-struct DrawState {
+struct DrawState<G: GraphicsApi> {
     /// The configuration we need derived from the main config.
     config: DerivedConfig,
 
@@ -566,13 +641,13 @@ struct DrawState {
     font_grid: Arc<SharedGrid>,
 
     /// The images that we may render.
-    images: image::State,
+    images: image::State<G>,
 
     /// True when a debug overlay image is currently present (Zig: `overlay != null`).
     has_overlay: bool,
 
     /// Background image, if we have one.
-    bg_image: BgImageState,
+    bg_image: BgImageState<G>,
     /// Background image vertex buffer.
     bg_image_buffer: BgImage,
     /// This value is used to force-update the swap chain copy
@@ -580,10 +655,10 @@ struct DrawState {
     bg_image_buffer_modified: usize,
 
     /// Graphics API state.
-    api: OpenGL,
+    api: G,
 
     /// Our swap chain (multiple buffering)
-    swap_chain: SwapChain,
+    swap_chain: SwapChain<G>,
 
     /// This value is used to force-update swap chain targets in the
     /// event of a config change that requires it (such as blending mode).
@@ -597,7 +672,7 @@ struct DrawState {
     has_custom_shaders: bool,
 
     /// Our shader pipelines. None while defunct (display unrealized).
-    shaders: Option<Shaders>,
+    shaders: Option<G::Shaders>,
 }
 
 /// State only touched by the renderer thread.
@@ -642,16 +717,21 @@ struct ThreadState {
 }
 
 /// The generic renderer. See the module docs for the threading model.
-pub struct Renderer {
-    draw: Mutex<DrawState>,
+pub struct Renderer<G: GraphicsApi = OpenGL> {
+    draw: Mutex<DrawState<G>>,
     thread: Mutex<ThreadState>,
 
     /// Health of the most recently completed frame.
-    health: AtomicU8,
+    health: Arc<AtomicU8>,
 
     /// Mirrors `DrawState::has_custom_shaders` so the renderer thread can
     /// read it without the draw lock (`hasAnimations`).
     has_animations: AtomicBool,
+
+    /// The CVDisplayLink used to drive the rendering loop in sync with the
+    /// display. Always `None` on platforms that don't support a display link
+    /// (everything but macOS).
+    display_link: Mutex<Option<DisplayLink>>,
 
     /// The surface/apprt callbacks.
     host: Arc<dyn Host>,
@@ -670,8 +750,8 @@ struct PreeditRange {
 
 /// Load the custom shaders (`initShaders`). Errors are logged and result in
 /// no custom shaders.
-fn load_custom_shaders(config: &DerivedConfig) -> Vec<String> {
-    match shadertoy::load_from_files(&config.custom_shaders, opengl::CUSTOM_SHADER_TARGET) {
+fn load_custom_shaders<G: GraphicsApi>(config: &DerivedConfig) -> Vec<String> {
+    match shadertoy::load_from_files(&config.custom_shaders, G::CUSTOM_SHADER_TARGET) {
         Ok(v) => v,
         Err(err) => {
             log::warn!("error loading custom shaders err={err}");
@@ -680,11 +760,11 @@ fn load_custom_shaders(config: &DerivedConfig) -> Vec<String> {
     }
 }
 
-impl DrawState {
+impl<G: GraphicsApi> DrawState<G> {
     /// Rebuild the shader pipelines (`initShaders`).
     fn init_shaders(&mut self) -> Result<(), Error> {
         // Load our custom shaders
-        let custom_shaders = load_custom_shaders(&self.config);
+        let custom_shaders = load_custom_shaders::<G>(&self.config);
         let has_custom_shaders = !custom_shaders.is_empty();
 
         let shaders = self.api.init_shaders(&custom_shaders)?;
@@ -778,7 +858,7 @@ impl DrawState {
     fn prep_background_image(&mut self) {
         // Then we try to load the background image if we have a path.
         if let Some(p) = &self.config.bg_image
-            && let Some(image) = load_background_image(p.path())
+            && let Some(image) = load_background_image(p.path()).map(image::Image::Pending)
         {
             // If we have an existing background image, replace it.
             // Otherwise, set this as our background image directly.
@@ -792,21 +872,6 @@ impl DrawState {
             // If we don't have a background image path, mark our
             // background image for unload if we currently have one.
             img.mark_for_unload();
-        }
-    }
-
-    fn upload_background_image(&mut self, gpu: &Gpu<'_>) {
-        // Make sure our bg image is uploaded if it needs to be.
-        if let Some(bg) = &mut self.bg_image {
-            if bg.is_unloading() {
-                self.bg_image = None;
-                return;
-            }
-            if bg.is_pending()
-                && let Err(err) = bg.upload(gpu)
-            {
-                log::warn!("error uploading background image err={err}");
-            }
         }
     }
 
@@ -909,7 +974,7 @@ impl DrawState {
         let cell = self.size.cell;
         let cursor_glyph = self.cells.get_cursor_glyph();
         let focused = self.focused;
-        let y_is_down = opengl::CUSTOM_SHADER_Y_IS_DOWN;
+        let y_is_down = G::CUSTOM_SHADER_Y_IS_DOWN;
 
         let uniforms = &mut self.custom_shader_uniforms;
 
@@ -1001,8 +1066,8 @@ impl DrawState {
     /// Sync the atlas data to the given texture. This copies the bytes
     /// associated with the atlas to the given texture. If the atlas no
     /// longer fits into the texture, the texture will be resized.
-    fn sync_atlas_texture(api: &OpenGL, atlas: &Atlas, texture: &mut Texture) -> Result<(), Error> {
-        if atlas.size as usize > texture.width {
+    fn sync_atlas_texture(api: &G, atlas: &Atlas, texture: &mut G::Texture) -> Result<(), Error> {
+        if atlas.size as usize > texture.width() {
             // Reallocate (the old texture is dropped/deleted)
             *texture = api.init_atlas_texture(atlas)?;
         }
@@ -1012,9 +1077,24 @@ impl DrawState {
     }
 }
 
+/// Make sure our bg image is uploaded if it needs to be.
+fn upload_background_image<G: GraphicsApi>(bg_image: &mut BgImageState<G>, gpu: &Gpu<'_, G>) {
+    if let Some(bg) = bg_image {
+        if bg.is_unloading() {
+            *bg_image = None;
+            return;
+        }
+        if bg.is_pending()
+            && let Err(err) = bg.upload(gpu)
+        {
+            log::warn!("error uploading background image err={err}");
+        }
+    }
+}
+
 /// Decode a background image file (`prepBackgroundImage`). Failures are
 /// logged and result in no image, as in Zig.
-fn load_background_image(path: &str) -> Option<image::Image> {
+fn load_background_image(path: &str) -> Option<image::Pending> {
     // Read it (Max size of 4 GiB, for now.)
     let contents = match std::fs::read(path) {
         Ok(c) if u32::try_from(c.len()).is_ok() => c,
@@ -1060,12 +1140,12 @@ fn load_background_image(path: &str) -> Option<image::Image> {
         }
     };
 
-    Some(image::Image::Pending(image::Pending {
+    Some(image::Pending {
         width,
         height,
         pixel_format: image::PixelFormat::Rgba,
         data,
-    }))
+    })
 }
 
 /// `file_type.zig` (the subset needed here).
@@ -1239,14 +1319,14 @@ fn shaped_cells_for_run(
     Ok(())
 }
 
-impl Renderer {
+impl<G: GraphicsApi> Renderer<G> {
     /// Create the renderer (`Renderer.init`).
     ///
-    /// `api` must already have its GL context prepared
-    /// ([`OpenGL::prepare_context`], i.e. Zig `Renderer.surfaceInit`), and the
-    /// context must be current on the calling thread: swap chain buffers,
+    /// `api` must already be prepared (OpenGL: [`OpenGL::prepare_context`],
+    /// i.e. Zig `Renderer.surfaceInit`, with the context current on the
+    /// calling thread; Metal: attached to its view): swap chain buffers,
     /// textures and shaders are created here.
-    pub fn new(opts: Options<DerivedConfig>, api: OpenGL) -> Result<Renderer, Error> {
+    pub fn new(opts: Options<DerivedConfig>, api: G) -> Result<Renderer<G>, Error> {
         let config = opts.config;
         let has_custom_shaders = !config.custom_shaders.is_empty();
 
@@ -1342,28 +1422,36 @@ impl Renderer {
         };
 
         let has_animations = AtomicBool::new(draw.has_custom_shaders);
+
+        // The display link is created here but only started in `loop_enter`.
+        let display_link = if cfg!(target_os = "macos") && draw.config.vsync {
+            DisplayLink::create_with_active_cg_displays()
+        } else {
+            None
+        };
+
         Ok(Renderer {
+            display_link: Mutex::new(display_link),
             draw: Mutex::new(draw),
             thread: Mutex::new(thread),
-            health: AtomicU8::new(Health::Healthy as u8),
+            health: Arc::new(AtomicU8::new(Health::Healthy as u8)),
             has_animations,
             host: opts.host,
         })
     }
 
-    /// This is called by the GTK apprt after the surface is reinitialized
+    /// This is called by the apprt after the surface is reinitialized
     /// due to any of the events mentioned in the doc comment of
-    /// [`Renderer::display_unrealized`]. The GL context must be current.
-    pub fn display_realized<F>(&self, get_proc_address: F) -> Result<(), Error>
-    where
-        F: FnMut(&str) -> *const std::ffi::c_void,
-    {
+    /// [`Renderer::display_unrealized`] (Zig `displayRealized`). `realize` is
+    /// the API's own hook ("if our API has to do things on realize, let it":
+    /// OpenGL reloads its context). The GPU context must be current.
+    pub fn display_realized_with(&self, realize: impl FnOnce(&mut G)) -> Result<(), Error> {
         // Lock the draw mutex so that we can
         // safely reinitialize our GPU resources.
         let mut d = lock(&self.draw);
 
         // If our API has to do things on realize, let it.
-        d.api.display_realized(get_proc_address);
+        realize(&mut d.api);
 
         // We assume that the swap chain was deinited in
         // `display_unrealized`, in which case it should be
@@ -1398,6 +1486,7 @@ impl Renderer {
         //
         // This will mark them as defunct so that they
         // can't be double-freed or used in draw calls.
+        d.api.display_unrealized();
         d.swap_chain.deinit();
         d.shaders = None;
         d.api.clear_last_target();
@@ -1423,10 +1512,79 @@ impl Renderer {
 
     /// True if our renderer is using vsync. If true, the renderer or apprt
     /// is responsible for triggering draw_now calls to the render thread.
-    /// That is the only way to trigger a `draw_frame`. (Always false for
-    /// OpenGL on Linux; there is no display link.)
+    /// That is the only way to trigger a `draw_frame`. (Only true on macOS
+    /// with a running display link.)
     pub fn has_vsync(&self) -> bool {
-        false
+        lock(&self.display_link)
+            .as_ref()
+            .is_some_and(DisplayLink::is_running)
+    }
+
+    /// Called by the renderer thread when it begins (`threadEnter`).
+    pub fn thread_enter(&self) {
+        lock(&self.draw).api.thread_enter();
+    }
+
+    /// Called by the renderer thread when it exits (`threadExit`).
+    pub fn thread_exit(&self) {
+        lock(&self.draw).api.thread_exit();
+    }
+
+    /// Called by the renderer thread when it starts the main loop
+    /// (`loopEnter`). `draw_now` forces an immediate draw on the renderer
+    /// thread; the display link calls it on every vsync.
+    pub fn loop_enter(self: &Arc<Self>, draw_now: Arc<dyn Fn() + Send + Sync>) {
+        // If our API has to do things on loop enter, let it. (Metal draws
+        // synchronously from the layer's display callback.)
+        let weak = Arc::downgrade(self);
+        lock(&self.draw).api.loop_enter(Arc::new(move || {
+            if let Some(renderer) = weak.upgrade()
+                && let Err(err) = renderer.draw_frame(true)
+            {
+                log::warn!("Error drawing frame in display callback, err={err}");
+            }
+        }));
+
+        // If we don't support a display link we have no work to do.
+        let guard = lock(&self.display_link);
+        let Some(link) = guard.as_ref() else {
+            return;
+        };
+
+        // To setup the display link we set our callback and we can start it
+        // immediately.
+        if let Err(err) = link.set_output_callback(draw_now) {
+            log::warn!("error setting display link callback err={err}");
+            return;
+        }
+        let _ = link.start();
+    }
+
+    /// Called by the renderer thread when it exits the main loop
+    /// (`loopExit`).
+    pub fn loop_exit(&self) {
+        // If our API has to do things on loop exit, let it.
+        lock(&self.draw).api.loop_exit();
+
+        // Stop our display link. If this fails its okay it just means
+        // that we either never started it or the view its attached to
+        // is gone which is fine.
+        if let Some(link) = lock(&self.display_link).as_ref() {
+            let _ = link.stop();
+        }
+    }
+
+    /// Called when we get an updated display ID for our display link
+    /// (`setMacOSDisplayID`).
+    pub fn set_macos_display_id(&self, id: u32) {
+        let guard = lock(&self.display_link);
+        let Some(link) = guard.as_ref() else {
+            return;
+        };
+        log::info!("updating display link display id={id}");
+        if let Err(err) = link.set_current_cg_display(id) {
+            log::warn!("error setting display link display id err={err}");
+        }
     }
 
     /// The health of the most recently completed frame.
@@ -1454,13 +1612,31 @@ impl Renderer {
 
         // Flag that we need to update our custom shaders
         d.custom_shader_focused_changed = true;
+
+        // If we're not focused, then we want to stop the display link
+        // because it is a waste of resources and we can move to pure
+        // change-driven updates.
+        if let Some(link) = lock(&self.display_link).as_ref() {
+            let _ = if focus { link.start() } else { link.stop() };
+        }
     }
 
     /// Callback when the window is visible or occluded.
     ///
-    /// Must be called on the render thread. (There is no display link on
-    /// Linux, so there is nothing to do.)
-    pub fn set_visible(&self, _visible: bool) {}
+    /// Must be called on the render thread.
+    pub fn set_visible(&self, visible: bool) {
+        // If we're not visible, then we want to stop the display link
+        // because it is a waste of resources and we can move to pure
+        // change-driven updates.
+        let focused = lock(&self.draw).focused;
+        if let Some(link) = lock(&self.display_link).as_ref() {
+            let _ = if visible && focused {
+                link.start()
+            } else {
+                link.stop()
+            };
+        }
+    }
 
     /// Set the new font grid.
     ///
@@ -1477,10 +1653,7 @@ impl Renderer {
         d.font_grid = grid;
 
         // Update all our textures so that they sync on the next frame.
-        for frame in d.swap_chain.frames_mut() {
-            frame.grayscale_modified = 0;
-            frame.color_modified = 0;
-        }
+        d.swap_chain.invalidate_atlases();
 
         d.grid_metrics = metrics;
 
@@ -1561,7 +1734,8 @@ impl Renderer {
 
         if blending_changed {
             // We update our API's blending mode.
-            d.api.blending = d.config.blending;
+            let blending = d.config.blending;
+            d.api.set_blending(blending);
             // And indicate that we need to reinitialize our shaders.
             d.reinitialize_shaders = true;
             // And indicate that our swap chain targets need to
@@ -1602,30 +1776,54 @@ impl Renderer {
         t.search_matches_dirty = true;
     }
 
+    /// The callback the graphics API calls when a frame is completed
+    /// (`renderer.frameCompleted`). Metal calls it from the command buffer's
+    /// completion handler, so it owns handles instead of borrowing `self`.
+    fn frame_completion(&self) -> FrameCompletion {
+        let health = Arc::clone(&self.health);
+        let host = Arc::clone(&self.host);
+        Arc::new(move |h| frame_completed(&health, host.as_ref(), h))
+    }
+}
+
+/// Record the health of a completed frame and notify the surface on change.
+fn frame_completed(current: &AtomicU8, host: &dyn Host, health: Health) {
+    // If our health value hasn't changed, then we do nothing. We don't
+    // do a cmpxchg here because strict atomicity isn't important.
+    if current.load(Ordering::SeqCst) != health as u8 {
+        current.store(health as u8, Ordering::SeqCst);
+
+        // Our health value changed, so we notify the surface so that it
+        // can do something about it.
+        host.renderer_health(health);
+    }
+}
+
+impl Renderer<OpenGL> {
+    /// This is called by the GTK apprt after the surface is reinitialized
+    /// due to any of the events mentioned in the doc comment of
+    /// [`Renderer::display_unrealized`]. The GL context must be current.
+    pub fn display_realized<F>(&self, get_proc_address: F) -> Result<(), Error>
+    where
+        F: FnMut(&str) -> *const std::ffi::c_void,
+    {
+        self.display_realized_with(|api| api.display_realized(get_proc_address))
+    }
+
     /// Read back the pixels (RGBA8, bottom-up like `glReadPixels`) of the
     /// most recently presented frame. Intended for tests and screenshots;
     /// requires the GL context to be current.
     pub fn last_frame_pixels(&self) -> Option<(usize, usize, Vec<u8>)> {
         let d = lock(&self.draw);
-        let target = Arc::clone(d.api.last_target()?);
+        let target = d.api.last_target()?;
         let gl = d.api.gl()?.clone();
-        let bind = gl.bind_framebuffer(target.framebuffer(), gl::FramebufferTarget::Read);
+        let bind = gl.bind_framebuffer(
+            target.framebuffer(),
+            crate::opengl::gl::FramebufferTarget::Read,
+        );
         let px = gl.read_pixels_rgba8(0, 0, target.width as i32, target.height as i32);
         gl.unbind_framebuffer(bind);
         Some((target.width, target.height, px))
-    }
-
-    // Callback from the graphics API when a frame is completed.
-    fn frame_completed(&self, health: Health) {
-        // If our health value hasn't changed, then we do nothing. We don't
-        // do a cmpxchg here because strict atomicity isn't important.
-        if self.health.load(Ordering::SeqCst) != health as u8 {
-            self.health.store(health as u8, Ordering::SeqCst);
-
-            // Our health value changed, so we notify the surface so that it
-            // can do something about it.
-            self.host.renderer_health(health);
-        }
     }
 }
 
@@ -1646,7 +1844,7 @@ struct Critical {
 /// (~12 minutes at 120Hz).
 const MAX_TERMINAL_STATE_FRAME_COUNT: usize = 100_000;
 
-impl Renderer {
+impl<G: GraphicsApi> Renderer<G> {
     /// Update the frame data.
     ///
     /// This is the renderer thread half of the renderer: it locks
@@ -1849,8 +2047,16 @@ impl Renderer {
                 (t.config.background_opacity * 255.0).round() as u8,
             ];
 
-            // (On macOS glass styles the background opacity is removed; that
-            // is out of scope on Linux.)
+            // If we're on macOS and have glass styles, we remove
+            // the background opacity because the glass effect handles
+            // it.
+            #[cfg(target_os = "macos")]
+            if matches!(
+                t.config.background_blur,
+                BackgroundBlur::MacosGlassRegular | BackgroundBlur::MacosGlassClear
+            ) {
+                d.uniforms.bg_color[3] = 0;
+            }
 
             // Prepare our overlay image for upload (or unload).
             d.has_overlay = t.overlay.is_some();
@@ -1922,8 +2128,8 @@ impl Renderer {
 
 /// Update the kitty image state from the terminal (the `kittyUpdate` call in
 /// `updateFrame`).
-fn update_kitty(
-    images: &mut image::State,
+fn update_kitty<G: GraphicsApi>(
+    images: &mut image::State<G>,
     terminal: &mut ghostty_terminal::terminal::Terminal,
     cell_size: CellSize,
 ) {
@@ -1955,7 +2161,7 @@ enum Selected {
     SearchSelected,
 }
 
-impl DrawState {
+impl<G: GraphicsApi> DrawState<G> {
     /// Convert the terminal state to GPU cells stored in CPU memory. These
     /// are then synced to the GPU in the next frame. This only updates CPU
     /// memory and doesn't touch the GPU.
@@ -2246,7 +2452,7 @@ impl DrawState {
     }
 }
 
-impl DrawState {
+impl<G: GraphicsApi> DrawState<G> {
     #[allow(clippy::too_many_arguments)]
     fn rebuild_row(
         &mut self,
@@ -2968,7 +3174,7 @@ impl DrawState {
 // ---------------------------------------------------------------------------
 // draw_frame (GL thread)
 
-impl Renderer {
+impl<G: GraphicsApi> Renderer<G> {
     /// Draw the frame to the screen.
     ///
     /// If `sync` is true, this will synchronously block until
@@ -3000,7 +3206,7 @@ impl Renderer {
         result
     }
 
-    fn draw_frame_locked(&self, d: &mut DrawState, sync: bool) -> Result<(), Error> {
+    fn draw_frame_locked(&self, d: &mut DrawState<G>, sync: bool) -> Result<(), Error> {
         d.api.draw_frame_start();
 
         // Retrieve the most up-to-date surface size from the Graphics API
@@ -3030,30 +3236,45 @@ impl Renderer {
 
         // Get a frame state to draw to.
         let (idx, mut frame) = d.swap_chain.next_frame()?;
-        let result = d.draw_with_frame(
-            &mut frame,
-            sync,
-            (surface_width, surface_height),
-            size_changed,
-        );
-        d.swap_chain.release_frame(idx, frame);
-
-        let health = result?;
+        let result = d.draw_with_frame(&mut frame, (surface_width, surface_height), size_changed);
+        let frame_ctx = match result {
+            Ok(frame_ctx) => frame_ctx,
+            Err(err) => {
+                // Nothing was submitted: give the frame state back.
+                d.swap_chain.release_frame(idx, frame);
+                return Err(err);
+            }
+        };
         self.has_animations
             .store(d.has_custom_shaders, Ordering::Relaxed);
-        self.frame_completed(health);
+
+        // Complete the frame. The frame state is handed back to the swap
+        // chain, and the health reported, when the frame completes
+        // (`frameCompleted`): inline for synchronous frames, from the
+        // graphics API's completion thread otherwise.
+        let report = self.frame_completion();
+        let swap_chain = d.swap_chain.releaser();
+        let pending = Mutex::new(Some(frame));
+        let completion: FrameCompletion = Arc::new(move |health| {
+            report(health);
+            if let Some(frame) = lock(&pending).take() {
+                SwapChainInner::release(&swap_chain, idx, frame);
+            }
+        });
+        frame_ctx.complete(sync, completion);
         Ok(())
     }
 }
 
-impl DrawState {
+impl<G: GraphicsApi> DrawState<G> {
+    /// Encode a frame into `frame`'s buffers and the swap chain's targets.
+    /// The returned graphics API frame has not been completed yet.
     fn draw_with_frame(
         &mut self,
-        frame: &mut FrameState,
-        sync: bool,
+        frame: &mut FrameState<G>,
         surface_size: (u32, u32),
         size_changed: bool,
-    ) -> Result<Health, Error> {
+    ) -> Result<G::Frame, Error> {
         let (surface_width, surface_height) = surface_size;
 
         // If we need to reinitialize our shaders, do so.
@@ -3073,7 +3294,7 @@ impl DrawState {
         // if we have a state but don't need it we remove it.
         if self.has_custom_shaders {
             if frame.custom_shader_state.is_none() {
-                let mut state = CustomShaderState::new(&self.api)?;
+                let mut state = CustomShaderState::<G>::new(&self.api)?;
                 state.resize(&self.api, surface_width as usize, surface_height as usize)?;
                 frame.custom_shader_state = Some(state);
             }
@@ -3094,8 +3315,8 @@ impl DrawState {
         // If this frame's target isn't the correct size, or the target
         // config has changed (such as when the blending mode changes),
         // remove it and replace it with a new one with the right values.
-        if frame.target.width != self.size.screen.width as usize
-            || frame.target.height != self.size.screen.height as usize
+        if frame.target.width() != self.size.screen.width as usize
+            || frame.target.height() != self.size.screen.height as usize
             || frame.target_config_modified != self.target_config_modified
         {
             frame.resize(
@@ -3108,26 +3329,21 @@ impl DrawState {
             self.api.clear_last_target();
         }
 
-        let gl: Gl = self.api.gl().ok_or(opengl::Error::NoContext)?.clone();
-        let gpu = Gpu {
-            gl: &gl,
-            texture_options: self
-                .api
-                .image_texture_options(opengl::ImageTextureFormat::Rgba, true),
-            buffer_options: self.api.image_buffer_options(),
-        };
+        {
+            let gpu = Gpu { api: &self.api };
 
-        // Upload images to the GPU as necessary.
-        let _ = self.images.upload(&gpu);
+            // Upload images to the GPU as necessary.
+            let _ = self.images.upload(&gpu);
 
-        // Upload the background image to the GPU as necessary.
-        self.upload_background_image(&gpu);
+            // Upload the background image to the GPU as necessary.
+            upload_background_image(&mut self.bg_image, &gpu);
+        }
 
         // Update per-frame custom shader uniforms.
         self.update_custom_shader_uniforms_for_frame();
 
         // Setup our frame data
-        frame.uniforms.sync(&[self.uniforms])?;
+        frame.uniforms.sync(&[G::gpu_uniforms(&self.uniforms)])?;
         frame.cells_bg.sync(&self.cells.bg_cells)?;
         let fg_lists: Vec<&[CellText]> = self.cells.fg_rows.iter().map(Vec::as_slice).collect();
         let fg_count = frame.cells.sync_from_slices(&fg_lists)?;
@@ -3174,17 +3390,18 @@ impl DrawState {
             bg_image,
             has_overlay,
             ..
-        } = self;
+        } = &*self;
         let Some(shaders) = shaders.as_ref() else {
             return Err(Error::Defunct);
         };
+        let gpu = Gpu { api };
         let frame_ctx = api.begin_frame(Arc::clone(&frame.target));
 
         {
             let attachments = [Attachment {
                 target: match &frame.custom_shader_state {
                     Some(state) => AttachmentTarget::Texture(&state.back_texture),
-                    None => AttachmentTarget::Target(&frame.target),
+                    None => AttachmentTarget::Target(&*frame.target),
                 },
                 clear_color: Some([0.0, 0.0, 0.0, 0.0]),
             }];
@@ -3204,7 +3421,7 @@ impl DrawState {
                 Some(img) => {
                     if let image::Image::Ready(texture) = img {
                         pass.step(&Step {
-                            pipeline: &shaders.bg_image,
+                            pipeline: shaders.bg_image(),
                             uniforms: Some(frame.uniforms.raw()),
                             buffers: &[Some(frame.bg_image_buffer.raw())],
                             textures: &[Some(texture)],
@@ -3215,7 +3432,7 @@ impl DrawState {
                 }
                 None => {
                     pass.step(&Step {
-                        pipeline: &shaders.bg_color,
+                        pipeline: shaders.bg_color(),
                         uniforms: Some(frame.uniforms.raw()),
                         buffers: &[None, Some(frame.cells_bg.raw())],
                         textures: &[],
@@ -3229,14 +3446,14 @@ impl DrawState {
             // to be behind text AND cell backgrounds.
             images.draw(
                 &gpu,
-                &shaders.image,
+                shaders.image(),
                 &mut pass,
                 image::DrawPlacements::KittyBelowBg,
             );
 
             // Then we draw any opaque cell backgrounds.
             pass.step(&Step {
-                pipeline: &shaders.cell_bg,
+                pipeline: shaders.cell_bg(),
                 uniforms: Some(frame.uniforms.raw()),
                 buffers: &[None, Some(frame.cells_bg.raw())],
                 textures: &[],
@@ -3247,14 +3464,14 @@ impl DrawState {
             // Kitty images between cell backgrounds and text.
             images.draw(
                 &gpu,
-                &shaders.image,
+                shaders.image(),
                 &mut pass,
                 image::DrawPlacements::KittyBelowText,
             );
 
             // Text.
             pass.step(&Step {
-                pipeline: &shaders.cell_text,
+                pipeline: shaders.cell_text(),
                 uniforms: Some(frame.uniforms.raw()),
                 buffers: &[Some(frame.cells.raw()), Some(frame.cells_bg.raw())],
                 textures: &[Some(&frame.grayscale), Some(&frame.color)],
@@ -3269,7 +3486,7 @@ impl DrawState {
             // Kitty images in front of text.
             images.draw(
                 &gpu,
-                &shaders.image,
+                shaders.image(),
                 &mut pass,
                 image::DrawPlacements::KittyAboveText,
             );
@@ -3279,7 +3496,7 @@ impl DrawState {
             if *has_overlay {
                 images.draw(
                     &gpu,
-                    &shaders.image,
+                    shaders.image(),
                     &mut pass,
                     image::DrawPlacements::Overlay,
                 );
@@ -3290,14 +3507,14 @@ impl DrawState {
 
         // If we have custom shaders, then we render them.
         if let Some(state) = &mut frame.custom_shader_state {
-            let post_count = shaders.post_pipelines.len();
-            for (i, pipeline) in shaders.post_pipelines.iter().enumerate() {
+            let post_count = shaders.post_pipelines().len();
+            for (i, pipeline) in shaders.post_pipelines().iter().enumerate() {
                 {
                     let attachments = [Attachment {
                         target: if i < post_count - 1 {
                             AttachmentTarget::Texture(&state.front_texture)
                         } else {
-                            AttachmentTarget::Target(&frame.target)
+                            AttachmentTarget::Target(&*frame.target)
                         },
                         clear_color: Some([0.0, 0.0, 0.0, 0.0]),
                     }];
@@ -3317,8 +3534,8 @@ impl DrawState {
             }
         }
 
-        // Complete the frame: glFinish, error check, present.
-        Ok(frame_ctx.complete(sync))
+        // The caller completes the frame (glFinish, error check, present).
+        Ok(frame_ctx)
     }
 }
 
@@ -3433,13 +3650,8 @@ mod tests {
         std::fs::write(&path, &bytes).unwrap();
 
         let img = load_background_image(path.to_str().unwrap()).expect("decoded");
-        match img {
-            image::Image::Pending(p) => {
-                assert_eq!((p.width, p.height), (2, 1));
-                assert_eq!(p.data, [1, 2, 3, 255, 4, 5, 6, 128]);
-            }
-            _ => panic!("expected a pending image"),
-        }
+        assert_eq!((img.width, img.height), (2, 1));
+        assert_eq!(img.data, [1, 2, 3, 255, 4, 5, 6, 128]);
 
         // Missing / undecodable files are not an error, just no image.
         assert!(load_background_image(dir.join("missing.png").to_str().unwrap()).is_none());

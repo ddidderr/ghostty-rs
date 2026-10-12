@@ -1,5 +1,7 @@
+#[cfg(unix)]
 use std::process::{Command, Stdio};
 
+#[cfg(unix)]
 use crate::passwd;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -28,6 +30,7 @@ pub fn home() -> Result<Option<String>, Error> {
 
 /// Like [`home`] but emulates the fixed output buffer of the Zig version:
 /// errors with `BufferTooSmall` if the result is longer than `cap` bytes.
+#[cfg(unix)]
 pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
     let check = |s: String| {
         if cap < s.len() {
@@ -40,6 +43,18 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
     // First: if we have a HOME env var, then we use that.
     if let Some(result) = std::env::var_os("HOME") {
         return check(result.to_string_lossy().into_owned());
+    }
+
+    // On macOS: [NSFileManager defaultManager].homeDirectoryForCurrentUser.path
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::NSFileManager;
+
+        let manager = NSFileManager::defaultManager();
+        let home_url = manager.homeDirectoryForCurrentUser();
+        if let Some(path) = home_url.path() {
+            return check(path.to_string());
+        }
     }
 
     // We try passwd. This doesn't work on multi-user mac but we try it anyways.
@@ -65,6 +80,34 @@ pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
+/// Windows: `%HOMEDRIVE%%HOMEPATH%` (`homeWindows`). Returns `None` if
+/// either variable is missing.
+#[cfg(windows)]
+pub fn home_with_capacity(cap: usize) -> Result<Option<String>, Error> {
+    home_windows(
+        std::env::var("HOMEDRIVE").ok().as_deref(),
+        std::env::var("HOMEPATH").ok().as_deref(),
+        cap,
+    )
+}
+
+/// Pure part of [`home_with_capacity`] on Windows.
+#[cfg(any(windows, test))]
+fn home_windows(
+    drive: Option<&str>,
+    path: Option<&str>,
+    cap: usize,
+) -> Result<Option<String>, Error> {
+    let (Some(drive), Some(path)) = (drive, path) else {
+        return Ok(None);
+    };
+    if cap < drive.len() + path.len() {
+        return Err(Error::BufferTooSmall);
+    }
+    Ok(Some(format!("{drive}{path}")))
+}
+
+#[cfg(unix)]
 fn trim_space(input: &str) -> &str {
     input.trim_matches([' ', '\n', '\t'])
 }
@@ -80,6 +123,14 @@ pub fn expand_home(path: &str) -> Result<String, ExpandError> {
 
 /// Like [`expand_home`] with an explicit output capacity (emulating the
 /// caller-provided buffer of the Zig version).
+#[cfg(windows)]
+pub fn expand_home_with_capacity(path: &str, _cap: usize) -> Result<String, ExpandError> {
+    // `~/` is not an idiom generally used on Windows
+    Ok(path.to_owned())
+}
+
+/// See the Windows variant above.
+#[cfg(unix)]
 pub fn expand_home_with_capacity(path: &str, cap: usize) -> Result<String, ExpandError> {
     if !path.starts_with("~/") {
         return Ok(path.to_owned());
@@ -99,6 +150,25 @@ pub fn expand_home_with_capacity(path: &str, cap: usize) -> Result<String, Expan
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn home_windows_joins_drive_and_path() {
+        assert_eq!(
+            home_windows(Some("C:"), Some("\\Users\\me"), 4096),
+            Ok(Some("C:\\Users\\me".to_owned()))
+        );
+        assert_eq!(home_windows(None, Some("\\x"), 4096), Ok(None));
+        assert_eq!(home_windows(Some("C:"), None, 4096), Ok(None));
+        assert_eq!(
+            home_windows(Some("C:"), Some("\\Users"), 3),
+            Err(Error::BufferTooSmall)
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests_unix {
     use super::*;
     use crate::testutil::with_env_lock;
 

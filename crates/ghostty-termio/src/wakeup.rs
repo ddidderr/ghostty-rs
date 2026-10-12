@@ -1,7 +1,8 @@
 //! A tiny cross-thread wakeup primitive (replaces `xev.Async`).
 //!
-//! Backed by a non-blocking `eventfd`, so it can be included in a `poll(2)`
-//! set next to a pty fd or a pidfd. [`Wakeup::notify`] may be called from any
+//! Backed by a non-blocking `eventfd` (a non-blocking pipe on Darwin, which
+//! has no eventfd; libxev uses kqueue there), so it can be included in a
+//! `poll(2)` set next to a pty fd or a pidfd. [`Wakeup::notify`] may be called from any
 //! thread, any number of times; the waiter calls [`Wakeup::drain`] after
 //! `poll` reports the fd readable.
 
@@ -11,30 +12,65 @@ use std::{
     sync::Arc,
 };
 
-use rustix::event::{EventfdFlags, eventfd};
+/// The fds backing a wakeup: a single eventfd (read == write) on Linux, the
+/// two ends of a pipe on Darwin.
+struct Fds {
+    read: OwnedFd,
+    write: Option<OwnedFd>,
+}
 
-/// See the module docs. Cloning shares the same underlying eventfd.
+impl Fds {
+    #[cfg(not(target_vendor = "apple"))]
+    fn new() -> io::Result<Fds> {
+        use rustix::event::{EventfdFlags, eventfd};
+        Ok(Fds {
+            read: eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?,
+            write: None,
+        })
+    }
+
+    #[cfg(target_vendor = "apple")]
+    fn new() -> io::Result<Fds> {
+        use rustix::{
+            fs::{OFlags, fcntl_getfl, fcntl_setfl},
+            io::{FdFlags, fcntl_setfd},
+        };
+        let (read, write) = rustix::pipe::pipe()?;
+        for fd in [&read, &write] {
+            fcntl_setfd(fd, FdFlags::CLOEXEC)?;
+            fcntl_setfl(fd, fcntl_getfl(fd)? | OFlags::NONBLOCK)?;
+        }
+        Ok(Fds {
+            read,
+            write: Some(write),
+        })
+    }
+
+    fn write_fd(&self) -> &OwnedFd {
+        self.write.as_ref().unwrap_or(&self.read)
+    }
+}
+
+/// See the module docs. Cloning shares the same underlying fds.
 #[derive(Clone)]
-pub struct Wakeup(Arc<OwnedFd>, Option<Arc<dyn Fn() + Send + Sync>>);
+pub struct Wakeup(Arc<Fds>, Option<Arc<dyn Fn() + Send + Sync>>);
 
 impl std::fmt::Debug for Wakeup {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Wakeup").field(&self.0).finish()
+        f.debug_tuple("Wakeup").field(&self.0.read).finish()
     }
 }
 
 impl Wakeup {
     pub fn new() -> io::Result<Wakeup> {
-        let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
-        Ok(Wakeup(Arc::new(fd), None))
+        Ok(Wakeup(Arc::new(Fds::new()?), None))
     }
 
     /// A wakeup that calls `hook` instead of signalling an eventfd. Used to
     /// bridge into waiters that are not `poll(2)`-based (the renderer
     /// thread's channel). `as_fd`/`drain` are meaningless for these.
     pub fn with_hook(hook: Arc<dyn Fn() + Send + Sync>) -> io::Result<Wakeup> {
-        let fd = eventfd(0, EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK)?;
-        Ok(Wakeup(Arc::new(fd), Some(hook)))
+        Ok(Wakeup(Arc::new(Fds::new()?), Some(hook)))
     }
 
     /// Wake up the waiter. Multiple notifications coalesce.
@@ -44,7 +80,7 @@ impl Wakeup {
             return Ok(());
         }
         loop {
-            match rustix::io::write(&*self.0, &1u64.to_ne_bytes()) {
+            match rustix::io::write(self.0.write_fd(), &1u64.to_ne_bytes()) {
                 Ok(_) => return Ok(()),
                 Err(rustix::io::Errno::INTR) => {}
                 // Counter would overflow: the waiter is already guaranteed
@@ -58,19 +94,23 @@ impl Wakeup {
     /// Reset the notification state. Returns true if a notification was
     /// pending.
     pub fn drain(&self) -> bool {
-        let mut buf = [0u8; 8];
+        let mut buf = [0u8; 64];
+        // An eventfd resets with one read; a pipe is read until empty.
+        let mut any = false;
         loop {
-            match rustix::io::read(&*self.0, &mut buf) {
-                Ok(_) => return true,
+            match rustix::io::read(&self.0.read, &mut buf) {
+                Ok(_) if self.0.write.is_none() => return true,
+                Ok(0) => return any,
+                Ok(_) => any = true,
                 Err(rustix::io::Errno::INTR) => {}
-                Err(_) => return false,
+                Err(_) => return any,
             }
         }
     }
 
     /// The fd to poll for `POLLIN`.
     pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.0.read.as_fd()
     }
 }
 

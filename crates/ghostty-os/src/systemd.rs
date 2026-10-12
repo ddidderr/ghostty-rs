@@ -1,12 +1,15 @@
+#[cfg(any(target_os = "linux", target_os = "android"))]
 use std::io::Read;
 
 /// Kernel `TASK_COMM_LEN`.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const TASK_COMM_LEN: u64 = 16;
 
 /// Returns true if the program was launched as a systemd service.
 ///
 /// On Linux, this returns true if the program was launched as a systemd
 /// service. It will return false if Ghostty was launched any other way.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub fn launched_by_systemd() -> bool {
     // On Linux, systemd sets the `INVOCATION_ID` (v232+) and the
     // `JOURNAL_STREAM` (v231+) environment variables. If these
@@ -58,6 +61,12 @@ pub fn launched_by_systemd() -> bool {
     &comm_data[..end] == b"systemd"
 }
 
+/// For other platforms (macOS, ...), this returns false.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub fn launched_by_systemd() -> bool {
+    false
+}
+
 /// systemd notifications. Used by Ghostty to inform systemd of the state of the
 /// process. Currently only used to notify systemd that we are ready and that
 /// configuration reloading has started.
@@ -68,6 +77,7 @@ pub fn launched_by_systemd() -> bool {
 /// avoid another external dependency. Linux systems that do not use
 /// `systemd` should never start Ghostty with the `NOTIFY_SOCKET` environment
 /// variable set and these functions essentially become a no-op.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 pub mod notify {
     use rustix::net::{
         AddressFamily,
@@ -172,8 +182,17 @@ pub mod notify {
     }
 }
 
+/// systemd notifications are a no-op on platforms without systemd.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub mod notify {
+    pub fn ready() {}
+
+    pub fn reloading() {}
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     use std::os::unix::net::UnixDatagram;
 
     use super::*;
@@ -190,6 +209,7 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     fn recv_with_socket(f: impl FnOnce()) -> String {
         let dir = crate::TempDir::init().unwrap();
         let path = dir.path().join("notify.sock");
@@ -202,11 +222,13 @@ mod tests {
         String::from_utf8(buf[..n].to_vec()).unwrap()
     }
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn notify_ready_sends_message() {
         assert_eq!(recv_with_socket(notify::ready), "READY=1");
     }
 
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn notify_reloading_sends_message() {
         let msg = recv_with_socket(notify::reloading);

@@ -102,6 +102,31 @@ pub enum IMKeyEvent {
     NotComposing,
 }
 
+/// Input method signals for [`Surface::debug_im`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum DebugIm {
+    PreeditStart,
+    PreeditChanged,
+    PreeditEnd,
+    Commit(String),
+}
+
+/// What the simulated input method does with a key press in
+/// [`Surface::debug_im_key`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum DebugImKey {
+    /// Handled; starts/updates the preedit (dead key, compose).
+    Preedit,
+    /// Handled; commit then preedit-end (ibus order).
+    Commit(String),
+    /// Handled; preedit-end then commit (simple order).
+    CommitSimple(String),
+    /// Handled; commit without composing (plain character translation).
+    HandledCommit(String),
+    /// Not handled and no signals.
+    Pass,
+}
+
 /// Overrides applied on top of the config when the core surface is created
 /// (Zig: the anonymous struct taking by `Surface.new`).
 #[derive(Debug, Clone, Default)]
@@ -623,6 +648,36 @@ impl Surface {
             return false;
         };
 
+        // The input method handling lives in `im_filter` (shared with the
+        // debug replay, which drives it with a simulated input method).
+        if self.im_filter(|| imp.im_context.filter_keypress(&event)) {
+            return true;
+        }
+
+        // We always reset the length of the im buffer. There's only one
+        // scenario we reach this point with im_len > 0 and that's if we
+        // received a commit event from the input method. We don't want to
+        // keep that state around since we've handled it here.
+        let result = self.key_event_encode(
+            action,
+            &KeySource::Event {
+                event: &event,
+                key_event: &key_event,
+            },
+            keyval,
+            keycode,
+            gtk_mods,
+        );
+        imp.im_buf.borrow_mut().clear();
+        result
+    }
+
+    /// The input method half of [`Surface::key_event`]. `filter` runs the
+    /// event through the input method context (`filter_keypress`) and returns
+    /// whether it was handled. Returns true if the key event must not be
+    /// encoded.
+    fn im_filter(&self, filter: impl FnOnce() -> bool) -> bool {
+        let imp = self.imp();
         // The block below is all related to input method handling. See the
         // function comment for some high level details and then the comments
         // within the block for more specifics.
@@ -651,7 +706,7 @@ impl Surface {
             } else {
                 IMKeyEvent::NotComposing
             });
-            let handled = imp.im_context.filter_keypress(&event);
+            let handled = filter();
             let in_keyevent = imp.in_keyevent.replace(IMKeyEvent::False);
 
             // Pass the event through the input method which returns true if
@@ -720,22 +775,7 @@ impl Surface {
             // work.
         }
 
-        // We always reset the length of the im buffer. There's only one
-        // scenario we reach this point with im_len > 0 and that's if we
-        // received a commit event from the input method. We don't want to
-        // keep that state around since we've handled it here.
-        let result = self.key_event_encode(
-            action,
-            &KeySource::Event {
-                event: &event,
-                key_event: &key_event,
-            },
-            keyval,
-            keycode,
-            gtk_mods,
-        );
-        imp.im_buf.borrow_mut().clear();
-        result
+        false
     }
 
     /// Debug input replay (`GHOSTTY_DEBUG_INPUT_SCRIPT`): feed a synthesized
@@ -1002,8 +1042,57 @@ impl Surface {
         }
     }
 
+    /// Horizontal (surface unit) scroll: accumulate and switch tabs once the
+    /// threshold is reached (`ecMouseScrollHorizontal` after its unit check).
+    fn scroll_horizontal_impl(&self, x: f64) -> bool {
+        let this = self;
+        let imp = this.imp();
+
+        imp.pending_horizontal_scroll
+            .set(imp.pending_horizontal_scroll.get() + x);
+
+        if imp.pending_horizontal_scroll.get().abs() < 120.0 {
+            if let Some(v) = imp.pending_horizontal_scroll_reset.take() {
+                v.remove();
+            }
+            let weak = this.downgrade();
+            let id = glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                if let Some(this) = weak.upgrade() {
+                    let imp = this.imp();
+                    imp.pending_horizontal_scroll.set(0.0);
+                    let _ = imp.pending_horizontal_scroll_reset.take();
+                }
+                glib::ControlFlow::Break
+            });
+            imp.pending_horizontal_scroll_reset.set(Some(id));
+            return true;
+        }
+
+        let _ = this.activate_action(
+            if imp.pending_horizontal_scroll.get() < 0.0 {
+                "tab.next-page"
+            } else {
+                "tab.previous-page"
+            },
+            None,
+        );
+
+        if let Some(v) = imp.pending_horizontal_scroll_reset.take() {
+            v.remove();
+        }
+
+        imp.pending_horizontal_scroll.set(0.0);
+
+        true
+    }
+
+    /// Debug input replay: horizontal scroll in surface units (touchpad).
+    pub fn debug_hscroll(&self, dx: f64) {
+        self.scroll_horizontal_impl(dx);
+    }
+
     /// Debug input replay: wheel scroll (vertical goes through the same
-    /// handler as the scroll controller; horizontal tab switching is skipped).
+    /// handler as the scroll controller; see `debug_hscroll` for horizontal).
     pub fn debug_scroll(&self, dy: f64) {
         self.scroll_vertical_impl(0.0, dy);
     }
@@ -1030,6 +1119,80 @@ impl Surface {
     /// `commit` signal of the IM context), outside of any key event.
     pub fn debug_commit_text(&self, text: &str) {
         self.imp().im_context.emit_by_name::<()>("commit", &[&text]);
+    }
+
+    /// Debug input replay: drive the surface's real input method signal
+    /// handlers (the functions the template connects to the IM context's
+    /// `preedit-start`/`preedit-changed`/`preedit-end`/`commit` signals) the
+    /// way an input method would. `ctx` is the context passed as the signal
+    /// emitter (so `preedit_string()` reports a real preedit and attributes).
+    pub fn debug_im(&self, ctx: &gtk::IMContext, step: DebugIm) {
+        use imp::Surface as H;
+        match step {
+            DebugIm::PreeditStart => H::im_preedit_start(ctx, self),
+            DebugIm::PreeditChanged => H::im_preedit_changed(ctx, self),
+            DebugIm::PreeditEnd => H::im_preedit_end(ctx, self),
+            DebugIm::Commit(text) => H::im_commit(ctx, &text, self),
+        }
+    }
+
+    /// Debug input replay: whether the surface believes it is composing.
+    pub fn debug_im_composing(&self) -> bool {
+        self.imp().im_composing.get()
+    }
+
+    /// Debug input replay: a key press+release that goes through
+    /// [`Surface::im_filter`] (the real `in_keyevent`/`im_composing`
+    /// bookkeeping) with a simulated input method. `ctx` carries the preedit
+    /// string. Returns whether the press was consumed by the input method.
+    pub fn debug_im_key(
+        &self,
+        ctx: &gtk::IMContext,
+        sim: &DebugImKey,
+        keyval: u32,
+        keycode: u32,
+        state: gdk::ModifierType,
+    ) -> bool {
+        let consumed = self.im_filter(|| {
+            use imp::Surface as H;
+            match sim {
+                DebugImKey::Preedit => {
+                    // A dead key / compose start: preedit-start (once) then
+                    // preedit-changed, event handled.
+                    if !self.imp().im_composing.get() {
+                        H::im_preedit_start(ctx, self);
+                    }
+                    H::im_preedit_changed(ctx, self);
+                    true
+                }
+                DebugImKey::Commit(text) => {
+                    // ibus order: commit THEN preedit-end.
+                    H::im_commit(ctx, text, self);
+                    H::im_preedit_end(ctx, self);
+                    true
+                }
+                DebugImKey::CommitSimple(text) => {
+                    // gtk-im-simple order: preedit-end THEN commit.
+                    H::im_preedit_end(ctx, self);
+                    H::im_commit(ctx, text, self);
+                    true
+                }
+                DebugImKey::HandledCommit(text) => {
+                    // Plain character translation: commit, handled.
+                    H::im_commit(ctx, text, self);
+                    true
+                }
+                DebugImKey::Pass => false,
+            }
+        });
+        if !consumed {
+            self.debug_key_event(KeyAction::Press, keyval, keycode, state);
+        }
+        // The release also goes through the input method.
+        if !self.im_filter(|| false) {
+            self.debug_key_event(KeyAction::Release, keyval, keycode, state);
+        }
+        consumed
     }
 
     fn key_event_encode(
@@ -3389,56 +3552,18 @@ mod imp {
             _y: f64,
             this: &super::Surface,
         ) -> bool {
-            let imp = this.imp();
-
             match ec.unit() {
                 gdk::ScrollUnit::Surface => {}
                 _ => return false,
             }
 
-            imp.pending_horizontal_scroll
-                .set(imp.pending_horizontal_scroll.get() + x);
-
-            if imp.pending_horizontal_scroll.get().abs() < 120.0 {
-                if let Some(v) = imp.pending_horizontal_scroll_reset.take() {
-                    v.remove();
-                }
-                let weak = this.downgrade();
-                let id =
-                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                        if let Some(this) = weak.upgrade() {
-                            let imp = this.imp();
-                            imp.pending_horizontal_scroll.set(0.0);
-                            let _ = imp.pending_horizontal_scroll_reset.take();
-                        }
-                        glib::ControlFlow::Break
-                    });
-                imp.pending_horizontal_scroll_reset.set(Some(id));
-                return true;
-            }
-
-            let _ = this.activate_action(
-                if imp.pending_horizontal_scroll.get() < 0.0 {
-                    "tab.next-page"
-                } else {
-                    "tab.previous-page"
-                },
-                None,
-            );
-
-            if let Some(v) = imp.pending_horizontal_scroll_reset.take() {
-                v.remove();
-            }
-
-            imp.pending_horizontal_scroll.set(0.0);
-
-            true
+            this.scroll_horizontal_impl(x)
         }
 
         // ---- input method ----
 
         #[template_callback]
-        fn im_preedit_start(_ctx: &gtk::IMMulticontext, this: &super::Surface) {
+        pub(super) fn im_preedit_start(_ctx: &gtk::IMContext, this: &super::Surface) {
             // Start our composing state for the input method and reset our
             // input buffer to empty.
             let imp = this.imp();
@@ -3447,7 +3572,7 @@ mod imp {
         }
 
         #[template_callback]
-        fn im_preedit_changed(ctx: &gtk::IMMulticontext, this: &super::Surface) {
+        pub(super) fn im_preedit_changed(ctx: &gtk::IMContext, this: &super::Surface) {
             let imp = this.imp();
 
             // Any preedit change should mark that we're composing. Its
@@ -3474,7 +3599,7 @@ mod imp {
         }
 
         #[template_callback]
-        fn im_preedit_end(_ctx: &gtk::IMMulticontext, this: &super::Surface) {
+        pub(super) fn im_preedit_end(_ctx: &gtk::IMContext, this: &super::Surface) {
             // End our composing state for GTK, allowing us to commit the text.
             let imp = this.imp();
             imp.im_composing.set(false);
@@ -3487,7 +3612,7 @@ mod imp {
         }
 
         #[template_callback]
-        fn im_commit(_ctx: &gtk::IMMulticontext, str: &str, this: &super::Surface) {
+        pub(super) fn im_commit(_ctx: &gtk::IMContext, str: &str, this: &super::Surface) {
             let imp = this.imp();
 
             // We need to handle commit specially if we're in a key event.

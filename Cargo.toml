@@ -8,14 +8,25 @@ description = "A Rust rewrite of the Ghostty terminal emulator"
 name = "ghostty"
 path = "src/main.rs"
 
+[features]
+# Mirrors upstream's `-Dsentry` build option (off by default on Linux):
+# enables the local crash-report handler (`ghostty-crash`).
+sentry = ["ghostty-crash/sentry"]
+
 [dependencies]
 ghostty-core.workspace = true
 ghostty-config.workspace = true
 ghostty-apprt-gtk.workspace = true
 ghostty-apprt.workspace = true
 ghostty-cli.workspace = true
+ghostty-crash.workspace = true
 ghostty-os.workspace = true
 log = "0.4"
+
+[dev-dependencies]
+rustix = { version = "1", features = ["process"] }
+serde_json = "1"
+tempfile = "3"
 
 [lints]
 workspace = true
@@ -50,8 +61,11 @@ ghostty-core = { path = "crates/ghostty-core" }
 ghostty-apprt-gtk = { path = "crates/ghostty-apprt-gtk" }
 ghostty-apprt = { path = "crates/ghostty-apprt" }
 ghostty-cli = { path = "crates/ghostty-cli" }
+ghostty-crash = { path = "crates/ghostty-crash" }
 ghostty-bench = { path = "crates/ghostty-bench" }
 ghostty-inspector = { path = "crates/ghostty-inspector" }
+ghostty-vt-capi = { path = "crates/ghostty-vt-capi" }
+ghostty-wasm = { path = "crates/ghostty-wasm" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

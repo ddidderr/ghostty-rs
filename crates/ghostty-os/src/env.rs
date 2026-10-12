@@ -1,11 +1,15 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     ffi::{OsStr, OsString},
 };
 
 use crate::flatpak::is_flatpak;
 
-/// PATH-style delimiter (`std.fs.path.delimiter` on POSIX).
+/// PATH-style delimiter (`std.fs.path.delimiter`).
+#[cfg(windows)]
+const DELIMITER: char = ';';
+#[cfg(not(windows))]
 const DELIMITER: char = ':';
 
 /// A byte-preserving environment map (Zig `std.process.EnvMap`): keys and
@@ -18,21 +22,43 @@ impl EnvMap {
         Self::default()
     }
 
-    pub fn insert(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Option<OsString> {
+    /// On Windows environment variable names are case-insensitive (Zig's
+    /// `EnvMap` uses a case-insensitive hash context there), so lookups find
+    /// the existing key regardless of ASCII case. Elsewhere this is the key
+    /// itself.
+    #[cfg(windows)]
+    fn canonical_key<'a>(&'a self, key: &'a OsStr) -> Cow<'a, OsStr> {
+        let want = key.to_string_lossy().to_ascii_uppercase();
         self.0
-            .insert(key.as_ref().to_owned(), value.as_ref().to_owned())
+            .keys()
+            .find(|k| k.to_string_lossy().to_ascii_uppercase() == want)
+            .map_or(Cow::Borrowed(key), |k| Cow::Borrowed(k.as_os_str()))
+    }
+
+    #[cfg(not(windows))]
+    #[allow(clippy::unused_self)]
+    fn canonical_key<'a>(&'a self, key: &'a OsStr) -> Cow<'a, OsStr> {
+        Cow::Borrowed(key)
+    }
+
+    pub fn insert(&mut self, key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) -> Option<OsString> {
+        let key = self.canonical_key(key.as_ref()).into_owned();
+        self.0.insert(key, value.as_ref().to_owned())
     }
 
     pub fn get(&self, key: impl AsRef<OsStr>) -> Option<&OsStr> {
-        self.0.get(key.as_ref()).map(OsString::as_os_str)
+        self.0
+            .get(&*self.canonical_key(key.as_ref()))
+            .map(OsString::as_os_str)
     }
 
     pub fn remove(&mut self, key: impl AsRef<OsStr>) -> Option<OsString> {
-        self.0.remove(key.as_ref())
+        let key = self.canonical_key(key.as_ref()).into_owned();
+        self.0.remove(&key)
     }
 
     pub fn contains_key(&self, key: impl AsRef<OsStr>) -> bool {
-        self.0.contains_key(key.as_ref())
+        self.0.contains_key(&*self.canonical_key(key.as_ref()))
     }
 
     pub fn len(&self) -> usize {
@@ -89,6 +115,13 @@ pub fn get_env_map() -> EnvMap {
 /// drop `:`-separated components that start with one of the snap
 /// directories. Variables we set ourselves (`TERMINFO`, `GHOSTTY*`) are
 /// left alone.
+#[cfg(windows)]
+pub fn filter_snap_paths(_env: &mut EnvMap) {
+    // Snap only exists on Linux.
+}
+
+/// See the Windows no-op above.
+#[cfg(unix)]
 pub fn filter_snap_paths(env: &mut EnvMap) {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
@@ -216,10 +249,12 @@ pub fn getenv_not_empty(key: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::os::unix::ffi::OsStringExt;
 
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn env_map_preserves_non_utf8() {
         let mut env = EnvMap::new();
@@ -228,6 +263,7 @@ mod tests {
         assert_eq!(env.get("K"), Some(v.as_os_str()));
     }
 
+    #[cfg(unix)]
     #[test]
     fn filter_snap_paths_filters() {
         let mut env = EnvMap::new();
@@ -255,9 +291,10 @@ mod tests {
 
     #[test]
     fn append_env_existing() {
-        assert_eq!(append_env("a:b", "foo"), "a:b:foo");
+        assert_eq!(append_env("a:b", "foo"), format!("a:b{DELIMITER}foo"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn os_variants_preserve_bytes() {
         let cur = OsString::from_vec(vec![0xff, b'a']);
@@ -275,13 +312,13 @@ mod tests {
 
     #[test]
     fn prepend_env_existing() {
-        assert_eq!(prepend_env("a:b", "foo"), "foo:a:b");
+        assert_eq!(prepend_env("a:b", "foo"), format!("foo{DELIMITER}a:b"));
     }
 
     #[test]
     fn append_env_always_empty_value() {
-        assert_eq!(append_env_always("a", ""), "a:");
-        assert_eq!(append_env_always("", "x"), ":x");
+        assert_eq!(append_env_always("a", ""), format!("a{DELIMITER}"));
+        assert_eq!(append_env_always("", "x"), format!("{DELIMITER}x"));
     }
 
     #[test]

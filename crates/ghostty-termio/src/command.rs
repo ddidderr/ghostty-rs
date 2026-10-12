@@ -221,9 +221,37 @@ impl std::fmt::Debug for Command {
 
 /// Everything that must be allocated before forking.
 struct Prepared {
+    #[cfg_attr(target_vendor = "apple", allow(dead_code))]
     path: CString,
     argv: Vec<CString>,
     envp: Vec<CString>,
+    /// Darwin has no `execvpe`: the candidate executable paths (the PATH
+    /// search of Zig's `execvpeZ`, precomputed so the child doesn't allocate).
+    #[cfg(target_vendor = "apple")]
+    candidates: Vec<CString>,
+}
+
+/// The default PATH used when `PATH` is unset (Zig `std.posix.execvpeZ`:
+/// `/usr/local/bin:/bin/:/usr/bin`).
+#[cfg(any(target_vendor = "apple", test))]
+const DEFAULT_PATH: &str = "/usr/local/bin:/bin/:/usr/bin";
+
+/// The paths `execvpe` tries for `file` given a PATH value: the file itself
+/// if it contains a slash, otherwise `<dir>/<file>` per PATH entry (an empty
+/// entry means the current directory).
+#[cfg(any(target_vendor = "apple", test))]
+fn exec_candidates(file: &str, path_env: Option<&str>) -> Vec<String> {
+    if file.contains('/') {
+        return vec![file.to_owned()];
+    }
+    path_env
+        .unwrap_or(DEFAULT_PATH)
+        .split(':')
+        .map(|dir| {
+            let dir = if dir.is_empty() { "." } else { dir };
+            format!("{dir}/{file}")
+        })
+        .collect()
 }
 
 impl Command {
@@ -266,7 +294,18 @@ impl Command {
                 })
                 .collect::<Result<_, _>>()?,
         };
-        Ok(Prepared { path, argv, envp })
+        #[cfg(target_vendor = "apple")]
+        let candidates = exec_candidates(&self.path, std::env::var("PATH").ok().as_deref())
+            .into_iter()
+            .map(CString::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Prepared {
+            path,
+            argv,
+            envp,
+            #[cfg(target_vendor = "apple")]
+            candidates,
+        })
     }
 
     /// Start the subprocess. This returns immediately once the child is
@@ -409,6 +448,16 @@ impl Command {
 fn setup_fd(dup: impl Fn(&OwnedFd) -> rustix::io::Result<()>, src: &OwnedFd) -> Result<(), Errno> {
     // dup2 (like Zig's dup3 with flags=0) leaves the target without
     // CLOEXEC: we do NOT want this file descriptor to be closed on exec.
+    //
+    // Mac doesn't support dup3 so Zig uses dup2 there, and purposely
+    // clears CLOEXEC on the source fd first.
+    #[cfg(target_vendor = "apple")]
+    {
+        let flags = rustix::io::fcntl_getfd(src)?;
+        if flags.contains(rustix::io::FdFlags::CLOEXEC) {
+            rustix::io::fcntl_setfd(src, flags - rustix::io::FdFlags::CLOEXEC)?;
+        }
+    }
     loop {
         match dup(src) {
             Err(Errno::INTR) => {}
@@ -442,6 +491,7 @@ fn fork() -> Result<i32, Errno> {
     }
 }
 
+#[cfg(not(target_vendor = "apple"))]
 #[allow(unsafe_code)]
 fn execvpe(prep: &Prepared, argv: &[*const c_char], envp: &[*const c_char]) -> Errno {
     debug_assert!(argv.last().is_some_and(|p| p.is_null()));
@@ -455,10 +505,48 @@ fn execvpe(prep: &Prepared, argv: &[*const c_char], envp: &[*const c_char]) -> E
     Errno::from_raw_os_error(errno_now())
 }
 
+/// Darwin has no `execvpe`; do the PATH search by hand like Zig's
+/// `execvpeZ` (EACCES is remembered, ENOENT/ENOTDIR continue the search,
+/// anything else is returned immediately).
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)]
+fn execvpe(prep: &Prepared, argv: &[*const c_char], envp: &[*const c_char]) -> Errno {
+    debug_assert!(argv.last().is_some_and(|p| p.is_null()));
+    debug_assert!(envp.last().is_some_and(|p| p.is_null()));
+    let mut seen_eacces = false;
+    for candidate in &prep.candidates {
+        // SAFETY: the candidate is a valid NUL-terminated string; argv/envp
+        // are NULL-terminated arrays of pointers into CStrings (owned by
+        // `prep`) that outlive the call. execve only returns on failure.
+        unsafe {
+            libc::execve(candidate.as_ptr(), argv.as_ptr(), envp.as_ptr());
+        }
+        let err = errno_now();
+        match err {
+            libc::EACCES => seen_eacces = true,
+            libc::ENOENT | libc::ENOTDIR => {}
+            _ => return Errno::from_raw_os_error(err),
+        }
+    }
+    Errno::from_raw_os_error(if seen_eacces {
+        libc::EACCES
+    } else {
+        libc::ENOENT
+    })
+}
+
+#[cfg(not(target_vendor = "apple"))]
 #[allow(unsafe_code)]
 fn errno_now() -> i32 {
     // SAFETY: __errno_location returns a valid thread-local pointer.
     unsafe { *libc::__errno_location() }
+}
+
+#[cfg(target_vendor = "apple")]
+#[allow(unsafe_code)]
+fn errno_now() -> i32 {
+    // SAFETY: __error returns a valid thread-local pointer.
+    unsafe { *libc::__error() }
 }
 
 fn write_stderr(msg: &[u8]) {
@@ -909,5 +997,19 @@ mod tests {
         };
         assert!(linux_cgroup_post_fork(&cmd, &hard, |_, _, _| None).is_err());
         assert!(linux_cgroup_post_fork(&cmd, &hard, |_, _, _| Some(Err("x".into()))).is_err());
+    }
+
+    #[test]
+    fn exec_candidates_search_path() {
+        assert_eq!(exec_candidates("/bin/sh", Some("/x")), ["/bin/sh"]);
+        assert_eq!(exec_candidates("a/b", None), ["a/b"]);
+        assert_eq!(
+            exec_candidates("sh", Some("/usr/bin::/bin")),
+            ["/usr/bin/sh", "./sh", "/bin/sh"]
+        );
+        assert_eq!(
+            exec_candidates("sh", None),
+            ["/usr/local/bin/sh", "/bin//sh", "/usr/bin/sh"]
+        );
     }
 }

@@ -390,6 +390,7 @@ impl Surface {
 
     /// `textCallback`: text input that is pasted verbatim.
     pub fn text_callback(&self, text: &str) -> Result<(), ClipboardError> {
+        let _crash = self.crash_guard();
         self.complete_clipboard_paste(text.as_bytes(), true)
     }
 }

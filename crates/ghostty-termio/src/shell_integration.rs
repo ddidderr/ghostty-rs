@@ -101,13 +101,30 @@ fn basename(path: &str) -> &str {
 }
 
 fn detect_shell(command: &Command) -> Option<Shell> {
+    detect_shell_for(command, cfg!(target_vendor = "apple"))
+}
+
+/// [`detect_shell`] for an explicit platform (`darwin == isDarwin()`).
+fn detect_shell_for(command: &Command, darwin: bool) -> Option<Shell> {
     let mut it = command.arg_iterator();
     let arg0 = it.next()?;
     let exe = basename(&arg0);
 
     match exe {
-        // (The Darwin /bin/bash special case does not apply on Linux.)
-        "bash" => Some(Shell::Bash),
+        "bash" => {
+            // Apple distributes their own patched version of Bash 3.2
+            // on macOS that disables the ENV-based POSIX startup path.
+            // This means we're unable to perform our automatic shell
+            // integration sequence in this specific environment.
+            //
+            // If we're running "/bin/bash" on Darwin, we can assume
+            // we're using Apple's Bash because /bin is non-writable
+            // on modern macOS due to System Integrity Protection.
+            if darwin && arg0 == "/bin/bash" {
+                return None;
+            }
+            Some(Shell::Bash)
+        }
         "elvish" => Some(Shell::Elvish),
         "fish" => Some(Shell::Fish),
         "nu" => Some(Shell::Nushell),
@@ -449,6 +466,14 @@ mod tests {
         assert_eq!(detect_shell(&sh("fish")), Some(Shell::Fish));
         assert_eq!(detect_shell(&sh("nu")), Some(Shell::Nushell));
         assert_eq!(detect_shell(&sh("zsh")), Some(Shell::Zsh));
+
+        // Apple's patched /bin/bash can't use the ENV-based integration.
+        assert_eq!(detect_shell_for(&sh("/bin/bash"), true), None);
+        assert_eq!(detect_shell_for(&sh("/bin/bash"), false), Some(Shell::Bash));
+        assert_eq!(
+            detect_shell_for(&sh("/opt/homebrew/bin/bash"), true),
+            Some(Shell::Bash)
+        );
 
         assert_eq!(detect_shell(&sh("bash -c 'command'")), Some(Shell::Bash));
         assert_eq!(detect_shell(&sh("\"/a b/bash\"")), Some(Shell::Bash));

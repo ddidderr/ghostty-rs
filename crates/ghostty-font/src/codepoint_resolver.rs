@@ -19,7 +19,7 @@ use crate::{
     Style,
     collection::{AddOptions, Collection, Entry, GetFaceError, Index, PresentationMode, Special},
     discovery::Discover,
-    face::{RenderOptions, freetype::RenderError as FaceRenderError},
+    face::{RenderError as FaceRenderError, RenderOptions},
     sprite,
 };
 
@@ -257,7 +257,7 @@ impl CodepointResolver {
             monospace: false,
             ..Default::default()
         };
-        let mut disco_it = disco.discover_fallback(&self.collection, &desc).ok()?;
+        let mut disco_it = disco.discover_fallback(&mut self.collection, &desc).ok()?;
 
         loop {
             let deferred_face = match disco_it.next() {
@@ -490,6 +490,8 @@ mod tests {
         c.load_options = Some(LoadOptions::new(lib.clone()));
 
         add(&mut c, &lib, embedded::REGULAR, Style::Regular, 12.0);
+        // Coretext doesn't support Noto's format
+        #[cfg(not(font_coretext))]
         add(&mut c, &lib, embedded::EMOJI, Style::Regular, 12.0);
         add(&mut c, &lib, embedded::EMOJI_TEXT, Style::Regular, 12.0);
 
@@ -515,7 +517,8 @@ mod tests {
                 .get_index(0x270C, Style::Regular, Some(Presentation::Text))
                 .unwrap();
             assert_eq!(Style::Regular, idx.style);
-            assert_eq!(2, idx.idx);
+            let text_idx = if cfg!(font_coretext) { 1 } else { 2 };
+            assert_eq!(text_idx, idx.idx);
         }
         {
             let idx = r

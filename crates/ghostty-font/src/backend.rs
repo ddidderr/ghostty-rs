@@ -1,9 +1,19 @@
 //! Font backend selection. Port of `font/backend.zig`.
 //!
-//! On Linux (and other non-wasm targets) [`OPTIONS`] selects
-//! [`Backend::FontconfigFreetype`] (fontconfig discovery, FreeType rendering,
-//! HarfBuzz shaping). The other variants are kept for fidelity with the Zig
-//! enum and its helper predicates.
+//! [`OPTIONS`] selects the backend for the target (`build.rs` emits the
+//! matching `cfg`s):
+//!
+//! * Linux and other non-Apple, non-wasm targets:
+//!   [`Backend::FontconfigFreetype`] (fontconfig discovery, FreeType
+//!   rendering, HarfBuzz shaping).
+//! * Apple targets: [`Backend::Coretext`] by default. macOS also supports
+//!   [`Backend::CoretextFreetype`], [`Backend::CoretextHarfbuzz`] and
+//!   [`Backend::CoretextNoshape`], selected with the cargo features
+//!   `coretext-freetype`, `coretext-harfbuzz` and `coretext-noshape`
+//!   (Zig: `-Dfont-backend=...`). "There is no scenario that is the default"
+//!   for those; they're only used by people who want to self-compile Ghostty
+//!   and prefer the freetype aesthetic.
+//! * wasm32: [`Backend::WebCanvas`].
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Backend {
@@ -31,7 +41,9 @@ impl Backend {
         // with `wasm_target == .browser`).
         if cfg!(target_arch = "wasm32") {
             Backend::WebCanvas
-        } else if cfg!(target_os = "macos") {
+        } else if cfg!(target_vendor = "apple") {
+            // macOS also supports "coretext_freetype" but there is no
+            // scenario that is the default.
             Backend::Coretext
         } else {
             Backend::FontconfigFreetype
@@ -76,9 +88,43 @@ pub struct Options {
     pub backend: Backend,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(target_vendor = "apple")))]
 pub const OPTIONS: Options = Options {
     backend: Backend::FontconfigFreetype,
+};
+
+#[cfg(all(target_vendor = "apple", feature = "coretext-freetype"))]
+pub const OPTIONS: Options = Options {
+    backend: Backend::CoretextFreetype,
+};
+
+#[cfg(all(
+    target_vendor = "apple",
+    feature = "coretext-harfbuzz",
+    not(feature = "coretext-freetype")
+))]
+pub const OPTIONS: Options = Options {
+    backend: Backend::CoretextHarfbuzz,
+};
+
+#[cfg(all(
+    target_vendor = "apple",
+    feature = "coretext-noshape",
+    not(feature = "coretext-freetype"),
+    not(feature = "coretext-harfbuzz")
+))]
+pub const OPTIONS: Options = Options {
+    backend: Backend::CoretextNoshape,
+};
+
+#[cfg(all(
+    target_vendor = "apple",
+    not(feature = "coretext-freetype"),
+    not(feature = "coretext-harfbuzz"),
+    not(feature = "coretext-noshape")
+))]
+pub const OPTIONS: Options = Options {
+    backend: Backend::Coretext,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -99,7 +145,44 @@ mod tests {
         assert!(!b.has_coretext());
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn coretext_capabilities() {
+        let b = Backend::Coretext;
+        assert!(!b.has_freetype());
+        assert!(!b.has_fontconfig());
+        assert!(!b.has_harfbuzz());
+        assert!(b.has_coretext());
+
+        let b = Backend::CoretextFreetype;
+        assert!(b.has_freetype());
+        assert!(!b.has_fontconfig());
+        assert!(b.has_harfbuzz());
+        assert!(b.has_coretext());
+
+        let b = Backend::CoretextHarfbuzz;
+        assert!(!b.has_freetype());
+        assert!(b.has_harfbuzz());
+        assert!(b.has_coretext());
+
+        let b = Backend::CoretextNoshape;
+        assert!(!b.has_freetype());
+        assert!(!b.has_harfbuzz());
+        assert!(b.has_coretext());
+    }
+
+    #[test]
+    fn default_backend_per_target() {
+        let b = Backend::default_for_target();
+        if cfg!(target_vendor = "apple") {
+            assert_eq!(b, Backend::Coretext);
+        } else if cfg!(target_arch = "wasm32") {
+            assert_eq!(b, Backend::WebCanvas);
+        } else {
+            assert_eq!(b, Backend::FontconfigFreetype);
+        }
+    }
+
+    #[cfg(all(not(target_arch = "wasm32"), not(target_vendor = "apple")))]
     #[test]
     fn linux_backend_capabilities() {
         let b = OPTIONS.backend;

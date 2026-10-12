@@ -9,6 +9,7 @@ use crate::{
     config::OptionAsAlt,
     function_keys::{self, CursorMode, KeypadMode, ModifyKeys},
     key::{self, Key, KeyEvent},
+    key_mods::ModSide,
     kitty::{self as kitty_table, Entry as KittyEntry},
 };
 
@@ -266,8 +267,16 @@ fn kitty<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Resu
             // Determine if the Alt modifier should be treated as an actual
             // modifier (in which case it prevents associated text) or as
             // the macOS Option key, which does not prevent associated text.
-            // (Non-macOS: always true.)
-            let alt_prevents_text = true;
+            let alt_prevents_text = if crate::platform::is_macos() {
+                match opts.macos_option_as_alt {
+                    OptionAsAlt::Left => all_mods.sides.alt == ModSide::Left,
+                    OptionAsAlt::Right => all_mods.sides.alt == ModSide::Right,
+                    OptionAsAlt::True => true,
+                    OptionAsAlt::False => false,
+                }
+            } else {
+                true
+            };
 
             if !seq.mods.prevents_text(alt_prevents_text) {
                 seq.text = event.utf8;
@@ -373,7 +382,21 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
         if let (Some(codepoint), None) = (it.next().map(u32::from), it.clone().next()) {
             // The mods we encode for this are just the binding mods (shift, ctrl,
             // super, alt unless it is actually option).
-            let mods = event.mods.binding();
+            let mods = {
+                let mut mods_binding = event.mods.binding();
+                if crate::platform::is_darwin() {
+                    let keep_alt = match opts.macos_option_as_alt {
+                        OptionAsAlt::False => false,
+                        OptionAsAlt::True => true,
+                        OptionAsAlt::Left => event.mods.sides.alt == ModSide::Left,
+                        OptionAsAlt::Right => event.mods.sides.alt == ModSide::Right,
+                    };
+                    if !keep_alt {
+                        mods_binding.alt = false;
+                    }
+                }
+                mods_binding
+            };
 
             // This copies xterm's `ModifyOtherKeys` function that returns
             // whether modify other keys should be encoded for the given
@@ -465,8 +488,18 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
         return writer.write_all(&[0x1B, byte]);
     }
 
-    // (On macOS, command+keys do not encode text. On Linux we continue to
-    // encode text because it is typical.)
+    // If we are on macOS, command+keys do not encode text. It isn't
+    // typical for command+keys on macOS to ever encode text. They
+    // don't in native text inputs (i.e. TextEdit) and they also don't
+    // in other native terminals (Terminal.app officially but also
+    // iTerm2).
+    //
+    // For Linux, we continue to encode text because it is typical.
+    // For example on Gnome Console Super+b will encode a "b" character
+    // with legacy encoding.
+    if crate::platform::is_macos() && all_mods.super_ {
+        return Ok(());
+    }
 
     writer.write_all(utf8.as_bytes())
 }
@@ -474,7 +507,7 @@ fn legacy<W: Write>(writer: &mut W, event: &KeyEvent, opts: &Options) -> io::Res
 fn legacy_alt_prefix(
     event: &KeyEvent,
     binding_mods: key::Mods,
-    _mods: key::Mods,
+    mods: key::Mods,
     opts: &Options,
 ) -> Option<u8> {
     // This only takes effect with alt pressed
@@ -482,7 +515,25 @@ fn legacy_alt_prefix(
         return None;
     }
 
-    // (macOS option-as-alt handling does not apply on Linux.)
+    // On macOS, we only handle option like alt in certain
+    // circumstances. Otherwise, macOS does a unicode translation
+    // and we allow that to happen.
+    if crate::platform::is_macos() {
+        match opts.macos_option_as_alt {
+            OptionAsAlt::False => return None,
+            OptionAsAlt::Left => {
+                if mods.sides.alt == ModSide::Right {
+                    return None;
+                }
+            }
+            OptionAsAlt::Right => {
+                if mods.sides.alt == ModSide::Left {
+                    return None;
+                }
+            }
+            OptionAsAlt::True => {}
+        }
+    }
 
     // Otherwise, we require utf8 to already have the byte represented.
     let utf8 = event.utf8.as_bytes();
@@ -3157,5 +3208,218 @@ mod tests {
             ctrl_seq(Key::KeyC, "с", 'c' as u32, right_ctrl()),
             Some(0x03)
         );
+    }
+}
+
+/// The Zig tests that only run on Darwin (`isDarwin()` / `os.tag == .macos`
+/// skip otherwise). They run on every host here by overriding the platform
+/// predicates (see [`crate::platform`]).
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod macos_tests {
+    use super::*;
+    use crate::{Mods, platform::with_darwin};
+
+    fn enc_legacy(ev: &KeyEvent, opts: &Options) -> Vec<u8> {
+        let mut w = Vec::new();
+        legacy(&mut w, ev, opts).unwrap();
+        w
+    }
+
+    fn enc_kitty(ev: &KeyEvent, opts: &Options) -> Vec<u8> {
+        let mut w = Vec::new();
+        kitty(&mut w, ev, opts).unwrap();
+        w
+    }
+
+    fn kitty_opts(option_as_alt: OptionAsAlt) -> Options {
+        Options {
+            kitty_flags: KittyFlags {
+                disambiguate: true,
+                report_all: true,
+                report_alternates: true,
+                report_associated: true,
+                ..KittyFlags::DISABLED
+            },
+            macos_option_as_alt: option_as_alt,
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn kitty_report_associated_with_alt_text_on_macos_with_option() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::KeyW,
+                mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+                utf8: "∑",
+                unshifted_codepoint: 119,
+                ..KeyEvent::default()
+            };
+            assert_eq!(
+                enc_kitty(&ev, &kitty_opts(OptionAsAlt::False)),
+                "\x1b[119;3;8721u".as_bytes()
+            );
+        });
+    }
+
+    #[test]
+    fn kitty_report_associated_with_alt_text_on_macos_with_alt() {
+        with_darwin(true, || {
+            // With Alt modifier
+            let ev = KeyEvent {
+                key: Key::KeyW,
+                mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+                utf8: "∑",
+                unshifted_codepoint: 119,
+                ..KeyEvent::default()
+            };
+            assert_eq!(
+                enc_kitty(&ev, &kitty_opts(OptionAsAlt::True)),
+                b"\x1b[119;3u"
+            );
+
+            // Without Alt modifier
+            let ev = KeyEvent {
+                key: Key::KeyW,
+                utf8: "∑",
+                unshifted_codepoint: 119,
+                ..KeyEvent::default()
+            };
+            assert_eq!(
+                enc_kitty(&ev, &kitty_opts(OptionAsAlt::True)),
+                "\x1b[119;;8721u".as_bytes()
+            );
+        });
+    }
+
+    #[test]
+    fn legacy_alt_x_macos() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::KeyC,
+                utf8: "≈",
+                unshifted_codepoint: u32::from('c'),
+                mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+                ..KeyEvent::default()
+            };
+            let opts = Options {
+                alt_esc_prefix: true,
+                macos_option_as_alt: OptionAsAlt::True,
+                ..Options::default()
+            };
+            assert_eq!(enc_legacy(&ev, &opts), b"\x1bc");
+
+            // With option-as-alt off, macOS keeps the unicode translation.
+            let opts = Options {
+                macos_option_as_alt: OptionAsAlt::False,
+                ..opts
+            };
+            assert_eq!(enc_legacy(&ev, &opts), "≈".as_bytes());
+        });
+    }
+
+    #[test]
+    fn legacy_shift_alt_period_macos() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::Period,
+                utf8: ">",
+                unshifted_codepoint: u32::from('.'),
+                mods: Mods {
+                    alt: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+                ..KeyEvent::default()
+            };
+            let opts = Options {
+                alt_esc_prefix: true,
+                macos_option_as_alt: OptionAsAlt::True,
+                ..Options::default()
+            };
+            assert_eq!(enc_legacy(&ev, &opts), b"\x1b>");
+        });
+    }
+
+    #[test]
+    fn legacy_alt_digit_with_modify_other_state_2_and_macos_option_as_alt_false() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::Digit8,
+                mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+                consumed_mods: Mods {
+                    alt: true,
+                    ..Mods::default()
+                },
+                // common translation of option+8 with European keyboard layouts
+                utf8: "[",
+                ..KeyEvent::default()
+            };
+            let opts = Options {
+                modify_other_keys_state_2: true,
+                macos_option_as_alt: OptionAsAlt::False,
+                ..Options::default()
+            };
+            assert_eq!(enc_legacy(&ev, &opts), b"[");
+        });
+    }
+
+    #[test]
+    fn legacy_super_only_on_macos_with_text() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::KeyB,
+                utf8: "b",
+                mods: Mods {
+                    super_: true,
+                    ..Mods::default()
+                },
+                ..KeyEvent::default()
+            };
+            assert_eq!(enc_legacy(&ev, &Options::default()), b"");
+        });
+        // On other platforms the text is still encoded.
+        with_darwin(false, || {
+            let ev = KeyEvent {
+                key: Key::KeyB,
+                utf8: "b",
+                mods: Mods {
+                    super_: true,
+                    ..Mods::default()
+                },
+                ..KeyEvent::default()
+            };
+            assert_eq!(enc_legacy(&ev, &Options::default()), b"b");
+        });
+    }
+
+    #[test]
+    fn legacy_super_and_other_mods_on_macos_with_text() {
+        with_darwin(true, || {
+            let ev = KeyEvent {
+                key: Key::KeyB,
+                utf8: "B",
+                mods: Mods {
+                    super_: true,
+                    shift: true,
+                    ..Mods::default()
+                },
+                ..KeyEvent::default()
+            };
+            assert_eq!(enc_legacy(&ev, &Options::default()), b"");
+        });
     }
 }

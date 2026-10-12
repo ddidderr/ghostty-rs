@@ -25,9 +25,7 @@ pub enum OpenUrlKind {
 /// apprt for Ghostty, you should consider doing something special-cased
 /// for your platform.
 pub fn open(kind: OpenUrlKind, url: &str) -> io::Result<()> {
-    let _ = kind;
-    let mut cmd = Command::new("xdg-open");
-    cmd.arg(url);
+    let mut cmd = open_command(kind, url)?;
 
     // Pipe stdout/stderr so we can collect output from the command.
     cmd.stdin(Stdio::null())
@@ -57,6 +55,52 @@ pub fn open(kind: OpenUrlKind, url: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// Build the platform's "open URL" command (Zig `open`'s switch over
+/// `builtin.os.tag`).
+#[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)]
+fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+    let _ = kind;
+    let mut cmd = Command::new("rundll32");
+    cmd.args(["url.dll,FileProtocolHandler", url]);
+    Ok(cmd)
+}
+
+/// Linux and the BSDs use `xdg-open`.
+#[cfg(not(any(windows, target_os = "macos", target_os = "ios")))]
+#[allow(clippy::unnecessary_wraps)]
+fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+    let _ = kind;
+    let mut cmd = Command::new("xdg-open");
+    cmd.arg(url);
+    Ok(cmd)
+}
+
+/// macOS uses `open` (`open -t` for text files).
+#[cfg(target_os = "macos")]
+#[allow(clippy::unnecessary_wraps)]
+fn open_command(kind: OpenUrlKind, url: &str) -> io::Result<Command> {
+    let mut cmd = Command::new("open");
+    cmd.args(macos_open_args(kind, url));
+    Ok(cmd)
+}
+
+/// Arguments of the macOS `open` command for a URL kind.
+#[cfg_attr(not(any(target_os = "macos", all(test, unix))), allow(dead_code))]
+fn macos_open_args(kind: OpenUrlKind, url: &str) -> Vec<&str> {
+    match kind {
+        OpenUrlKind::Text => vec!["-t", url],
+        OpenUrlKind::Html | OpenUrlKind::Unknown => vec![url],
+    }
+}
+
+/// iOS cannot spawn processes (`error.Unimplemented`).
+#[cfg(target_os = "ios")]
+#[allow(clippy::unnecessary_wraps)]
+fn open_command(_kind: OpenUrlKind, _url: &str) -> io::Result<Command> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
+}
+
 fn open_thread(child: std::process::Child) {
     // 50 KiB is the default value used by std.process.Child.run and should
     // be enough to get the output we care about.
@@ -78,10 +122,18 @@ fn open_thread(child: std::process::Child) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
+    #[test]
+    fn macos_open_command_args() {
+        assert_eq!(macos_open_args(OpenUrlKind::Text, "/a"), ["-t", "/a"]);
+        assert_eq!(macos_open_args(OpenUrlKind::Html, "u"), ["u"]);
+        assert_eq!(macos_open_args(OpenUrlKind::Unknown, "u"), ["u"]);
+    }
+
+    #[cfg(not(target_vendor = "apple"))]
     #[test]
     fn open_reports_spawn_failure_quickly() {
         // With an empty PATH, xdg-open can't be found; Zig detects this

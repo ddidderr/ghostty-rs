@@ -160,14 +160,17 @@ pub enum Wrap {
 }
 
 /// Primitive types we support drawing (same subset as Metal).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u32)]
-pub enum Primitive {
-    Point = glow::POINTS,
-    Line = glow::LINES,
-    LineStrip = glow::LINE_STRIP,
-    Triangle = glow::TRIANGLES,
-    TriangleStrip = glow::TRIANGLE_STRIP,
+pub use crate::graphics_api::Primitive;
+
+/// The GL draw mode of a [`Primitive`].
+fn gl_mode(mode: Primitive) -> u32 {
+    match mode {
+        Primitive::Point => glow::POINTS,
+        Primitive::Line => glow::LINES,
+        Primitive::LineStrip => glow::LINE_STRIP,
+        Primitive::Triangle => glow::TRIANGLES,
+        Primitive::TriangleStrip => glow::TRIANGLE_STRIP,
+    }
 }
 
 /// Framebuffer binding targets.
@@ -341,7 +344,7 @@ impl Gl {
         // SAFETY: see module docs; vertex data comes from bound GL buffers.
         unsafe {
             self.ctx
-                .draw_arrays_instanced(mode as u32, first, count, instances);
+                .draw_arrays_instanced(gl_mode(mode), first, count, instances);
         }
         self.get_error()
     }

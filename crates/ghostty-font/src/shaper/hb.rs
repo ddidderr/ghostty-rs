@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 
 use harfbuzz_sys as sys;
 
-use crate::face::freetype::HbFont;
+use crate::face::HbFont;
 
 /// A HarfBuzz feature (`hb_feature_t`) applied globally.
 pub type Feature = sys::hb_feature_t;

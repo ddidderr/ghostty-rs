@@ -1,20 +1,29 @@
 //! Shaping types shared by all shapers. Port of `font/shape.zig`.
 //!
 //! The shaper implementation for the Linux backend is HarfBuzz
-//! ([`crate::shaper::harfbuzz::Shaper`]).
+//! (`crate::shaper::harfbuzz::Shaper`), for the macOS backend CoreText
+//! (`crate::shaper::coretext::Shaper`).
 
+#[cfg(font_coretext_shaper)]
+pub use crate::shaper::coretext;
+#[cfg(font_coretext_shaper)]
+pub use crate::shaper::coretext::{ShapeError, ShapeRunError, Shaper};
 pub use crate::shaper::feature::{DEFAULT_FEATURES, Feature, FeatureList};
+#[cfg(font_harfbuzz)]
+pub use crate::shaper::harfbuzz;
 /// Shaper implementation for our compile options (backend
-/// `fontconfig_freetype` => HarfBuzz).
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::shaper::harfbuzz::Shaper;
+/// `fontconfig_freetype`, `coretext_freetype`, `coretext_harfbuzz` =>
+/// HarfBuzz; `coretext` => CoreText; `coretext_noshape` => no-op).
+#[cfg(font_harfbuzz)]
+pub use crate::shaper::harfbuzz::{ShapeError, ShapeRunError, Shaper};
+#[cfg(font_noshape)]
+pub use crate::shaper::noop::{ShapeError, ShapeRunError, Shaper};
 /// Shaper implementation for the `web_canvas` backend (wasm32).
 #[cfg(target_arch = "wasm32")]
 pub use crate::shaper::web_canvas::Shaper;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::shaper::{
     cache::Cache,
-    harfbuzz,
     noop,
     run::{RunIterator, RunIteratorHook, RunOptions, TextRun},
 };

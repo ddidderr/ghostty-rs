@@ -103,12 +103,42 @@ fn is_mouse_mode_override_state(mods: Mods) -> bool {
 /// cause a rectangle select.
 #[must_use]
 pub fn is_rectangle_select_state(mods: Mods) -> bool {
-    mods.ctrl_or_super() && mods.alt
+    is_rectangle_select_state_for(mods, ghostty_input::platform::is_darwin())
+}
+
+/// [`is_rectangle_select_state`] for an explicit platform (Zig picks with
+/// `builtin.target.os.tag.isDarwin()` at comptime): on Darwin option alone
+/// selects a rectangle, elsewhere it is ctrl+alt.
+#[must_use]
+pub fn is_rectangle_select_state_for(mods: Mods, darwin: bool) -> bool {
+    if darwin {
+        mods.alt
+    } else {
+        mods.ctrl_or_super() && mods.alt
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rectangle_select_state_per_platform() {
+        let alt = Mods {
+            alt: true,
+            ..Mods::default()
+        };
+        let ctrl_alt = Mods {
+            alt: true,
+            ctrl: true,
+            ..Mods::default()
+        };
+        // macOS: alt alone.
+        assert!(is_rectangle_select_state_for(alt, true));
+        // Elsewhere: ctrl+alt.
+        assert!(!is_rectangle_select_state_for(alt, false));
+        assert!(is_rectangle_select_state_for(ctrl_alt, false));
+    }
 
     fn m(
         physical_key: Key,

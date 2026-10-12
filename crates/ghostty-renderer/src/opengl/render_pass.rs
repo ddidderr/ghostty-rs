@@ -1,23 +1,14 @@
 //! Wrapper for handling render passes (`opengl/RenderPass.zig`).
 use super::{
-    gl::{Attachment as GlAttachment, BufferTarget, FramebufferTarget, Gl, Primitive, RawBuffer},
-    pipeline::Pipeline,
-    sampler::Sampler,
-    target::Target,
-    texture::Texture,
+    OpenGL,
+    gl::{Attachment as GlAttachment, BufferTarget, FramebufferTarget, Gl},
 };
 
 /// What a color attachment renders into.
-pub enum AttachmentTarget<'a> {
-    Texture(&'a Texture),
-    Target(&'a Target),
-}
+pub type AttachmentTarget<'a> = crate::graphics_api::AttachmentTarget<'a, OpenGL>;
 
 /// Describes a color attachment.
-pub struct Attachment<'a> {
-    pub target: AttachmentTarget<'a>,
-    pub clear_color: Option<[f32; 4]>,
-}
+pub type Attachment<'a> = crate::graphics_api::Attachment<'a, OpenGL>;
 
 /// Options for beginning a render pass.
 #[derive(Clone, Copy)]
@@ -27,32 +18,10 @@ pub struct Options<'a> {
 }
 
 /// Describes the draw call for a step.
-#[derive(Debug, Clone, Copy)]
-pub struct Draw {
-    pub ty: Primitive,
-    pub vertex_count: usize,
-    pub instance_count: usize,
-}
-
-impl Draw {
-    pub fn new(ty: Primitive, vertex_count: usize) -> Self {
-        Draw {
-            ty,
-            vertex_count,
-            instance_count: 1,
-        }
-    }
-}
+pub use crate::graphics_api::Draw;
 
 /// Describes a step in a render pass.
-pub struct Step<'a> {
-    pub pipeline: &'a Pipeline,
-    pub uniforms: Option<RawBuffer>,
-    pub buffers: &'a [Option<RawBuffer>],
-    pub textures: &'a [Option<&'a Texture>],
-    pub samplers: &'a [Option<&'a Sampler>],
-    pub draw: Draw,
-}
+pub type Step<'a> = crate::graphics_api::Step<'a, OpenGL>;
 
 pub struct RenderPass<'a> {
     gl: Gl,

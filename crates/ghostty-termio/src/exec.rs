@@ -37,7 +37,7 @@ use ghostty_renderer::size::{GridSize, ScreenSize};
 use ghostty_terminal::terminal::Terminal;
 use rustix::{
     event::{PollFd, PollFlags},
-    process::{Pid, PidfdFlags, Signal, WaitOptions},
+    process::{Pid, Signal, WaitOptions},
 };
 
 use crate::{
@@ -254,9 +254,17 @@ impl Exec {
         set_nonblocking(&read_fd);
 
         // Start our read thread
-        let read_thread = std::thread::Builder::new()
-            .name("io-reader".into())
-            .spawn(move || read_thread_main(&read_fd, &output, &quit_read))?;
+        // The read thread shares our crash context (surface dimensions).
+        let crash_dims = ghostty_crash::current_dims();
+        let read_thread =
+            std::thread::Builder::new()
+                .name("io-reader".into())
+                .spawn(move || {
+                    // Setup our crash metadata
+                    let _crash =
+                        ghostty_crash::ThreadGuard::new(ghostty_crash::ThreadType::Io, crash_dims);
+                    read_thread_main(&read_fd, &output, &quit_read);
+                })?;
 
         Ok(ThreadData {
             start,
@@ -339,7 +347,9 @@ impl Exec {
 
 /// How we notice the child exiting.
 enum ProcessWatch {
-    /// A pidfd that becomes readable when the process exits.
+    /// A pidfd that becomes readable when the process exits (Linux only; no
+    /// equivalent is used on Darwin where libxev uses kqueue, so we poll).
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     PidFd(OwnedFd, i32),
     /// Fallback: `waitpid(WNOHANG)` every [`PROCESS_POLL_MS`].
     Poll(i32, Instant),
@@ -354,12 +364,18 @@ impl ProcessWatch {
         let Some(p) = Pid::from_raw(pid) else {
             return ProcessWatch::Done;
         };
-        match rustix::process::pidfd_open(p, PidfdFlags::empty()) {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        match rustix::process::pidfd_open(p, rustix::process::PidfdFlags::empty()) {
             Ok(fd) => ProcessWatch::PidFd(fd, pid),
             Err(err) => {
                 log::warn!("pidfd_open failed ({err}), falling back to polling waitpid");
                 ProcessWatch::Poll(pid, Instant::now() + Duration::from_millis(PROCESS_POLL_MS))
             }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let _ = p;
+            ProcessWatch::Poll(pid, Instant::now() + Duration::from_millis(PROCESS_POLL_MS))
         }
     }
 }
@@ -416,6 +432,7 @@ impl ThreadData {
     /// An fd that becomes readable when the child exited.
     pub fn process_fd(&self) -> Option<BorrowedFd<'_>> {
         match &self.watch {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
             ProcessWatch::PidFd(fd, _) => Some(fd.as_fd()),
             _ => None,
         }
@@ -513,7 +530,9 @@ impl ThreadData {
     /// reap the child and report the exit.
     pub fn on_process_ready(&mut self, cmd_pid: Option<i32>) {
         let pid = match &self.watch {
-            ProcessWatch::PidFd(_, pid) | ProcessWatch::Poll(pid, _) => *pid,
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            ProcessWatch::PidFd(_, pid) => *pid,
+            ProcessWatch::Poll(pid, _) => *pid,
             _ => return,
         };
         let _ = cmd_pid;
@@ -802,12 +821,26 @@ impl Subprocess {
             };
             env.insert("TERMINFO", terminfo);
         } else {
+            if cfg!(target_vendor = "apple") {
+                log::warn!("ghostty terminfo not found, using xterm-256color");
+                log::warn!("the terminfo SHOULD exist on macos, please ensure");
+                log::warn!("you're using a valid app bundle.");
+            }
+
             env.insert("TERM", "xterm-256color");
             env.insert("COLORTERM", "truecolor");
         }
 
         // Add our binary to the path if we can find it.
         add_ghostty_path(&mut env);
+
+        // On macOS, export additional data directories from our
+        // application bundle.
+        if cfg!(target_vendor = "apple")
+            && let Some(resources_dir) = &cfg.resources_dir
+        {
+            darwin_bundle_env(&mut env, resources_dir);
+        }
 
         // Set environment variables used by some programs (such as neovim) to detect
         // which terminal emulator and version they're running under.
@@ -1189,6 +1222,34 @@ fn add_ghostty_path(env: &mut EnvMap) {
     }
 }
 
+/// macOS: export additional data directories from our application bundle
+/// (`XDG_DATA_DIRS` and `MANPATH`).
+pub fn darwin_bundle_env(env: &mut EnvMap, resources_dir: &str) {
+    let xdg_data_dir_key = "XDG_DATA_DIRS";
+    let data_dir = format!("{resources_dir}/..");
+    let current = env.get(xdg_data_dir_key).map_or_else(
+        || "/usr/local/share:/usr/share".to_owned(),
+        |v| v.to_string_lossy().into_owned(),
+    );
+    env.insert(
+        xdg_data_dir_key,
+        ghostty_os::append_env(&current, &data_dir),
+    );
+
+    let manpath_key = "MANPATH";
+    let man_dir = format!("{resources_dir}/../man");
+    // Always append with colon in front, as it mean that if
+    // `MANPATH` is empty, then it should be treated as an extra
+    // path instead of overriding all paths set by OS.
+    let current = env
+        .get(manpath_key)
+        .map_or_else(String::new, |v| v.to_string_lossy().into_owned());
+    env.insert(
+        manpath_key,
+        ghostty_os::append_env_always(&current, &man_dir),
+    );
+}
+
 /// Kill the underlying subprocess. This sends a SIGHUP to the child
 /// process group. This also waits for the command to exit.
 fn kill_command(command: &Command) -> Result<(), Error> {
@@ -1216,6 +1277,10 @@ fn kill_pid(pid_raw: i32) -> Result<(), Error> {
     loop {
         match rustix::process::kill_process_group(pgid, Signal::HUP) {
             Ok(()) => log::debug!("process group killed pgid={}", pgid.as_raw_nonzero()),
+            // EPERM is expected on Darwin and ignored.
+            Err(rustix::io::Errno::PERM) if cfg!(target_vendor = "apple") => {
+                log::debug!("killpg failed with EPERM, expected on Darwin and ignoring");
+            }
             Err(err) => {
                 log::warn!(
                     "error killing process group pgid={} err={err}",
@@ -1286,9 +1351,34 @@ fn getpgid(pid: Pid) -> Option<Pid> {
 /// configured command. This isn't as straightforward as it seems since
 /// we deal with shell-wrapping, etc.
 ///
-/// (The macOS `login(1)` branch of the Zig function is not ported, Linux
-/// only; neither is the Windows `cmd.exe` branch.)
+/// On macOS the command is wrapped in `login(1)` (see
+/// [`exec_command_with`]).
 pub fn exec_command(command: &ConfigCommand) -> Vec<String> {
+    #[cfg(unix)]
+    let passwd = ghostty_os::passwd::get;
+    #[cfg(not(unix))]
+    let passwd = || Err(std::io::Error::from(std::io::ErrorKind::Unsupported));
+    exec_command_with(command, cfg!(target_vendor = "apple"), &passwd)
+}
+
+/// [`exec_command`] with the platform and passwd lookup injected (Zig takes
+/// the passwd package as a comptime argument and `isDarwin()` at comptime),
+/// so the macOS `login(1)` logic is testable on every platform.
+///
+/// The `passwd` function is used by macOS to determine the username and
+/// home directory for the login shell. It is unused on other platforms.
+pub fn exec_command_with(
+    command: &ConfigCommand,
+    darwin: bool,
+    passwd: &dyn Fn() -> std::io::Result<ghostty_os::passwd::Entry>,
+) -> Vec<String> {
+    // If we're on macOS, we have to use `login(1)` to get all of
+    // the proper environment variables set, a login shell, and proper
+    // hushlogin behavior.
+    if darwin && let Some(args) = darwin_login_command(command, passwd) {
+        return args;
+    }
+
     match command {
         // We need to clone the command since there's no guarantee the config remains valid.
         ConfigCommand::Direct(args) => args.clone(),
@@ -1312,6 +1402,124 @@ pub fn exec_command(command: &ConfigCommand) -> Vec<String> {
     }
 }
 
+/// The macOS `login(1)` wrapper; `None` falls back to POSIX behavior (Zig
+/// `break :darwin`).
+fn darwin_login_command(
+    command: &ConfigCommand,
+    passwd: &dyn Fn() -> std::io::Result<ghostty_os::passwd::Entry>,
+) -> Option<Vec<String>> {
+    let passwd = match passwd() {
+        Ok(p) => p,
+        Err(err) => {
+            log::warn!("failed to read passwd, not using a login shell err={err}");
+            return None;
+        }
+    };
+
+    let Some(username) = passwd.name else {
+        log::warn!("failed to get username, not using a login shell");
+        return None;
+    };
+
+    let hush = match &passwd.home {
+        Some(home) => {
+            if std::fs::read_dir(home).is_err() {
+                log::warn!("failed to open home dir, not checking for hushlogin");
+                false
+            } else {
+                std::path::Path::new(home).join(".hushlogin").exists()
+            }
+        }
+        None => false,
+    };
+
+    // If we made it this far we're going to start building
+    // the actual command.
+    //
+    // This capacity is chosen based on what we'd need to
+    // execute a shell command (very common). We can/will
+    // grow if necessary for a longer command (uncommon).
+    let mut args: Vec<String> = Vec::with_capacity(9);
+
+    // The reason for executing login this way is unclear. This
+    // comment will attempt to explain but prepare for a truly
+    // unhinged reality.
+    //
+    // The first major issue is that on macOS, a lot of users
+    // put shell configurations in ~/.bash_profile instead of
+    // ~/.bashrc (or equivalent for another shell). This file is only
+    // loaded for a login shell so macOS users expect all their terminals
+    // to be login shells. No other platform behaves this way and its
+    // totally braindead but somehow the entire dev community on
+    // macOS has cargo culted their way to this reality so we have to
+    // do it...
+    //
+    // To get a login shell, you COULD just prepend argv0 with a `-`
+    // but that doesn't fully work because `getlogin()` C API will
+    // return the wrong value, SHELL won't be set, and various
+    // other login behaviors that macOS users expect.
+    //
+    // The proper way is to use `login(1)`. But login(1) forces
+    // the working directory to change to the home directory,
+    // which we may not want. If we specify "-l" then we can avoid
+    // this behavior but now the shell isn't a login shell.
+    //
+    // There is another issue: `login(1)` on macOS 14.3 and earlier
+    // checked for ".hushlogin" in the working directory. This means
+    // that if we specify "-l" then we won't get hushlogin honored
+    // if its in the home directory (which is standard). To get
+    // around this, we check for hushlogin ourselves and if present
+    // specify the "-q" flag to login(1).
+    //
+    // So to get all the behaviors we want, we specify "-l" but
+    // execute "bash" (which is built-in to macOS). We then use
+    // the bash builtin "exec" to replace the process with a login
+    // shell ("-l" on exec) with the command we really want.
+    //
+    // We use "bash" instead of other shells that ship with macOS
+    // because as of macOS Sonoma, we found with a microbenchmark
+    // that bash can `exec` into the desired command ~2x faster
+    // than zsh.
+    //
+    // To figure out a lot of this logic I read the login.c
+    // source code in the OSS distribution Apple provides for
+    // macOS.
+    //
+    // Awesome.
+    args.push("/usr/bin/login".into());
+    if hush {
+        args.push("-q".into());
+    }
+    args.push("-flp".into());
+    args.push(username);
+
+    match command {
+        // Direct args can be passed directly to login, since
+        // login uses execvp we don't need to worry about PATH
+        // searching.
+        ConfigCommand::Direct(v) => args.extend(v.iter().cloned()),
+
+        ConfigCommand::Shell(v) => {
+            // Use "exec" to replace the bash process with
+            // our intended command so we don't have a parent
+            // process hanging around.
+            let cmd = format!("exec -l {v}");
+
+            // We execute bash with "--noprofile --norc" so that it doesn't
+            // load startup files so that (1) our shell integration doesn't
+            // break and (2) user configuration doesn't mess this process
+            // up.
+            args.push("/bin/bash".into());
+            args.push("--noprofile".into());
+            args.push("--norc".into());
+            args.push("-c".into());
+            args.push(cmd);
+        }
+    }
+
+    Some(args)
+}
+
 impl Drop for ThreadData {
     fn drop(&mut self) {
         // Join the reader if thread_exit wasn't called (shouldn't happen).
@@ -1328,10 +1536,95 @@ impl Drop for ThreadData {
 mod tests {
     use super::*;
 
+    fn pw(name: Option<&str>) -> impl Fn() -> std::io::Result<ghostty_os::passwd::Entry> {
+        let name = name.map(str::to_owned);
+        move || {
+            Ok(ghostty_os::passwd::Entry {
+                name: name.clone(),
+                ..Default::default()
+            })
+        }
+    }
+
+    #[test]
+    fn exec_command_darwin_shell_command() {
+        let result = exec_command_with(
+            &ConfigCommand::Shell("foo bar baz".into()),
+            true,
+            &pw(Some("testuser")),
+        );
+        assert_eq!(
+            result,
+            [
+                "/usr/bin/login",
+                "-flp",
+                "testuser",
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                "exec -l foo bar baz"
+            ]
+        );
+    }
+
+    #[test]
+    fn exec_command_darwin_direct_command() {
+        let result = exec_command_with(
+            &ConfigCommand::Direct(vec!["foo".into(), "bar baz".into()]),
+            true,
+            &pw(Some("testuser")),
+        );
+        assert_eq!(
+            result,
+            ["/usr/bin/login", "-flp", "testuser", "foo", "bar baz"]
+        );
+    }
+
+    #[test]
+    fn exec_command_darwin_hushlogin() {
+        let dir = std::env::temp_dir().join(format!("ghostty-hush-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".hushlogin"), "").unwrap();
+        let home = dir.to_str().unwrap().to_owned();
+        let passwd = move || {
+            Ok(ghostty_os::passwd::Entry {
+                name: Some("u".into()),
+                home: Some(home.clone()),
+                ..Default::default()
+            })
+        };
+        let result = exec_command_with(&ConfigCommand::Direct(vec!["x".into()]), true, &passwd);
+        assert_eq!(result, ["/usr/bin/login", "-q", "-flp", "u", "x"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn exec_command_darwin_falls_back_without_username() {
+        // Empty passwd entry means we can't construct a macOS login
+        // command and falls back to POSIX behavior.
+        let result =
+            exec_command_with(&ConfigCommand::Shell("foo bar baz".into()), true, &pw(None));
+        assert_eq!(result, ["/bin/sh", "-c", "foo bar baz"]);
+
+        // Failed passwd entry also falls back.
+        let fail = || Err(std::io::Error::other("fail"));
+        let result = exec_command_with(
+            &ConfigCommand::Direct(vec!["foo".into(), "bar baz".into()]),
+            true,
+            &fail,
+        );
+        assert_eq!(result, ["foo", "bar baz"]);
+    }
+
     #[test]
     fn exec_command_shell_command() {
         // execCommand: shell command, empty passwd
-        let result = exec_command(&ConfigCommand::Shell("foo bar baz".into()));
+        let result = exec_command_with(
+            &ConfigCommand::Shell("foo bar baz".into()),
+            false,
+            &pw(None),
+        );
         assert_eq!(result, ["/bin/sh", "-c", "foo bar baz"]);
     }
 

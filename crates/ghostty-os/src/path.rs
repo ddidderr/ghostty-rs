@@ -1,4 +1,16 @@
-use std::{io, os::unix::fs::PermissionsExt};
+use std::io;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+/// `std.fs.path.delimiter` / `sep`.
+#[cfg(windows)]
+const DELIMITER: char = ';';
+#[cfg(not(windows))]
+const DELIMITER: char = ':';
+#[cfg(windows)]
+const SEP: char = '\\';
+#[cfg(not(windows))]
+const SEP: char = '/';
 
 /// Equivalent of `std.fs.max_path_bytes` on Linux.
 const MAX_PATH_BYTES: usize = 4096;
@@ -27,14 +39,14 @@ pub fn expand(cmd: &str) -> Result<Option<String>, Error> {
     let path_var = path_var.to_string_lossy();
 
     let mut seen_eacces = false;
-    for search_path in path_var.split(':').filter(|s| !s.is_empty()) {
+    for search_path in path_var.split(DELIMITER).filter(|s| !s.is_empty()) {
         // We need enough space in our path buffer to store this
         let path_len = search_path.len() + cmd.len() + 1;
         if MAX_PATH_BYTES < path_len {
             return Err(Error::PathTooLong);
         }
 
-        let full_path = format!("{search_path}/{cmd}");
+        let full_path = format!("{search_path}{SEP}{cmd}");
 
         // Stat it
         let f = match std::fs::File::open(&full_path) {
@@ -51,7 +63,7 @@ pub fn expand(cmd: &str) -> Result<Option<String>, Error> {
             },
         };
         let meta = f.metadata()?;
-        if !meta.is_dir() && is_executable(meta.permissions().mode()) {
+        if !meta.is_dir() && is_executable(&meta) {
             return Ok(Some(full_path));
         }
     }
@@ -63,8 +75,14 @@ pub fn expand(cmd: &str) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-fn is_executable(mode: u32) -> bool {
-    mode & 0o0111 != 0
+#[cfg(unix)]
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    meta.permissions().mode() & 0o0111 != 0
+}
+
+#[cfg(windows)]
+fn is_executable(_meta: &std::fs::Metadata) -> bool {
+    true
 }
 
 #[cfg(test)]
@@ -74,8 +92,13 @@ mod tests {
     // `uname -n` is the *nix equivalent of `hostname.exe` on Windows
     #[test]
     fn expand_hostname() {
-        let path = crate::testutil::with_env_lock(|| expand("uname").unwrap().unwrap());
-        assert!(path.len() > "uname".len());
+        let executable = if cfg!(windows) {
+            "hostname.exe"
+        } else {
+            "uname"
+        };
+        let path = crate::testutil::with_env_lock(|| expand(executable).unwrap().unwrap());
+        assert!(path.len() > executable.len());
     }
 
     #[test]
@@ -91,6 +114,7 @@ mod tests {
         assert_eq!(path.len(), 7);
     }
 
+    #[cfg(unix)]
     #[test]
     fn expand_skips_non_executable_and_dirs() {
         let dir = crate::TempDir::init().unwrap();

@@ -906,6 +906,33 @@ impl Surface {
         }
     }
 
+    /// Build the key encoding options (Zig: `encodeKeyOpts`). On macOS the
+    /// `macos-option-as-alt` value comes from the config, or is detected from
+    /// the keyboard layout when unset.
+    fn encode_key_opts(&self) -> key_encode::Options {
+        let mut opts = {
+            let t = self.lock_terminal();
+            encode_options_from_terminal(&t)
+        };
+        if !cfg!(target_os = "macos") {
+            return opts;
+        }
+
+        opts.macos_option_as_alt = self.cfg().macos_option_as_alt.unwrap_or_else(|| {
+            // If we don't have alt pressed, it doesn't matter what this
+            // config is so we can just say "false" and avoid more expensive
+            // checks below.
+            if !self.mouse.borrow().mods.alt {
+                return ghostty_input::OptionAsAlt::False;
+            }
+
+            // Alt is pressed, we're on macOS. We break some encapsulation
+            // here and assume libghostty for ease...
+            self.rt_app.keyboard_layout().detect_option_as_alt()
+        });
+        opts
+    }
+
     /// Encodes the key event into a write request. Returns `None` if
     /// nothing was encoded.
     fn encode_key(
@@ -914,10 +941,7 @@ impl Surface {
         insp_ev: Option<&mut inspector::KeyEvent>,
     ) -> Option<IoMessage> {
         // Build our encoding options, which requires the lock.
-        let opts = {
-            let t = self.lock_terminal();
-            encode_options_from_terminal(&t)
-        };
+        let opts = self.encode_key_opts();
 
         let mut data: Vec<u8> = Vec::with_capacity(64);
         if let Err(err) = key_encode::encode(&mut data, event, &opts) {

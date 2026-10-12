@@ -1,6 +1,7 @@
 //! Face types shared by all face implementations. Port of `font/face.zig`.
 //!
-//! The concrete FreeType face lives in [`freetype`] (`font/face/freetype.zig`).
+//! The concrete FreeType face lives in [`freetype`] (`font/face/freetype.zig`),
+//! the CoreText face (Apple targets) in [`coretext`] (`font/face/coretext.zig`).
 
 // `(a + b) / 2` is kept verbatim from upstream (f64::midpoint rounds differently).
 #![allow(clippy::manual_midpoint)]
@@ -9,14 +10,23 @@ use std::sync::Arc;
 
 use crate::metrics::Metrics;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(font_coretext_face)]
+pub mod coretext;
+pub mod coretext_math;
+#[cfg(font_freetype)]
 pub mod freetype;
 // The pure (non-JS) parts of the web_canvas face compile everywhere so they
 // can be unit tested natively; the JS-backed `Face` is wasm32-only.
 pub mod web_canvas;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub use freetype::Face;
+#[cfg(all(font_coretext_face, font_harfbuzz))]
+pub use coretext::HbFont;
+#[cfg(font_coretext_face)]
+pub use coretext::{Face, FaceError, RenderError};
+#[cfg(font_freetype)]
+pub use freetype::HbFont;
+#[cfg(font_freetype)]
+pub use freetype::{Face, FaceError, RenderError};
 pub use ghostty_config::types_b::FreetypeLoadFlags;
 #[cfg(target_arch = "wasm32")]
 pub use web_canvas::Face;
@@ -24,6 +34,9 @@ pub use web_canvas::Face;
 /// If a DPI can't be calculated, this DPI is used. This is probably
 /// wrong on modern devices so it is highly recommended you get the DPI
 /// using whatever platform method you can.
+#[cfg(target_os = "macos")]
+pub const DEFAULT_DPI: u16 = 72;
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_DPI: u16 = 96;
 
 pub const FREETYPE_LOAD_FLAGS_DEFAULT: FreetypeLoadFlags = FreetypeLoadFlags {

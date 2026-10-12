@@ -20,7 +20,7 @@ pub enum LoadError {
     #[error(transparent)]
     Fontconfig(#[from] fc::Error),
     #[error(transparent)]
-    Face(#[from] face::freetype::FaceError),
+    Face(#[from] face::FaceError),
 }
 
 /// Fontconfig specific data. This is only present if building with fontconfig.

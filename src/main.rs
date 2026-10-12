@@ -13,6 +13,13 @@ use ghostty_cli::build_info::{self, BuildInfo, Version};
 use ghostty_core::global::{self, InitOptions};
 
 fn main() -> ExitCode {
+    let code = real_main();
+    // Flush/disable crash capture (Zig: `state.deinit()`).
+    global::deinit();
+    code
+}
+
+fn real_main() -> ExitCode {
     // Byte-safe argv (`std::env::args()` panics on non-UTF-8 arguments).
     let args: Vec<String> = ghostty_os::args::collect_lossy();
 
