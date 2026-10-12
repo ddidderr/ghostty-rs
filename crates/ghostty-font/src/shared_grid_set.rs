@@ -27,13 +27,15 @@ use ghostty_config::{
     types_b::FreetypeLoadFlags,
 };
 
+#[cfg(font_discovery)]
+use crate::discovery::Discover;
 use crate::{
     Face,
     Style,
     codepoint_map::CodepointMap,
     codepoint_resolver::{CodepointResolver, StyleStatus},
     collection::{self, AddOptions, Collection, LoadOptions, SizeAdjustment},
-    discovery::{Descriptor, Discover},
+    discovery::Descriptor,
     embedded,
     face::{self, DesiredSize, FontData},
     library::{Library, LibraryError},
@@ -45,7 +47,9 @@ use crate::{
 #[derive(Debug, thiserror::Error)]
 pub enum RefError {
     #[error(transparent)]
+    #[cfg(font_discovery)]
     Discover(#[from] crate::discovery::DiscoverError),
+    #[cfg(font_discovery)]
     #[error("font discovery failed: {0}")]
     DiscoverNext(#[from] crate::discovery::NextError),
     #[error(transparent)]
@@ -80,6 +84,7 @@ struct Inner {
     /// Font discovery mechanism. Initialized once and kept for the
     /// lifetime of the set because some font discovery mechanisms
     /// (i.e. fontconfig) are unsafe to reinit.
+    #[cfg(font_discovery)]
     font_discover: Option<Discover>,
 }
 
@@ -98,6 +103,7 @@ impl SharedGridSet {
             font_lib: Library::init()?,
             inner: Mutex::new(Inner {
                 map: HashMap::new(),
+                #[cfg(font_discovery)]
                 font_discover: None,
             }),
         })
@@ -158,7 +164,10 @@ impl SharedGridSet {
         // Init our resolver which just requires setting fields.
         let mut resolver = CodepointResolver::new(c);
         resolver.styles = styles;
-        resolver.discover = Some(Self::discover(&mut inner).clone());
+        #[cfg(font_discovery)]
+        {
+            resolver.discover = Some(Self::discover(&mut inner).clone());
+        }
         resolver.codepoint_map = Some(key.codepoint_map.clone());
 
         let grid = Arc::new(SharedGrid::new(resolver)?);
@@ -174,6 +183,7 @@ impl SharedGridSet {
 
     /// Builds the Collection for the given configuration key and
     /// initial font size.
+    #[cfg_attr(not(font_discovery), allow(unused_variables))]
     fn collection(
         &self,
         inner: &mut Inner,
@@ -191,7 +201,9 @@ impl SharedGridSet {
         c.load_options = Some(load_options.clone());
         c.metric_modifiers.clone_from(&key.metric_modifiers);
 
-        // Search for fonts
+        // Search for fonts. Without a discovery mechanism (the `freetype`
+        // backend) there is nothing to search with.
+        #[cfg(font_discovery)]
         {
             let disco = Self::discover(inner);
             for style in Style::ALL {
@@ -392,6 +404,7 @@ impl SharedGridSet {
     /// Initialize once and return the font discovery mechanism. This remains
     /// initialized throughout the lifetime of the application because some
     /// font discovery mechanisms (i.e. fontconfig) are unsafe to reinit.
+    #[cfg(font_discovery)]
     fn discover(inner: &mut Inner) -> &Discover {
         inner.font_discover.get_or_insert_with(Discover::init)
     }

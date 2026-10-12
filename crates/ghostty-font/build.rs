@@ -3,6 +3,9 @@
 //!
 //! Backends (see `src/backend.rs`):
 //! * Linux & other non-Apple, non-wasm targets: `fontconfig_freetype`.
+//! * Linux & other non-Apple, non-wasm targets with the cargo feature
+//!   `font-backend-freetype`: `freetype` (FreeType rendering, HarfBuzz
+//!   shaping, no font discovery; Zig `-Dfont-backend=freetype`).
 //! * wasm32: `web_canvas`.
 //! * Apple targets: `coretext` (default), or via cargo features
 //!   `coretext-freetype`, `coretext-harfbuzz`, `coretext-noshape`.
@@ -10,6 +13,8 @@
 //! Emitted cfgs:
 //! * `font_freetype`   - FreeType face / library are compiled.
 //! * `font_fontconfig` - fontconfig discovery is compiled.
+//! * `font_discovery`  - a discovery mechanism (fontconfig or CoreText) exists
+//!   (Zig: `font.Discover != void`).
 //! * `font_harfbuzz`   - the HarfBuzz shaper is compiled.
 //! * `font_coretext`   - CoreText discovery/deferred face (Apple targets).
 //! * `font_coretext_face` - the CoreText `Face` is the font face.
@@ -21,6 +26,7 @@ fn main() {
     for c in [
         "font_freetype",
         "font_fontconfig",
+        "font_discovery",
         "font_harfbuzz",
         "font_coretext",
         "font_coretext_face",
@@ -40,6 +46,15 @@ fn main() {
     let ct_hb = feat("CORETEXT_HARFBUZZ");
     let ct_noshape = feat("CORETEXT_NOSHAPE");
 
+    let ft_only = feat("FONT_BACKEND_FREETYPE");
+    if ft_only && (wasm || apple) {
+        println!(
+            "cargo:warning=feature `font-backend-freetype` only applies to non-Apple, \
+             non-wasm targets; ignored"
+        );
+    }
+    let ft_only = ft_only && !wasm && !apple;
+
     let on = |c: &str, v: bool| {
         if v {
             println!("cargo:rustc-cfg={c}");
@@ -49,7 +64,9 @@ fn main() {
     let freetype = !wasm && (!apple || ct_ft);
     let harfbuzz = !wasm && (!apple || ct_ft || ct_hb);
     on("font_freetype", freetype);
-    on("font_fontconfig", !wasm && !apple);
+    let fontconfig = !wasm && !apple && !ft_only;
+    on("font_fontconfig", fontconfig);
+    on("font_discovery", fontconfig || apple);
     on("font_harfbuzz", harfbuzz);
     on("font_coretext", apple);
     on("font_coretext_face", apple && !ct_ft);

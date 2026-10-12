@@ -59,7 +59,7 @@ impl Default for BuildInfo {
             release_channel: ghostty_build_info::RELEASE_CHANNEL.to_string(),
             build_mode: ghostty_build_info::BUILD_MODE.to_string(),
             app_runtime: ".gtk".to_string(),
-            font_backend: ".fontconfig_freetype".to_string(),
+            font_backend: format!(".{}", ghostty_font::options.backend.name()),
             renderer: "renderer.generic.Renderer(renderer.OpenGL)".to_string(),
             gtk_build: None,
             gtk_runtime: None,

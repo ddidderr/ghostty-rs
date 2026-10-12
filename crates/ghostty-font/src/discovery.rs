@@ -10,6 +10,42 @@ pub use fc_impl::*;
 mod coretext_impl;
 #[cfg(font_coretext)]
 pub use coretext_impl::*;
+
+/// The `freetype` backend has no discovery mechanism: Zig's
+/// `Discover = void`. This is an uninhabited stand-in so that generic code
+/// type-checks; it can never be constructed, and the callers check
+/// [`crate::HAS_DISCOVERY`] (or `cfg(font_discovery)`) first.
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+pub struct Discover(std::convert::Infallible);
+
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+pub type DiscoverError = std::convert::Infallible;
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+pub type NextError = std::convert::Infallible;
+
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+pub struct DiscoverIterator(std::convert::Infallible);
+
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+impl Discover {
+    #[must_use]
+    pub fn init() -> Discover {
+        unreachable!("no font discovery mechanism in this build")
+    }
+
+    pub fn discover(&self, _desc: &Descriptor) -> Result<DiscoverIterator, DiscoverError> {
+        match self.0 {}
+    }
+}
+
+#[cfg(not(any(font_fontconfig, font_coretext)))]
+impl DiscoverIterator {
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<Option<crate::deferred_face::DeferredFace>, NextError> {
+        match self.0 {}
+    }
+}
+
 /// Descriptor is used to search for fonts (canonical definition in `ghostty-config`).
 pub use ghostty_config::font_types::Descriptor;
 

@@ -86,6 +86,16 @@ cli_options!(Options, help, diagnostics);
 ///     style. Valid options are `text` and `emoji`. If unset, the presentation
 ///     style of a codepoint will be inferred from the Unicode standard.
 pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
+    // Its possible to build Ghostty without font discovery! (This is checked
+    // before the arguments are parsed, as in Zig; the stderr writer is on
+    // stdout, like the other show-face writers.)
+    if !ghostty_font::HAS_DISCOVERY {
+        let mut stderr = ZigWriter::new(stdout_sink(), 1024);
+        write!(stderr, "{}", crate::list_fonts::NO_DISCOVERY_MESSAGE)?;
+        stderr.flush()?;
+        return Ok(1);
+    }
+
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

@@ -58,6 +58,11 @@ coretext-harfbuzz = ["dep:harfbuzz-sys"]
 # CoreText for discovery and rendering, no shaping
 # (Zig `-Dfont-backend=coretext_noshape`; Apple targets only).
 coretext-noshape = []
+# FreeType for rendering and HarfBuzz for shaping with no font discovery
+# (Zig `-Dfont-backend=freetype`; non-Apple, non-wasm targets only; the
+# default there is `fontconfig_freetype`). Not enabled by `--all-features`
+# in any meaningful sense: it switches the whole build to the backend.
+font-backend-freetype = []
 
 # This crate wraps the freetype / harfbuzz / fontconfig C libraries through
 # their `-sys` crates; unsafe is denied by default and allowed on minimal,

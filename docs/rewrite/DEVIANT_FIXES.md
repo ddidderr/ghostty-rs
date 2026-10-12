@@ -96,6 +96,7 @@ Only entries with an observable behavioural difference are listed.
 | Config strings | UTF-8 not required in many places | Escaped-bytes representation (`EncodedOs`) so non-UTF-8 survives; behaviour and error names matched to Zig (for example `theme=/etc/passwd/x` gives `error.NotDir`, checked against the oracle) | `notes/review-rv11-codex.md` (item 3) | 672e8a4, 4bbe0d7 |
 | `+version` / build info | Real build metadata | Placeholder `build_info` values in places; `gtk-opengl-debug` follows `cfg!(debug_assertions)` (the `release` profile has them on, `production` off) | `notes/ghostty-cli.md`, `notes/ghostty-config.md` | 6286e02 |
 | OSC 52 base64 acceptance | Surface.zig:2149,2163 rules | Was different in both directions (Codex core audit); fixed to match Zig | `notes/review-core-codex.md` | 2f58f02 |
+| Benchmark / synthetic tooling extensions | `ghostty-bench` has no `--time` option and only the simplified terminal handler; `ghostty-synthetic` has the actions `ascii`, `osc`, `utf8` | `ghostty-bench --time` prints the measured step time to stderr; `ghostty-bench --handler=full` runs the full `stream_readonly` handler instead of the print-only one; `ghostty-synthetic +sgr` generates SGR-heavy output. Dev/benchmark tooling only; otherwise upstream behaviour is unchanged | `crates/ghostty-bench/src/main.rs`, `src/benches.rs`, `src/bin/ghostty-synthetic.rs`; `notes/review-rv16-codex.md` | 0c4f0ee |
 
 ## Maintenance
 

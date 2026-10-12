@@ -23,7 +23,6 @@ use crate::{
     Style,
     codepoint_resolver::CodepointResolver,
     collection::{AddOptions, Collection, LoadOptions, SizeAdjustment},
-    discovery::{Descriptor, Fontconfig},
     embedded,
     face::{DesiredSize, FontData, Options as FaceOptions},
     shape,
@@ -102,7 +101,18 @@ pub(crate) fn test_shaper_with_font(font_req: TestFont) -> TestShaper {
 
 /// Returns None (the test is skipped, like `error.SkipZigTest`) if the font
 /// can't be discovered.
+#[cfg(not(font_fontconfig))]
+pub(crate) fn test_shaper_with_discovered_font(_font_req: &str) -> Option<TestShaper> {
+    // No fontconfig discovery in this backend (for example `freetype`).
+    None
+}
+
+/// Returns None (the test is skipped, like `error.SkipZigTest`) if the font
+/// can't be discovered.
+#[cfg(font_fontconfig)]
 pub(crate) fn test_shaper_with_discovered_font(font_req: &str) -> Option<TestShaper> {
+    use crate::discovery::{Descriptor, Fontconfig};
+
     let lib = Library::init().unwrap();
     let mut c = Collection::new();
     c.load_options = Some(LoadOptions::new(lib.clone()));

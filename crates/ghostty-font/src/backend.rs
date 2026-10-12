@@ -13,6 +13,9 @@
 //!   (Zig: `-Dfont-backend=...`). "There is no scenario that is the default"
 //!   for those; they're only used by people who want to self-compile Ghostty
 //!   and prefer the freetype aesthetic.
+//! * Non-Apple, non-wasm targets with the cargo feature
+//!   `font-backend-freetype`: [`Backend::Freetype`] (Zig
+//!   `-Dfont-backend=freetype`: no font discovery).
 //! * wasm32: [`Backend::WebCanvas`].
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -47,6 +50,19 @@ impl Backend {
             Backend::Coretext
         } else {
             Backend::FontconfigFreetype
+        }
+    }
+
+    /// The Zig tag name (`@tagName`) of the backend.
+    pub fn name(self) -> &'static str {
+        match self {
+            Backend::Freetype => "freetype",
+            Backend::FontconfigFreetype => "fontconfig_freetype",
+            Backend::Coretext => "coretext",
+            Backend::CoretextFreetype => "coretext_freetype",
+            Backend::CoretextHarfbuzz => "coretext_harfbuzz",
+            Backend::CoretextNoshape => "coretext_noshape",
+            Backend::WebCanvas => "web_canvas",
         }
     }
 
@@ -88,7 +104,20 @@ pub struct Options {
     pub backend: Backend,
 }
 
-#[cfg(all(not(target_arch = "wasm32"), not(target_vendor = "apple")))]
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_vendor = "apple"),
+    feature = "font-backend-freetype"
+))]
+pub const OPTIONS: Options = Options {
+    backend: Backend::Freetype,
+};
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    not(target_vendor = "apple"),
+    not(feature = "font-backend-freetype")
+))]
 pub const OPTIONS: Options = Options {
     backend: Backend::FontconfigFreetype,
 };
@@ -182,13 +211,45 @@ mod tests {
         }
     }
 
-    #[cfg(all(not(target_arch = "wasm32"), not(target_vendor = "apple")))]
+    #[test]
+    fn freetype_capabilities() {
+        let b = Backend::Freetype;
+        assert!(b.has_freetype());
+        assert!(!b.has_fontconfig());
+        assert!(b.has_harfbuzz());
+        assert!(!b.has_coretext());
+        assert_eq!(b.name(), "freetype");
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(target_vendor = "apple"),
+        not(feature = "font-backend-freetype")
+    ))]
     #[test]
     fn linux_backend_capabilities() {
         let b = OPTIONS.backend;
+        assert_eq!(b, Backend::FontconfigFreetype);
         assert!(b.has_freetype());
         assert!(b.has_fontconfig());
         assert!(b.has_harfbuzz());
         assert!(!b.has_coretext());
+    }
+
+    #[cfg(all(
+        not(target_arch = "wasm32"),
+        not(target_vendor = "apple"),
+        feature = "font-backend-freetype"
+    ))]
+    #[test]
+    fn freetype_only_backend_selected() {
+        let b = OPTIONS.backend;
+        assert_eq!(b, Backend::Freetype);
+        assert!(b.has_freetype());
+        assert!(!b.has_fontconfig());
+        assert!(b.has_harfbuzz());
+        assert!(!b.has_coretext());
+        // No discovery mechanism, as in Zig (`Discover == void`).
+        const { assert!(!crate::HAS_DISCOVERY) };
     }
 }

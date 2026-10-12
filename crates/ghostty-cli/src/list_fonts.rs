@@ -4,6 +4,11 @@ use ghostty_config::config_struct;
 
 use crate::error::Error;
 
+/// Printed (without a trailing newline) by `+list-fonts` and `+show-face`
+/// when the build has no font discovery mechanism (Zig `Discover == void`,
+/// the `freetype` font backend).
+pub(crate) const NO_DISCOVERY_MESSAGE: &str = "Ghostty was built without a font discovery mechanism. This is a compile-time\noption. Please review how Ghostty was built from source, contact the\nmaintainer to enable a font discovery mechanism, and try again.";
+
 config_struct! {
     pub struct Options {
         /// The font family to search for. If this is set, then only fonts
@@ -50,6 +55,14 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     crate::parse_options(&mut opts, args)?;
 
     use std::{collections::HashMap, io::Write};
+
+    // Its possible to build Ghostty without font discovery!
+    if !ghostty_font::HAS_DISCOVERY {
+        let mut stderr = crate::zig_writer::ZigWriter::new(crate::zig_writer::stderr_sink(), 1024);
+        write!(stderr, "{NO_DISCOVERY_MESSAGE}")?;
+        stderr.flush()?;
+        return Ok(1);
+    }
 
     // We'll be putting our fonts into a list categorized by family
     // so it is easier to read the output.
@@ -117,4 +130,24 @@ pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     }
     stdout.flush()?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    /// Without a discovery mechanism (the `freetype` font backend, Zig
+    /// `Discover == void`) `+list-fonts` prints the compile-time-option
+    /// message and exits with 1, after parsing the arguments.
+    #[cfg(feature = "font-backend-freetype")]
+    #[test]
+    fn freetype_backend_reports_no_discovery() {
+        const { assert!(!ghostty_font::HAS_DISCOVERY) };
+        assert_eq!(super::run(&[] as &[&[u8]]).expect("run"), 1);
+        assert!(super::NO_DISCOVERY_MESSAGE.ends_with("try again."));
+    }
+
+    #[cfg(not(feature = "font-backend-freetype"))]
+    #[test]
+    fn default_backend_has_discovery() {
+        const { assert!(ghostty_font::HAS_DISCOVERY) };
+    }
 }

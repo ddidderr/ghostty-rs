@@ -10,6 +10,8 @@
 
 use std::collections::HashMap;
 
+#[cfg(font_discovery)]
+use crate::collection::{AddOptions, Entry};
 use crate::{
     Atlas,
     CodepointMap,
@@ -17,7 +19,7 @@ use crate::{
     Presentation,
     SpriteFace,
     Style,
-    collection::{AddOptions, Collection, Entry, GetFaceError, Index, PresentationMode, Special},
+    collection::{Collection, GetFaceError, Index, PresentationMode, Special},
     discovery::Discover,
     face::{RenderError as FaceRenderError, RenderOptions},
     sprite,
@@ -88,6 +90,7 @@ pub struct CodepointResolver {
 
     /// The descriptor cache is used to cache the descriptor to font face
     /// mapping for codepoint maps.
+    #[cfg_attr(not(font_discovery), allow(dead_code))]
     descriptor_cache: DescriptorCache,
 
     /// Set this to a non-null value to enable sprite glyph drawing. If this
@@ -108,6 +111,7 @@ pub struct CodepointResolver {
 ///
 /// As in upstream, descriptors are compared by their `hashcode()` only.
 #[derive(Default)]
+#[cfg_attr(not(font_discovery), allow(dead_code))]
 struct DescriptorCache(HashMap<u64, Option<Index>>);
 
 impl CodepointResolver {
@@ -240,6 +244,27 @@ impl CodepointResolver {
             .get_index(cp, Style::Regular, PresentationMode::Any)
     }
 
+    /// Without a discovery mechanism (the `freetype` backend, Zig
+    /// `Discover == void`) there is no fallback search.
+    #[cfg(not(font_discovery))]
+    #[allow(clippy::unused_self)]
+    fn discover_fallback(
+        &mut self,
+        _cp: u32,
+        _style: Style,
+        _p: PresentationMode,
+    ) -> Option<Index> {
+        None
+    }
+
+    /// Without a discovery mechanism, codepoint overrides cannot find fonts.
+    #[cfg(not(font_discovery))]
+    #[allow(clippy::unused_self)]
+    fn get_index_codepoint_override(&mut self, _cp: u32) -> Option<Index> {
+        None
+    }
+
+    #[cfg(font_discovery)]
     fn discover_fallback(
         &mut self,
         cp: u32,
@@ -309,6 +334,7 @@ impl CodepointResolver {
 
     /// Checks if the codepoint is in the map of codepoint overrides,
     /// finds the override font, and returns it.
+    #[cfg(font_discovery)]
     fn get_index_codepoint_override(&mut self, cp: u32) -> Option<Index> {
         // Get our codepoint map. If we have no map set then we have no
         // codepoint overrides and we're done.
@@ -459,7 +485,7 @@ mod tests {
     use crate::{
         Face,
         Library,
-        collection::{LoadOptions, SizeAdjustment},
+        collection::{AddOptions, LoadOptions, SizeAdjustment},
         embedded,
         face::{DesiredSize, Options},
     };
@@ -532,6 +558,27 @@ mod tests {
 
         // Box glyph should be null since we didn't set a box font
         assert!(r.get_index(0x1FB00, Style::Regular, None).is_none());
+    }
+
+    /// `freetype` backend (no discovery): codepoint overrides and fallback
+    /// searches are disabled, so an unmapped codepoint is simply not found.
+    #[cfg(not(font_discovery))]
+    #[test]
+    fn freetype_backend_has_no_discovery_fallback_or_override() {
+        const { assert!(!crate::HAS_DISCOVERY) };
+        let lib = Library::init().unwrap();
+        let mut c = Collection::new();
+        c.load_options = Some(LoadOptions::new(lib.clone()));
+        add(&mut c, &lib, embedded::REGULAR, Style::Regular, 12.0);
+
+        let mut r = CodepointResolver::new(c);
+        assert!(r.discover.is_none());
+        assert!(r.get_index_codepoint_override('A' as u32).is_none());
+        // Not in the embedded font, and there is no discovery to ask.
+        assert!(r.get_index(0x4E2D, Style::Regular, None).is_none());
+        assert!(r.get_index(0x4E2D, Style::Bold, None).is_none());
+        // Embedded codepoints still resolve.
+        assert!(r.get_index('A' as u32, Style::Regular, None).is_some());
     }
 
     #[test]

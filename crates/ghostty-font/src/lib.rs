@@ -19,6 +19,9 @@ pub mod config_types;
 pub mod coretext_util;
 #[cfg(font_fontconfig)]
 pub mod deferred_face;
+#[cfg(all(not(target_arch = "wasm32"), not(font_fontconfig), not(font_coretext)))]
+#[path = "deferred_face_freetype.rs"]
+pub mod deferred_face;
 #[cfg(font_coretext)]
 #[path = "deferred_face_coretext.rs"]
 pub mod deferred_face;
@@ -48,6 +51,11 @@ pub mod sprite;
 
 pub use atlas::Atlas;
 pub use backend::{Backend, OPTIONS as options};
+
+/// Whether a font discovery mechanism exists in this build (Zig:
+/// `font.Discover != void`; false for the `freetype` and `web_canvas`
+/// backends).
+pub const HAS_DISCOVERY: bool = cfg!(font_discovery);
 pub use codepoint_map::CodepointMap;
 #[cfg(not(target_arch = "wasm32"))]
 pub use codepoint_resolver::CodepointResolver;

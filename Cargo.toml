@@ -14,6 +14,9 @@ path = "src/main.rs"
 sentry = ["ghostty-crash/sentry"]
 # Mirrors upstream's `-Dsnap` build option (off by default).
 snap = ["ghostty-os/snap"]
+# Mirrors upstream's `-Dfont-backend=freetype`: FreeType rendering with no
+# font discovery (fontconfig is not used). Non-Apple, non-wasm targets only.
+font-backend-freetype = ["ghostty-cli/font-backend-freetype"]
 
 [dependencies]
 ghostty-core.workspace = true

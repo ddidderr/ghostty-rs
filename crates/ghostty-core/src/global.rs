@@ -146,9 +146,12 @@ pub fn default_crash_options() -> ghostty_crash::Options {
             .to_owned(),
         ..ghostty_crash::Options::default()
     };
+    ghostty_font::options
+        .backend
+        .name()
+        .clone_into(&mut o.font_backend);
     if cfg!(target_vendor = "apple") {
         "none".clone_into(&mut o.app_runtime);
-        "coretext".clone_into(&mut o.font_backend);
         "metal".clone_into(&mut o.renderer);
     }
     o

@@ -19,5 +19,5 @@ pub mod run;
 
 pub mod web_canvas;
 
-#[cfg(all(test, font_harfbuzz, font_fontconfig))]
+#[cfg(all(test, font_harfbuzz))]
 pub(crate) mod test_util;
