@@ -385,7 +385,9 @@ impl CodepointResolver {
         {
             log::debug!(
                 "codepoint override based on config codepoint={cp} family={}",
-                desc.family.as_deref().unwrap_or("")
+                desc.family
+                    .as_ref()
+                    .map_or("", ghostty_os::osbytes::EncodedOs::as_encoded)
             );
 
             return Some(idx);

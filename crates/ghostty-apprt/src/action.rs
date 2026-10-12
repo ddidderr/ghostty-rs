@@ -638,12 +638,12 @@ pub struct CellSize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetTitle {
-    pub title: String,
+    pub title: ghostty_os::osbytes::EncodedOs,
 }
 
 impl std::fmt::Display for SetTitle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SetTitle{{ {} }}", self.title)
+        write!(f, "SetTitle{{ {} }}", self.title.to_text_lossy())
     }
 }
 
@@ -657,7 +657,7 @@ pub struct Pwd {
 
 impl std::fmt::Display for Pwd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Pwd{{ {} }}", self.pwd.as_encoded())
+        write!(f, "Pwd{{ {} }}", self.pwd.to_text_lossy())
     }
 }
 
@@ -686,7 +686,7 @@ pub enum KeySequence {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyTable {
-    Activate(String),
+    Activate(ghostty_os::osbytes::EncodedOs),
     Deactivate,
     DeactivateAll,
 }

@@ -278,7 +278,7 @@ impl Surface {
             if ghostty_apprt::surface::should_inherit_working_directory(context, &config_obj.get())
                 && let Some(pwd) = parent.get_pwd()
             {
-                imp.pwd.replace(Some(pwd.into_encoded()));
+                imp.pwd.replace(Some(pwd));
                 self.notify("pwd");
             }
         }
@@ -391,7 +391,7 @@ impl Surface {
         self.notify("key-table");
 
         match value {
-            KeyTable::Activate(name) => imp.key_tables.borrow_mut().push(name.clone()),
+            KeyTable::Activate(name) => imp.key_tables.borrow_mut().push(name.to_text_lossy()),
             KeyTable::Deactivate => {
                 imp.key_tables.borrow_mut().pop();
             }
@@ -1615,21 +1615,13 @@ impl Surface {
 
     /// Returns the pwd property.
     pub fn get_pwd(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
-        // The GObject `pwd` property is a (UTF-8) string, so it stores the
-        // encoded form of the OS string; this accessor is the only place it
-        // is converted back to the typed value.
-        self.imp()
-            .pwd
-            .borrow()
-            .clone()
-            .map(ghostty_os::osbytes::EncodedOs::from_encoded)
+        // The typed backing retains bytes; the GObject property renders text.
+        self.imp().pwd.borrow().clone()
     }
 
     /// Set the pwd for this surface, copies the value.
     pub fn set_pwd(&self, pwd: Option<&ghostty_os::osbytes::EncodedOs>) {
-        self.imp()
-            .pwd
-            .replace(pwd.map(|p| p.as_encoded().to_owned()));
+        self.imp().pwd.replace(pwd.cloned());
         self.notify("pwd");
     }
 
@@ -1822,7 +1814,10 @@ impl Surface {
             let volume = config.bell_audio_volume.clamp(0.0, 1.0);
 
             // The config path is an encoded OS string: decode it first.
-            let path = path.to_path();
+            let Ok(path) = path.to_path() else {
+                log::warn!("invalid bell audio path: BadPathName");
+                return;
+            };
             debug_assert!(path.is_absolute());
             let media_file = gtk::MediaFile::for_filename(&path);
 
@@ -2403,8 +2398,10 @@ impl RtSurface for RtSurfaceHandle {
         None
     }
 
-    fn get_title(&self) -> Option<String> {
-        self.gobj().and_then(|s| s.get_title())
+    fn get_title(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
+        self.gobj()
+            .and_then(|s| s.get_title())
+            .map(ghostty_os::osbytes::EncodedOs::from)
     }
 
     fn get_content_scale(&self) -> ContentScale {
@@ -2843,8 +2840,8 @@ mod imp {
         /// If this is set prior to initialization then the surface will
         /// start in this pwd. If it is set after, it has no impact on the
         /// core surface.
-        #[property(get, set, nullable)]
-        pub pwd: RefCell<Option<String>>,
+        #[property(get = Self::pwd_text, set = Self::set_pwd_text, type = Option<String>, nullable)]
+        pub pwd: RefCell<Option<ghostty_os::osbytes::EncodedOs>>,
 
         /// The title of this surface, if any has been set.
         #[property(get, set, nullable)]
@@ -3068,6 +3065,18 @@ mod imp {
     }
 
     impl Surface {
+        fn pwd_text(&self) -> Option<String> {
+            self.pwd
+                .borrow()
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::to_text_lossy)
+        }
+
+        fn set_pwd_text(&self, value: Option<String>) {
+            self.pwd
+                .replace(value.map(ghostty_os::osbytes::EncodedOs::from));
+        }
+
         fn mouse_shape_prop(&self) -> i32 {
             self.mouse_shape.get() as i32
         }
@@ -3388,7 +3397,7 @@ mod imp {
                 // Binding payloads are config strings: the needle is plain
                 // UI text, so escape it instead of decoding it.
                 &ghostty_input::binding::Action::Search(
-                    ghostty_os::osbytes::valid_str_to_config_string(&needle.unwrap_or_default()),
+                    ghostty_os::osbytes::EncodedOs::from_plain_text(&needle.unwrap_or_default()),
                 ),
             ) {
                 log::warn!("unable to perform search action err={err}");

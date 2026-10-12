@@ -45,7 +45,8 @@ impl ConfigField for CursorStyle {
         })
     }
 
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         let v = value.ok_or(ArgError::ValueRequired)?;
         *self = match v {
             "bar" => CursorStyle::Bar,
@@ -151,25 +152,22 @@ pub enum WorkingDirectory {
 }
 
 impl ConfigField for WorkingDirectory {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let mut input = input.trim_matches(|c: char| {
-            // std.ascii.whitespace
-            matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c')
-        });
+        let mut input = crate::cli_args::trim_ascii_whitespace(input);
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
         }
 
         // Match path.zig behavior for quoted values.
-        if input.len() >= 2 && input.starts_with('"') && input.ends_with('"') {
+        if input.len() >= 2 && input.starts_with(b"\"") && input.ends_with(b"\"") {
             input = &input[1..input.len() - 1];
         }
 
         *self = match input {
-            "home" => WorkingDirectory::Home,
-            "inherit" => WorkingDirectory::Inherit,
-            _ => WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_encoded(input)),
+            b"home" => WorkingDirectory::Home,
+            b"inherit" => WorkingDirectory::Inherit,
+            _ => WorkingDirectory::Path(ghostty_os::osbytes::EncodedOs::from_bytes(input)),
         };
         Ok(())
     }
@@ -199,7 +197,7 @@ impl WorkingDirectory {
             Err(err) => {
                 log::warn!(
                     "error expanding home directory for working-directory path={}: {err}",
-                    path.as_encoded()
+                    path.to_text_lossy()
                 );
                 return;
             }
@@ -309,7 +307,8 @@ impl ConfigField for Color {
         }
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = Color::from_cli(input)?;
         Ok(())
     }
@@ -355,7 +354,8 @@ impl TerminalColor {
 }
 
 impl ConfigField for TerminalColor {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = TerminalColor::from_cli(input)?;
         Ok(())
     }
@@ -394,7 +394,8 @@ impl BoldColor {
 }
 
 impl ConfigField for BoldColor {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = BoldColor::from_cli(input)?;
         Ok(())
     }
@@ -417,7 +418,8 @@ impl ConfigField for ColorList {
         CValue::ColorList(self.colors.iter().map(|c| [c.r, c.g, c.b]).collect())
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
@@ -485,7 +487,8 @@ impl ConfigField for Palette {
         CValue::Palette(out)
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let value = input.ok_or(ArgError::ValueRequired)?;
         let eql_idx = value.find('=').ok_or(ArgError::InvalidValue)?;
 
@@ -522,7 +525,7 @@ impl ConfigField for Palette {
 /// comma-separated values.
 #[derive(Debug, Clone, Default)]
 pub struct RepeatableString {
-    pub list: Vec<String>,
+    pub list: Vec<ghostty_os::osbytes::EncodedOs>,
 
     /// If true, then the next value will clear the list and start over
     /// rather than append. This is a bit of a hack but is here to make
@@ -552,7 +555,7 @@ impl RepeatableString {
 }
 
 impl ConfigField for RepeatableString {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
 
         // Empty value resets the list
@@ -567,7 +570,8 @@ impl ConfigField for RepeatableString {
             self.overwrite_next = false;
         }
 
-        self.list.push(value.to_string());
+        self.list
+            .push(ghostty_os::osbytes::EncodedOs::from_bytes(value));
         Ok(())
     }
 
@@ -577,7 +581,7 @@ impl ConfigField for RepeatableString {
             return write_void(f);
         }
         for v in &self.list {
-            write_str(f, v)?;
+            write_str(f, v.as_encoded())?;
         }
         Ok(())
     }
@@ -631,12 +635,12 @@ impl Default for SelectionWordChars {
 }
 
 impl ConfigField for SelectionWordChars {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
 
         // Always include null as first boundary
         let mut list = vec![0u32];
-        let mut it = crate::string::codepoint_iterator(value);
+        let mut it = crate::string::codepoint_iterator_bytes(value);
         while let Some(cp) = it.next().map_err(|_| ArgError::InvalidValue)? {
             list.push(cp);
         }
@@ -657,7 +661,7 @@ impl ConfigField for SelectionWordChars {
             }
             s.push(ch);
         }
-        write_str(f, &s)
+        write_str(f, &ghostty_os::osbytes::valid_str_to_config_string(&s))
     }
 }
 
@@ -682,15 +686,16 @@ pub struct RepeatableFontVariation {
 }
 
 impl ConfigField for RepeatableFontVariation {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let eql_idx = input.find('=').ok_or(ArgError::InvalidValue)?;
-        let key = trim_ws(&input[..eql_idx]);
-        let value = trim_ws(&input[eql_idx + 1..]);
-        let key: &[u8; 4] = key
-            .as_bytes()
-            .try_into()
+        let eql_idx = input
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(ArgError::InvalidValue)?;
+        let key = crate::cli_args::trim_bytes(&input[..eql_idx]);
+        let value = std::str::from_utf8(crate::cli_args::trim_bytes(&input[eql_idx + 1..]))
             .map_err(|_| ArgError::InvalidValue)?;
+        let key: &[u8; 4] = key.try_into().map_err(|_| ArgError::InvalidValue)?;
         self.list.push(Variation {
             id: VariationId::init(key),
             value: value.parse::<f64>().map_err(|_| ArgError::InvalidValue)?,
@@ -704,7 +709,14 @@ impl ConfigField for RepeatableFontVariation {
         }
         for v in &self.list {
             let id = v.id.str();
-            write_str(f, &format!("{}={}", String::from_utf8_lossy(&id), v.value))?;
+            write_str(
+                f,
+                &format!(
+                    "{}={}",
+                    ghostty_os::osbytes::bytes_to_config_string(&id),
+                    v.value
+                ),
+            )?;
         }
         Ok(())
     }
@@ -860,18 +872,22 @@ pub struct RepeatableCodepointMap {
 }
 
 impl ConfigField for RepeatableCodepointMap {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let eql_idx = input.find('=').ok_or(ArgError::InvalidValue)?;
-        let key = trim_ws(&input[..eql_idx]);
-        let value = trim_ws(&input[eql_idx + 1..]);
+        let eql_idx = input
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(ArgError::InvalidValue)?;
+        let key = crate::cli_args::trim_bytes(&input[..eql_idx]);
+        let value = crate::cli_args::trim_bytes(&input[eql_idx + 1..]);
 
-        let mut p = UnicodeRangeParser::new(key);
+        let mut p =
+            UnicodeRangeParser::new(std::str::from_utf8(key).map_err(|_| ArgError::InvalidValue)?);
         while let Some(range) = p.next_range()? {
             self.map.add(CodepointMapEntry {
                 range,
                 descriptor: Descriptor {
-                    family: Some(value.to_string()),
+                    family: Some(ghostty_os::osbytes::EncodedOs::from_bytes(value)),
                     monospace: false, // we allow any font
                     ..Descriptor::default()
                 },
@@ -886,7 +902,11 @@ impl ConfigField for RepeatableCodepointMap {
         }
 
         for e in &self.map.list {
-            let family = e.descriptor.family.as_deref().unwrap_or("");
+            let family = e
+                .descriptor
+                .family
+                .as_ref()
+                .map_or("", ghostty_os::osbytes::EncodedOs::as_encoded);
             if e.range[0] == e.range[1] {
                 write_str(f, &format!("U+{:04X}={}", e.range[0], family))?;
             } else {
@@ -907,7 +927,8 @@ pub struct RepeatableClipboardCodepointMap {
 }
 
 impl ConfigField for RepeatableClipboardCodepointMap {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
         let eql_idx = input.find('=').ok_or(ArgError::InvalidValue)?;
         let key = trim_ws(&input[..eql_idx]);
@@ -941,7 +962,7 @@ impl ConfigField for RepeatableClipboardCodepointMap {
         for e in &self.map.list {
             let value_str = match &e.replacement {
                 Replacement::Codepoint(cp) => format!("U+{cp:04X}"),
-                Replacement::String(s) => s.clone(),
+                Replacement::String(s) => ghostty_os::osbytes::valid_str_to_config_string(s),
             };
 
             if e.range[0] == e.range[1] {
@@ -971,14 +992,14 @@ pub enum FontStyle {
     False,
 
     /// A specific named font style to use for this style.
-    Name(String),
+    Name(ghostty_os::osbytes::EncodedOs),
 }
 
 impl FontStyle {
     /// Returns the string name value that can be used with a font
     /// descriptor.
     #[must_use]
-    pub fn name_value(&self) -> Option<&str> {
+    pub fn name_value(&self) -> Option<&ghostty_os::osbytes::EncodedOs> {
         match self {
             FontStyle::Default | FontStyle::False => None,
             FontStyle::Name(n) => Some(n),
@@ -987,12 +1008,12 @@ impl FontStyle {
 }
 
 impl ConfigField for FontStyle {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
         *self = match value {
-            "default" => FontStyle::Default,
-            "false" => FontStyle::False,
-            _ => FontStyle::Name(value.to_string()),
+            b"default" => FontStyle::Default,
+            b"false" => FontStyle::False,
+            _ => FontStyle::Name(ghostty_os::osbytes::EncodedOs::from_bytes(value)),
         };
         Ok(())
     }
@@ -1001,7 +1022,7 @@ impl ConfigField for FontStyle {
         match self {
             FontStyle::Default => write_str(f, "default"),
             FontStyle::False => write_str(f, "false"),
-            FontStyle::Name(n) => write_str(f, n),
+            FontStyle::Name(n) => write_str(f, n.as_encoded()),
         }
     }
 }
@@ -1032,7 +1053,8 @@ pub struct RepeatableLink {
 }
 
 impl ConfigField for RepeatableLink {
-    fn parse_cli(&mut self, _input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, _input: Option<&[u8]>) -> Result<(), ArgError> {
+        let _input = crate::cli_args::text_value(_input)?;
         Err(ArgError::other("NotImplemented"))
     }
 
@@ -1477,7 +1499,14 @@ mod tests {
 
         fn fam(map: &RepeatableCodepointMap, i: usize) -> (&[u32; 2], &str) {
             let e = &map.map.list[i];
-            (&e.range, e.descriptor.family.as_deref().unwrap())
+            (
+                &e.range,
+                e.descriptor
+                    .family
+                    .as_ref()
+                    .map(ghostty_os::osbytes::EncodedOs::as_encoded)
+                    .unwrap(),
+            )
         }
 
         #[test]

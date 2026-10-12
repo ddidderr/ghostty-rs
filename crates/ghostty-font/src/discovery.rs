@@ -37,10 +37,10 @@ mod fc_impl {
     pub fn to_fc_pattern(desc: &Descriptor) -> fc::Pattern {
         let mut pat = fc::Pattern::create();
         if let Some(family) = &desc.family {
-            assert!(pat.add_string(fc::Property::Family, family));
+            assert!(pat.add_string_bytes(fc::Property::Family, &family.to_bytes()));
         }
         if let Some(style) = &desc.style {
-            assert!(pat.add_string(fc::Property::Style, style));
+            assert!(pat.add_string_bytes(fc::Property::Style, &style.to_bytes()));
         }
         if desc.codepoint > 0 {
             let mut cs = fc::CharSet::create();
@@ -161,6 +161,43 @@ mod fc_impl {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(font_fontconfig)]
+    #[test]
+    fn configured_font_names_reach_fontconfig_as_original_bytes() {
+        use ghostty_config::config::Config;
+        use ghostty_os::osbytes::os_bytes;
+
+        use crate::fontconfig::Property;
+        let mut config = Config::default();
+        config
+            .parse_field("font-family", Some("Family\u{fdd0}é"))
+            .unwrap();
+        config
+            .parse_field("font-style", Some("Style\u{fdd0}é"))
+            .unwrap();
+        config
+            .parse_field_bytes("font-codepoint-map", Some(b"U+0041=Family\xff"))
+            .unwrap();
+        let pat = to_fc_pattern(&Descriptor {
+            family: Some(config.font_family.list[0].clone()),
+            style: config.font_style.name_value().cloned(),
+            ..Descriptor::default()
+        });
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Family, 0).unwrap()),
+            "Family\u{fdd0}é".as_bytes()
+        );
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Style, 0).unwrap()),
+            "Style\u{fdd0}é".as_bytes()
+        );
+        let pat = to_fc_pattern(&config.font_codepoint_map.map.list[0].descriptor);
+        assert_eq!(
+            os_bytes(&pat.get_os_string(Property::Family, 0).unwrap()),
+            b"Family\xff"
+        );
+    }
 
     #[test]
     fn descriptor_hash() {

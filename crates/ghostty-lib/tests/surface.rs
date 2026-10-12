@@ -45,6 +45,7 @@ struct Rec {
     /// (action tag, target tag, surface pointer)
     actions: Vec<(i32, i32, usize)>,
     titles: Vec<String>,
+    raw_titles: Vec<Vec<u8>>,
     cell_size: Option<(u32, u32)>,
     writes: Vec<(i32, String, bool)>,
     reads: Vec<(i32, usize)>,
@@ -86,6 +87,7 @@ unsafe extern "C" fn on_action(
                 // set_title
                 let t = unsafe { CStr::from_ptr(action.action.set_title.title) };
                 r.titles.push(t.to_string_lossy().into_owned());
+                r.raw_titles.push(t.to_bytes().to_vec());
             }
             25 => {
                 let c = unsafe { action.action.cell_size };
@@ -167,7 +169,7 @@ fn cs(s: &str) -> CString {
 }
 
 impl Host {
-    fn new(extra_config: &str) -> Option<Host> {
+    fn new(extra_config: impl AsRef<[u8]>) -> Option<Host> {
         rec(|r| *r = Rec::default());
         let gl = match Headless::new() {
             Ok(g) => Rc::new(g),
@@ -186,9 +188,11 @@ impl Host {
         write!(
             conf,
             "shell-integration = none\nwindow-padding-x = 0\nwindow-padding-y = 0\n\
-             font-size = 12\nscrollback-limit = 100000\n{extra_config}\n"
+             font-size = 12\nscrollback-limit = 100000\n"
         )
         .unwrap();
+        conf.write_all(extra_config.as_ref()).unwrap();
+        conf.write_all(b"\n").unwrap();
         let cfg = ghostty_config_new();
         let path = cs(conf.path().to_str().unwrap());
         unsafe {
@@ -855,4 +859,27 @@ fn selection_clipboard_support_is_reported() {
         })
     });
     unsafe { ghostty_surface_free(s) };
+}
+
+#[test]
+fn configured_and_binding_titles_reach_c_as_original_bytes() {
+    let Some(h) = Host::new(b"title=config\xff\xef\xb7\x90\xc3\xa9") else {
+        return;
+    };
+    let surface = h.surface("sleep 30");
+    assert!(rec(|r| r
+        .raw_titles
+        .iter()
+        .any(|v| v == b"config\xff\xef\xb7\x90\xc3\xa9")));
+    let action = b"set_surface_title:binding\xfe\xef\xb7\x90\xc3\xa9";
+    // SAFETY: a live surface and the action slice is valid for the entire call.
+    assert!(unsafe {
+        ghostty_surface_binding_action(surface, action.as_ptr().cast(), action.len())
+    });
+    assert_eq!(
+        rec(|r| r.raw_titles.last().cloned()).unwrap(),
+        b"binding\xfe\xef\xb7\x90\xc3\xa9"
+    );
+    // SAFETY: the surface is live and owned by this test.
+    unsafe { ghostty_surface_free(surface) };
 }

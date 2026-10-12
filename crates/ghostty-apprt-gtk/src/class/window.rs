@@ -313,7 +313,7 @@ mod imp {
                 // so that any applications inspecting the window states see
                 // an immediate title set when the window appears.
                 if let Some(title) = &config.title {
-                    obj.set_title(Some(&ghostty_os::osbytes::config_str_to_text(title)));
+                    obj.set_title(Some(&title.to_text_lossy()));
                 }
             }
 

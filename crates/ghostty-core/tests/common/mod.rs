@@ -92,7 +92,7 @@ impl RtApp for FakeRt {
         let ret = match &action {
             Action::ShowChildExited(_) => self.show_child_exited.get(),
             Action::SetTitle(t) => {
-                *self.title.borrow_mut() = Some(t.title.clone());
+                *self.title.borrow_mut() = Some(t.title.to_text_lossy());
                 true
             }
             _ => true,
@@ -109,8 +109,8 @@ impl RtSurface for FakeRt {
     fn cgroup(&self) -> Option<String> {
         None
     }
-    fn get_title(&self) -> Option<String> {
-        self.title.borrow().clone()
+    fn get_title(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
+        self.title.borrow().clone().map(Into::into)
     }
     fn get_content_scale(&self) -> ContentScale {
         self.scale.get()
@@ -262,7 +262,11 @@ impl Harness {
         config.load_iter(&mut it).expect("config args");
         if let Some(script) = &opts.script {
             let script = script.replace("{out}", out.to_str().unwrap());
-            config.command = Some(Command::Direct(vec!["sh".into(), "-c".into(), script]));
+            config.command = Some(Command::Direct(vec![
+                "sh".into(),
+                "-c".into(),
+                script.into(),
+            ]));
         }
         config.finalize().expect("finalize");
 

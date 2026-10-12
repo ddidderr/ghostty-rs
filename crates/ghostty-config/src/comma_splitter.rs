@@ -54,21 +54,31 @@ enum UnicodeState {
 #[derive(Debug, Clone)]
 pub struct CommaSplitter<'a> {
     /// the string that we are splitting
-    str: &'a str,
+    str: &'a [u8],
     /// how much of the string has been consumed so far
     index: usize,
 }
 
 impl<'a> CommaSplitter<'a> {
+    pub fn new(value: &'a str) -> Self {
+        Self::from_bytes(value.as_bytes())
+    }
+
+    pub fn next_field(&mut self) -> Result<Option<&'a str>, Error> {
+        self.next_bytes()?
+            .map(|b| std::str::from_utf8(b).map_err(|_| Error::IllegalEscape))
+            .transpose()
+    }
+
     /// initialize a splitter with the given string
     #[must_use]
-    pub fn new(str: &'a str) -> Self {
+    pub fn from_bytes(str: &'a [u8]) -> Self {
         Self { str, index: 0 }
     }
 
     /// return the next field, `Ok(None)` if no more fields
-    pub fn next_field(&mut self) -> Result<Option<&'a str>, Error> {
-        let bytes = self.str.as_bytes();
+    pub fn next_bytes(&mut self) -> Result<Option<&'a [u8]>, Error> {
+        let bytes = self.str;
         if self.index >= bytes.len() {
             return Ok(None);
         }
@@ -213,7 +223,7 @@ impl<'a> CommaSplitter<'a> {
         }
         let r = &self.str[self.index..];
         self.index = self.str.len();
-        Some(r)
+        std::str::from_utf8(r).ok()
     }
 }
 

@@ -1,12 +1,11 @@
 //! Byte-preserving conversions between OS strings and Rust `String`s.
 //!
 //! Zig treats paths, arguments and environment values as byte slices. Rust
-//! `String` cannot hold invalid UTF-8, so the String based layers (the config
-//! system) use a reversible encoding that is a true bijection on byte
-//! strings:
+//! Configuration and CLI parsers receive original bytes. Byte-valued fields
+//! use [`EncodedOs`] for storage; legacy string-based OS plumbing and config
+//! output formatting use its reversible encoding, a bijection on byte strings:
 //!
-//! * the escape character is the Unicode noncharacter `U+FDD0` (never used
-//!   in real text);
+//! * the escape character is the Unicode noncharacter `U+FDD0`;
 //! * every byte that is not part of a valid UTF-8 sequence (always
 //!   `0x80..=0xFF`) is encoded as `U+FDD0` followed by the char `U+00bb`
 //!   (`bb` = the byte), e.g. `0xFF` becomes `U+FDD0 U+00FF`;
@@ -83,7 +82,8 @@ pub fn os_bytes(s: &OsStr) -> Vec<u8> {
 }
 
 /// Build an OS string from raw bytes (WTF-8 on Windows; bytes that are not
-/// well-formed WTF-8 become U+FFFD, like Zig's `wtf8ToWtf16Le`/`utf8ToUtf16`).
+/// well-formed WTF-8 become U+FFFD). Filesystem and process operations must
+/// use their checked conversions instead.
 #[cfg(unix)]
 pub fn os_from_bytes(b: Vec<u8>) -> OsString {
     use std::os::unix::ffi::OsStringExt;
@@ -182,18 +182,56 @@ pub struct InvalidWtf8;
 
 /// Strict [`wtf8_to_wide`]: malformed input is an error instead of U+FFFD.
 /// Lone surrogates encoded as 3-byte sequences are accepted (WTF-8). This is
-/// the conversion used where Zig's is fallible (process launch).
+/// the conversion used by Windows filesystem paths; process launch requires UTF-8.
 pub fn try_wtf8_to_wide(b: &[u8]) -> Result<Vec<u16>, InvalidWtf8> {
-    let wide = wtf8_to_wide(b);
-    // The lossy decoder yields U+FFFD only for malformed bytes; a genuine
-    // U+FFFD in the input is the 3-byte sequence EF BF BD. Re-encoding is
-    // the cheapest exact check: it reproduces the input iff it was
-    // well-formed.
-    if wide_to_wtf8(&wide) == b {
-        Ok(wide)
-    } else {
-        Err(InvalidWtf8)
+    let mut result = Vec::with_capacity(b.len());
+    let mut rest = b;
+    while !rest.is_empty() {
+        match std::str::from_utf8(rest) {
+            Ok(text) => {
+                result.extend(text.encode_utf16());
+                break;
+            }
+            Err(error) => {
+                let (valid, tail) = rest.split_at(error.valid_up_to());
+                // valid_up_to is guaranteed to be a valid UTF-8 prefix.
+                result.extend(
+                    std::str::from_utf8(valid)
+                        .map_err(|_| InvalidWtf8)?
+                        .encode_utf16(),
+                );
+                // Zig's WTF-8 validation accepts both lone and paired surrogate encodings.
+                if tail.len() < 3
+                    || tail[0] != 0xed
+                    || !(0xa0..=0xbf).contains(&tail[1])
+                    || !(0x80..=0xbf).contains(&tail[2])
+                {
+                    return Err(InvalidWtf8);
+                }
+                result.push(0xd000 | (u16::from(tail[1] & 0x3f) << 6) | u16::from(tail[2] & 0x3f));
+                rest = &tail[3..];
+            }
+        }
     }
+    Ok(result)
+}
+
+/// Strict UTF-8 conversion used by Zig's Windows Command (including its environment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid utf-8")]
+pub struct InvalidUtf8;
+
+pub fn try_utf8_to_wide(bytes: &[u8]) -> Result<Vec<u16>, InvalidUtf8> {
+    Ok(std::str::from_utf8(bytes)
+        .map_err(|_| InvalidUtf8)?
+        .encode_utf16()
+        .collect())
+}
+
+/// Zig's Windows filesystem conversion has a different error and accepts WTF-8.
+pub fn windows_path_wide(bytes: &[u8]) -> std::io::Result<Vec<u16>> {
+    try_wtf8_to_wide(bytes)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "BadPathName"))
 }
 
 /// OS string to reversible `String` (see the module docs). Lossless on every
@@ -258,8 +296,8 @@ impl EncodedOs {
         EncodedOs(bytes_to_config_string(b))
     }
 
-    /// Adopt a string that is *already* in the escape encoding (config
-    /// values, CLI arguments collected with `args::collect_config_strings`).
+    /// Adopt a string already in the internal escape encoding. Config and CLI
+    /// input must use `from_bytes`; plain Rust text must use `from_plain_text`.
     #[must_use]
     pub fn from_encoded(s: impl Into<String>) -> Self {
         EncodedOs(s.into())
@@ -272,8 +310,8 @@ impl EncodedOs {
         EncodedOs(valid_str_to_config_string(s))
     }
 
-    /// The encoded text (config files, `+show-config`, display of config
-    /// values). Never pass this to the OS; decode first.
+    /// Internal encoded text for storage/output formatting. Decode before
+    /// writing config output or passing it to OS APIs and field parsers.
     #[must_use]
     pub fn as_encoded(&self) -> &str {
         &self.0
@@ -302,6 +340,11 @@ impl EncodedOs {
         config_str_to_bytes(&self.0)
     }
 
+    /// Render bytes for a UI or log boundary which requires Unicode text.
+    pub fn to_text_lossy(&self) -> String {
+        String::from_utf8_lossy(&self.to_bytes()).into_owned()
+    }
+
     /// Decode to an OS string.
     #[must_use]
     pub fn to_os(&self) -> OsString {
@@ -316,10 +359,28 @@ impl EncodedOs {
         wtf8_to_wide(&self.to_bytes())
     }
 
-    /// Strict [`EncodedOs::to_wide`] for process launch: malformed WTF-8 is
+    /// Strict [`EncodedOs::to_wide`] for WTF-8 data: malformed WTF-8 is
     /// an error (Zig's `utf8ToUtf16Le*` fail) instead of becoming U+FFFD.
     pub fn try_to_wide(&self) -> Result<Vec<u16>, InvalidWtf8> {
         try_wtf8_to_wide(&self.to_bytes())
+    }
+
+    /// Windows process inputs use strict UTF-8, unlike filesystem paths.
+    pub fn try_to_utf16(&self) -> Result<Vec<u16>, InvalidUtf8> {
+        try_utf8_to_wide(&self.to_bytes())
+    }
+
+    pub fn try_to_utf16_nul(&self) -> Result<Vec<u16>, InvalidUtf8> {
+        let mut wide = self.try_to_utf16()?;
+        wide.push(0);
+        Ok(wide)
+    }
+
+    pub fn try_to_utf8_os(&self) -> Result<OsString, InvalidUtf8> {
+        let bytes = self.to_bytes();
+        Ok(OsString::from(
+            std::str::from_utf8(&bytes).map_err(|_| InvalidUtf8)?,
+        ))
     }
 
     /// [`EncodedOs::try_to_wide`] plus a trailing NUL.
@@ -357,10 +418,17 @@ impl EncodedOs {
         Self::from_bytes(&wide_to_wtf8(w))
     }
 
-    /// Decode to a path.
-    #[must_use]
-    pub fn to_path(&self) -> std::path::PathBuf {
-        config_str_to_path(&self.0)
+    /// Decode to a filesystem path, rejecting malformed Windows WTF-8 as BadPathName.
+    pub fn to_path(&self) -> std::io::Result<std::path::PathBuf> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            Ok(OsString::from_wide(&windows_path_wide(&self.to_bytes())?).into())
+        }
+        #[cfg(not(windows))]
+        {
+            Ok(self.to_os().into())
+        }
     }
 
     /// Whether the decoded value starts with the given plain prefix.
@@ -408,6 +476,18 @@ impl PartialEq<&str> for EncodedOs {
     }
 }
 
+/// Plain UTF-8 constructors: string literals never carry escape-encoded bytes.
+impl From<&str> for EncodedOs {
+    fn from(s: &str) -> Self {
+        Self::from_plain_text(s)
+    }
+}
+impl From<String> for EncodedOs {
+    fn from(s: String) -> Self {
+        Self::from_plain_text(&s)
+    }
+}
+
 impl From<&OsStr> for EncodedOs {
     fn from(s: &OsStr) -> Self {
         Self::from_os(s)
@@ -438,13 +518,58 @@ pub fn path_to_config_string(p: &std::path::Path) -> String {
 }
 
 /// Inverse of [`path_to_config_string`].
-pub fn config_str_to_path(s: &str) -> std::path::PathBuf {
-    std::path::PathBuf::from(config_str_to_os(s))
+pub fn config_str_to_path(s: &str) -> std::io::Result<std::path::PathBuf> {
+    EncodedOs::from_encoded(s).to_path()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_paths_fail_with_bad_path_name_instead_of_replacement() {
+        let error = windows_path_wide(b"C:\\bad\xff").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(error.to_string(), "BadPathName");
+        assert_eq!(
+            windows_path_wide("C:\\bad\u{fffd}".as_bytes())
+                .unwrap()
+                .last(),
+            Some(&0xfffd)
+        );
+        assert_eq!(windows_path_wide(b"\xed\xa0\x80").unwrap(), [0xd800]);
+    }
+
+    #[test]
+    fn wtf8_accepts_separately_encoded_surrogate_pairs_like_zig() {
+        assert_eq!(
+            try_wtf8_to_wide(b"\xed\xa0\xbd\xed\xb8\x80"),
+            Ok(vec![0xd83d, 0xde00])
+        );
+        assert_eq!(
+            windows_path_wide(b"x\xed\xa0\xbd\xed\xb8\x80y").unwrap(),
+            [0x78, 0xd83d, 0xde00, 0x79]
+        );
+        assert_eq!(try_wtf8_to_wide(b"\xed\xa0\xbd\xff"), Err(InvalidWtf8));
+    }
+
+    #[test]
+    fn windows_command_inputs_require_strict_utf8() {
+        for bytes in [
+            b"\xff".as_slice(),
+            b"\xed\xa0\x80",
+            b"\xed\xa0\xbd\xed\xb8\x80",
+        ] {
+            let value = EncodedOs::from_bytes(bytes);
+            assert_eq!(value.try_to_utf16(), Err(InvalidUtf8));
+            assert_eq!(value.try_to_utf16_nul(), Err(InvalidUtf8));
+            assert_eq!(value.try_to_utf8_os(), Err(InvalidUtf8));
+        }
+        assert_eq!(
+            try_utf8_to_wide("😀\u{fdd0}".as_bytes()).unwrap(),
+            [0xd83d, 0xde00, 0xfdd0]
+        );
+    }
 
     #[test]
     fn roundtrip_invalid_bytes() {
@@ -634,7 +759,7 @@ mod tests {
         let o = os_from_bytes(vec![b'/', 0xff, b'x']);
         let e = EncodedOs::from_os(&o);
         assert_eq!(e.to_os(), o);
-        assert_eq!(e.to_path(), std::path::PathBuf::from(&o));
+        assert_eq!(e.to_path().unwrap(), std::path::PathBuf::from(&o));
         assert_eq!(e.join_plain(&["a", "", "b"]).to_bytes(), b"/\xffx/a/b");
     }
 

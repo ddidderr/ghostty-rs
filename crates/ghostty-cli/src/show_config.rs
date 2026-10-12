@@ -49,7 +49,7 @@ cli_options!(Options, help);
 ///   * `--docs`: Print the documentation above each option as a comment,
 ///     This is very noisy but is very useful to learn about available
 ///     options, especially paired with `--default`.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
@@ -113,6 +113,81 @@ mod tests {
         assert!(s.contains("\nfont-size = 12\n"));
     }
 
+    #[test]
+    fn show_config_preserves_raw_and_text_fields_on_reload() {
+        use ghostty_config::cli_args::LineIterator;
+        let raw = b"title=x\xff\xef\xb7\x90\xc3\xa9\nfont-style=style\xfe\xef\xb7\x90\nfont-codepoint-map=U+0041=family\xff\nselection-word-chars=\xef\xb7\x90\xc3\xa9\nclipboard-codepoint-map=U+0041=\xef\xb7\x90\xc3\xa9\nkeybind=\xef\xb7\x90=set_surface_title:payload\ncommand-palette-entry=title:\"name\\xff\",action:\"text:payload\\xfe\"\n";
+        let mut config = Config::new_default();
+        config
+            .load_iter(&mut LineIterator::new(raw.as_slice()))
+            .unwrap();
+        assert_eq!(config.diagnostics.items(), []);
+        let output = format_config_bytes(&config, &Options::default()).unwrap();
+        for line in [
+            b"title = x\xff\xef\xb7\x90\xc3\xa9".as_slice(),
+            b"font-style = style\xfe\xef\xb7\x90",
+            b"font-codepoint-map = U+0041=family\xff",
+            b"selection-word-chars = \xef\xb7\x90\xc3\xa9",
+            b"clipboard-codepoint-map = U+0041=\xef\xb7\x90\xc3\xa9",
+            b"keybind = \xef\xb7\x90=set_surface_title:payload",
+        ] {
+            assert!(
+                output.split(|b| *b == b'\n').any(|value| value == line),
+                "missing {line:?} in {output:?}"
+            );
+        }
+        let mut reloaded = Config::new_default();
+        reloaded
+            .load_iter(&mut LineIterator::new(output.as_slice()))
+            .unwrap();
+        assert_eq!(reloaded.diagnostics.items(), []);
+        assert_eq!(reloaded.title, config.title);
+        assert_eq!(reloaded.font_style, config.font_style);
+        assert_eq!(reloaded.font_codepoint_map, config.font_codepoint_map);
+        assert_eq!(reloaded.selection_word_chars, config.selection_word_chars);
+        assert_eq!(
+            reloaded.clipboard_codepoint_map,
+            config.clipboard_codepoint_map
+        );
+        let trigger = ghostty_input::binding::Trigger::parse("\u{fdd0}").unwrap();
+        assert_eq!(
+            reloaded
+                .keybind
+                .set
+                .get(trigger)
+                .unwrap()
+                .as_leaf()
+                .unwrap()
+                .action,
+            config
+                .keybind
+                .set
+                .get(trigger)
+                .unwrap()
+                .as_leaf()
+                .unwrap()
+                .action,
+        );
+        assert_eq!(
+            reloaded.command_palette_entry.value.last(),
+            config.command_palette_entry.value.last()
+        );
+    }
+
+    #[test]
+    fn show_config_action_escaping_uses_original_bytes() {
+        use ghostty_config::cli_args::LineIterator;
+        let mut config = Config::new_default();
+        config
+            .load_iter(&mut LineIterator::new(
+                b"keybind=a=set_surface_title:payload\xff\xef\xb7\x90".as_slice(),
+            ))
+            .unwrap();
+        let output = format_config_bytes(&config, &Options::default()).unwrap();
+        // Zig formats action byte strings with std.zig.stringEscape.
+        assert!(output.ends_with(b"keybind = a=set_surface_title:payload\\xff\\xef\\xb7\\x90\n"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn show_config_round_trips_non_utf8_and_fdd0_paths() {
@@ -152,7 +227,7 @@ mod tests {
         assert!(opts.default);
         assert!(!opts.changes_only);
         assert!(matches!(
-            crate::parse_options(&mut opts, &["g".into(), "--help".into()]),
+            crate::parse_options(&mut opts, &["g", "--help"]),
             Err(Error::ActionHelpRequested)
         ));
     }

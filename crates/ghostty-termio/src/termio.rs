@@ -143,7 +143,7 @@ impl DerivedConfig {
             background: config.background,
             osc_color_report_format: config.osc_color_report_format,
             clipboard_write: config.clipboard_write,
-            enquiry_response: ghostty_os::osbytes::config_str_to_bytes(&config.enquiry_response),
+            enquiry_response: config.enquiry_response.to_bytes(),
             conditional_state: config.conditional_state,
         }
     }
@@ -174,13 +174,19 @@ impl ThreadEnterState {
         let mut out = Vec::with_capacity(self.input.len());
         for item in &self.input {
             match item {
-                ReadableIO::Raw(v) => out.push(ghostty_os::osbytes::config_str_to_bytes(v)),
+                ReadableIO::Raw(v) => out.push(v.to_bytes()),
                 ReadableIO::Path(path) => {
                     // The path is an encoded OS string: decode it to open.
-                    let f = std::fs::File::open(path.to_path()).map_err(|err| {
-                        log::warn!("failed to open input file={} err={err}", path.as_encoded());
-                        Error::InputNotFound
-                    })?;
+                    let f = path
+                        .to_path()
+                        .and_then(std::fs::File::open)
+                        .map_err(|err| {
+                            log::warn!(
+                                "failed to open input file={} err={err}",
+                                path.to_text_lossy()
+                            );
+                            Error::InputNotFound
+                        })?;
                     let mut buf = Vec::new();
                     // 10 MiB max
                     let limit = 10 * 1024 * 1024;
@@ -803,8 +809,7 @@ mod derived_config_tests {
         let mut cfg = Config {
             enquiry_response: ghostty_os::osbytes::EncodedOs::from_bytes(
                 "a\u{fdd0}\u{ff}\u{e9}".as_bytes(),
-            )
-            .into_encoded(),
+            ),
             ..Config::default()
         };
         assert_eq!(
@@ -812,7 +817,7 @@ mod derived_config_tests {
             "a\u{fdd0}\u{ff}\u{e9}".as_bytes()
         );
         let raw = b"x\xffy";
-        cfg.enquiry_response = ghostty_os::osbytes::EncodedOs::from_bytes(raw).into_encoded();
+        cfg.enquiry_response = ghostty_os::osbytes::EncodedOs::from_bytes(raw);
         assert_eq!(DerivedConfig::new(&cfg).enquiry_response, raw);
     }
 }

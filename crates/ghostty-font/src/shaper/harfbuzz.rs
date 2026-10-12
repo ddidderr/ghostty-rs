@@ -76,7 +76,7 @@ impl Shaper {
         let mut feature_list = FeatureList::default();
         feature_list.features.extend_from_slice(&DEFAULT_FEATURES);
         for feature_str in &opts.features {
-            feature_list.append_from_string(feature_str);
+            feature_list.append_from_bytes(&feature_str.to_bytes());
         }
 
         let hb_feats = feature_list
@@ -351,7 +351,7 @@ mod tests {
     fn shape_ligatures_disabled_by_feature() {
         let f = face(embedded::INCONSOLATA);
         let mut s = Shaper::new(&shape::Options {
-            features: vec!["-liga".to_string()],
+            features: vec!["-liga".into()],
         })
         .unwrap();
         let cells = s.shape_text(Some(&f), &text("===")).unwrap();

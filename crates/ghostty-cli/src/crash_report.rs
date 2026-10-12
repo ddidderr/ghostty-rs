@@ -36,7 +36,7 @@ pub fn list_reports(dir: &std::path::Path) -> Result<Vec<Report>, Error> {
 ///
 /// This command currently only supports listing crash reports. Viewing
 /// and sending crash reports is unimplemented and will be added in the future.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options;
     crate::parse_options(&mut opts, args)?;
 

@@ -6,6 +6,7 @@
 use std::fmt;
 
 use ghostty_input::binding::Action;
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::{
     c_value::{CValue, QuickTerminalSizeC},
@@ -92,17 +93,18 @@ use ghostty_input::command::Command;
 
 /// Parse a command from `title:...,description:...,action:...`
 /// (Zig: `parseAutoStruct(inputpkg.Command, alloc, input, null)`).
-pub fn parse_command_auto(input: &str) -> Result<Command, ArgError> {
+pub fn parse_command_auto(input: &[u8]) -> Result<Command, ArgError> {
     let mut action: Option<Action> = None;
-    let mut title: Option<String> = None;
-    let mut description = String::new();
-    parse_auto_struct_with(input, |k, v| {
+    let mut title: Option<EncodedOs> = None;
+    let mut description = EncodedOs::new();
+    crate::cli_args::parse_auto_struct_bytes_with(input, |k, v| {
         match k {
             "action" => {
-                action = Some(Action::parse(v).map_err(|e| ArgError::Other(format!("{e:?}")))?);
+                action =
+                    Some(Action::parse_bytes(v).map_err(|e| ArgError::Other(format!("{e:?}")))?);
             }
-            "title" => title = Some(v.to_string()),
-            "description" => description = v.to_string(),
+            "title" => title = Some(EncodedOs::from_bytes(v)),
+            "description" => description = EncodedOs::from_bytes(v),
             _ => return Ok(false),
         }
         Ok(true)
@@ -121,10 +123,10 @@ fn default_commands() -> Vec<Command> {
 /// Escape a string like Zig's `std.zig.fmtString`: `\n \r \t \\ \"` are
 /// escaped by name and every other byte outside printable ASCII is written
 /// as `\xNN` (so multi-byte UTF-8 is escaped per byte).
-fn zig_fmt_string(s: &str) -> String {
+fn zig_fmt_string(s: &EncodedOs) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    for &b in s.as_bytes() {
+    for b in s.to_bytes() {
         match b {
             b'\n' => out.push_str("\\n"),
             b'\r' => out.push_str("\\r"),
@@ -162,9 +164,9 @@ impl ConfigField for RepeatableCommand {
         )
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         // Unset or empty input clears the list
-        let input = input.unwrap_or("");
+        let input = input.unwrap_or(b"");
         if input.is_empty() {
             self.value.clear();
             return Ok(());
@@ -395,7 +397,8 @@ impl MouseScrollMultiplier {
 }
 
 impl ConfigField for MouseScrollMultiplier {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
         // Unset fields inherit from the current value.
         let mut result = *self;
@@ -626,7 +629,8 @@ impl ConfigField for QuickTerminalSize {
         }
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let input = input.ok_or(ArgError::ValueRequired)?;
         let mut it = input.split(',');
 
@@ -819,7 +823,8 @@ impl ConfigField for BackgroundBlur {
         })
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         let Some(input) = input else {
             // Emulate behavior for bools
             *self = BackgroundBlur::True;
@@ -919,7 +924,8 @@ impl ConfigField for WindowDecoration {
         CValue::EnumName(self.as_str())
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = Self::parse(input)?;
         Ok(())
     }
@@ -932,12 +938,12 @@ impl ConfigField for WindowDecoration {
 /// See theme
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Theme {
-    pub light: String,
-    pub dark: String,
+    pub light: EncodedOs,
+    pub dark: EncodedOs,
 }
 
 impl ConfigField for Theme {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
@@ -947,13 +953,13 @@ impl ConfigField for Theme {
         // we're parsing a light/dark mode theme pair. Note that "=" isn't
         // actually valid for setting a light/dark mode pair but I anticipate
         // it'll be a common typo.
-        if input.contains([',', '=', ':']) {
-            let mut light: Option<String> = None;
-            let mut dark: Option<String> = None;
-            parse_auto_struct_with(input, |k, v| {
+        if input.iter().any(|b| matches!(b, b',' | b'=' | b':')) {
+            let mut light: Option<EncodedOs> = None;
+            let mut dark: Option<EncodedOs> = None;
+            crate::cli_args::parse_auto_struct_bytes_with(input, |k, v| {
                 match k {
-                    "light" => light = Some(v.to_string()),
-                    "dark" => dark = Some(v.to_string()),
+                    "light" => light = Some(EncodedOs::from_bytes(v)),
+                    "dark" => dark = Some(EncodedOs::from_bytes(v)),
                     _ => return Ok(false),
                 }
                 Ok(true)
@@ -967,19 +973,26 @@ impl ConfigField for Theme {
         }
 
         // Trim our value and set the value to the specified value directly.
-        let trimmed = trim_ws(input);
+        let trimmed = crate::cli_args::trim_bytes(input);
         *self = Theme {
-            light: trimmed.to_string(),
-            dark: trimmed.to_string(),
+            light: EncodedOs::from_bytes(trimmed),
+            dark: EncodedOs::from_bytes(trimmed),
         };
         Ok(())
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         if self.light == self.dark {
-            return fmt_str(f, &self.light);
+            return fmt_str(f, self.light.as_encoded());
         }
-        fmt_str(f, &format!("light:{},dark:{}", self.light, self.dark))
+        fmt_str(
+            f,
+            &format!(
+                "light:{},dark:{}",
+                self.light.as_encoded(),
+                self.dark.as_encoded()
+            ),
+        )
     }
 }
 
@@ -1168,7 +1181,8 @@ impl ConfigField for Duration {
         CValue::Usize(self.as_milliseconds() as usize)
     }
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = Duration::parse(input)?;
         Ok(())
     }
@@ -1207,7 +1221,8 @@ impl WindowPadding {
 }
 
 impl ConfigField for WindowPadding {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let input = crate::cli_args::text_value(input)?;
         *self = WindowPadding::parse(input)?;
         Ok(())
     }
@@ -1602,17 +1617,17 @@ mod tests {
         // Single
         let mut v = Theme::default();
         v.parse_cli(Some("foo")).unwrap();
-        assert_eq!((v.light.as_str(), v.dark.as_str()), ("foo", "foo"));
+        assert_eq!((v.light.as_encoded(), v.dark.as_encoded()), ("foo", "foo"));
 
         // Single whitespace
         let mut v = Theme::default();
         v.parse_cli(Some("  foo  ")).unwrap();
-        assert_eq!((v.light.as_str(), v.dark.as_str()), ("foo", "foo"));
+        assert_eq!((v.light.as_encoded(), v.dark.as_encoded()), ("foo", "foo"));
 
         // Light/dark
         let mut v = Theme::default();
         v.parse_cli(Some(" light:foo,  dark : bar  ")).unwrap();
-        assert_eq!((v.light.as_str(), v.dark.as_str()), ("foo", "bar"));
+        assert_eq!((v.light.as_encoded(), v.dark.as_encoded()), ("foo", "bar"));
 
         let mut v = Theme::default();
         assert_eq!(v.parse_cli(None), Err(ArgError::ValueRequired));

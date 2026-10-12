@@ -118,7 +118,7 @@ impl App {
         let xlib_display = unsafe { x11_display.xdisplay() };
 
         let program_name = match &config.x11_instance_name {
-            Some(pn) => pn.clone(),
+            Some(pn) => pn.to_text_lossy(),
             None if cfg!(debug_assertions) => "ghostty-debug".to_string(),
             None => "ghostty".to_string(),
         };

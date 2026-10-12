@@ -31,16 +31,16 @@ use crate::binding::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
     pub action: Action,
-    pub title: String,
-    pub description: String,
+    pub title: ghostty_os::osbytes::EncodedOs,
+    pub description: ghostty_os::osbytes::EncodedOs,
 }
 
 impl Command {
     pub fn new(action: Action, title: &str, description: &str) -> Command {
         Command {
             action,
-            title: title.to_string(),
-            description: description.to_string(),
+            title: title.into(),
+            description: description.into(),
         }
     }
 
@@ -75,14 +75,17 @@ impl Command {
 pub struct CommandC {
     pub action_key: String,
     pub action: String,
-    pub title: String,
-    pub description: String,
+    pub title: ghostty_os::osbytes::EncodedOs,
+    pub description: ghostty_os::osbytes::EncodedOs,
 }
 
 /// `std.ascii.orderIgnoreCase`
-fn cmp_ignore_case(a: &str, b: &str) -> std::cmp::Ordering {
-    let a = a.bytes().map(|c| c.to_ascii_lowercase());
-    let b = b.bytes().map(|c| c.to_ascii_lowercase());
+fn cmp_ignore_case(
+    a: &ghostty_os::osbytes::EncodedOs,
+    b: &ghostty_os::osbytes::EncodedOs,
+) -> std::cmp::Ordering {
+    let a = a.to_bytes().into_iter().map(|c| c.to_ascii_lowercase());
+    let b = b.to_bytes().into_iter().map(|c| c.to_ascii_lowercase());
     a.cmp(b)
 }
 
@@ -562,7 +565,7 @@ fn default_commands() -> Vec<Command> {
         Command::new(Action::Redo, "Redo", "Redo the last undone action."),
         Command::new(Action::Quit, "Quit", "Quit the application."),
         Command::new(
-            Action::Text("👻".to_string()),
+            Action::Text("👻".into()),
             "Ghostty",
             "Put a little Ghostty in your terminal.",
         ),

@@ -103,22 +103,28 @@ macro_rules! config_struct {
                 }
             }
 
+            /// Parse a plain UTF-8 value supplied programmatically.
+            #[allow(dead_code)]
+            pub fn parse_field(&mut self, key: &str, value: Option<&str>) -> Result<(), $crate::cli_args::ArgError> {
+                self.parse_field_bytes(key, value.map(str::as_bytes))
+            }
+
             #[allow(dead_code)]
             /// Parse a single key/value into the matching field. Empty
             /// values reset the field to its default.
-            pub fn parse_field(
+            pub fn parse_field_bytes(
                 &mut self,
                 key: &str,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), $crate::cli_args::ArgError> {
                 match key {
                     $(
                         $key => {
-                            if value == ::core::option::Option::Some("") {
+                            if value == ::core::option::Option::Some(b"".as_slice()) {
                                 $crate::cli_args::ConfigField::reset(&mut self.$field, $default);
                                 return ::core::result::Result::Ok(());
                             }
-                            $crate::cli_args::ConfigField::parse_cli(&mut self.$field, value)
+                            $crate::cli_args::ConfigField::parse_bytes(&mut self.$field, value)
                         }
                     )*
                     _ => ::core::result::Result::Err($crate::cli_args::ArgError::InvalidField),
@@ -215,11 +221,11 @@ macro_rules! config_enum {
             const VALID_VALUES: ::core::option::Option<&'static [&'static str]> =
                 ::core::option::Option::Some(Self::NAMES);
 
-            fn parse_cli(
+            fn parse_bytes(
                 &mut self,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), $crate::cli_args::ArgError> {
-                let v = value.ok_or($crate::cli_args::ArgError::ValueRequired)?;
+                let v = $crate::cli_args::text_value(value)?.ok_or($crate::cli_args::ArgError::ValueRequired)?;
                 *self = Self::from_name(v).ok_or($crate::cli_args::ArgError::InvalidValue)?;
                 ::core::result::Result::Ok(())
             }
@@ -295,11 +301,11 @@ macro_rules! config_packed {
                 $crate::c_value::CValue::Packed(bits)
             }
 
-            fn parse_cli(
+            fn parse_bytes(
                 &mut self,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), $crate::cli_args::ArgError> {
-                let v = value.ok_or($crate::cli_args::ArgError::ValueRequired)?;
+                let v = $crate::cli_args::text_value(value)?.ok_or($crate::cli_args::ArgError::ValueRequired)?;
                 let mut result = <$name as ::core::default::Default>::default();
                 $crate::cli_args::parse_packed_struct_with(v, Self::NAMES, |i, b| {
                     result.set_index(i, b);

@@ -33,8 +33,8 @@ impl Default for Path {
 }
 
 /// Lexically resolve `base/path` like `std.fs.path.resolve`.
-fn resolve_lexical(base: &EncodedOs, path: &EncodedOs) -> EncodedOs {
-    let joined = base.to_path().join(path.to_path());
+fn resolve_lexical(base: &EncodedOs, path: &EncodedOs) -> std::io::Result<EncodedOs> {
+    let joined = base.to_path()?.join(path.to_path()?);
     let mut out = PathBuf::new();
     for c in joined.components() {
         match c {
@@ -45,7 +45,7 @@ fn resolve_lexical(base: &EncodedOs, path: &EncodedOs) -> EncodedOs {
             other => out.push(other.as_os_str()),
         }
     }
-    EncodedOs::from_path(&out)
+    Ok(EncodedOs::from_path(&out))
 }
 
 impl Path {
@@ -75,27 +75,31 @@ impl Path {
     ///
     /// Returns `Ok(None)` for an empty input.
     pub fn parse(input: Option<&str>) -> Result<Option<Path>, ArgError> {
+        Self::parse_bytes(input.map(str::as_bytes))
+    }
+
+    pub fn parse_bytes(input: Option<&[u8]>) -> Result<Option<Path>, ArgError> {
         let mut value = input.ok_or(ArgError::ValueRequired)?;
 
         if value.is_empty() {
             return Ok(None);
         }
 
-        let optional = if let Some(rest) = value.strip_prefix('?') {
+        let optional = if let Some(rest) = value.strip_prefix(b"?") {
             value = rest;
             true
         } else {
             false
         };
 
-        if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+        if value.len() >= 2 && value.starts_with(b"\"") && value.ends_with(b"\"") {
             value = &value[1..value.len() - 1];
         }
 
         Ok(Some(if optional {
-            Path::Optional(EncodedOs::from_encoded(value))
+            Path::Optional(EncodedOs::from_bytes(value))
         } else {
-            Path::Required(EncodedOs::from_encoded(value))
+            Path::Required(EncodedOs::from_bytes(value))
         }))
     }
 
@@ -107,13 +111,13 @@ impl Path {
     /// only returned if the base directory cannot be opened.
     pub fn expand(&mut self, base: &EncodedOs, diags: &mut DiagnosticList) -> std::io::Result<()> {
         // Filesystem calls use the decoded OS paths.
-        let base_path = base.to_path();
+        let base_path = base.to_path()?;
         assert!(base_path.is_absolute());
 
         let path = self.path().clone();
 
         // If it is already absolute we can ignore it.
-        if path.is_empty() || path.to_path().is_absolute() {
+        if path.is_empty() || path.to_path()?.is_absolute() {
             return Ok(());
         }
 
@@ -126,7 +130,7 @@ impl Path {
                 Ok(expanded) => {
                     log::debug!(
                         "expanding file path from home directory: path={}",
-                        expanded.as_encoded()
+                        expanded.to_text_lossy()
                     );
                     *self.path_mut() = expanded;
                 }
@@ -150,13 +154,13 @@ impl Path {
         // Make sure the base directory can be opened.
         std::fs::read_dir(&base_path)?;
 
-        let full = base_path.join(path.to_path());
+        let full = base_path.join(path.to_path()?);
         let abs = match std::fs::canonicalize(&full) {
             Ok(p) => EncodedOs::from_path(&p),
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 // The file doesn't exist. Try to resolve the relative path
                 // another way.
-                resolve_lexical(base, &path)
+                resolve_lexical(base, &path)?
             }
             Err(err) => {
                 diags.append(Diagnostic {
@@ -172,8 +176,8 @@ impl Path {
 
         log::debug!(
             "expanding file path relative={} abs={}",
-            path.as_encoded(),
-            abs.as_encoded()
+            path.to_text_lossy(),
+            abs.to_text_lossy()
         );
         *self.path_mut() = abs;
         Ok(())
@@ -195,8 +199,8 @@ impl ConfigField for Path {
     }
 
     /// Parse CLI option. The value will be overwritten.
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
-        let Some(item) = Path::parse(input)? else {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let Some(item) = Path::parse_bytes(input)? else {
             return Ok(());
         };
         if item.is_empty() {
@@ -237,8 +241,8 @@ impl RepeatablePath {
 impl ConfigField for RepeatablePath {
     const KIND: crate::cli_args::FieldKind = crate::cli_args::FieldKind::RepeatablePath;
 
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
-        let Some(item) = Path::parse(input)? else {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
+        let Some(item) = Path::parse_bytes(input)? else {
             self.value.clear();
             return Ok(());
         };
@@ -403,7 +407,7 @@ mod tests {
         p.expand(&EncodedOs::from_path(&base), &mut diags).unwrap();
         assert_eq!(diags.items().len(), 0);
         // The canonical (non-UTF-8) target is preserved byte for byte.
-        assert_eq!(p.path().to_path(), target);
-        assert!(std::fs::metadata(p.path().to_path()).is_ok());
+        assert_eq!(p.path().to_path().unwrap(), target);
+        assert!(std::fs::metadata(p.path().to_path().unwrap()).is_ok());
     }
 }

@@ -93,7 +93,7 @@ pub(crate) fn test_shaper_with_font(font_req: TestFont) -> TestShaper {
     let grid = SharedGrid::new(CodepointResolver::new(c)).unwrap();
     let shaper = Shaper::new(&shape::Options {
         // Some of our tests rely on dlig being enabled by default
-        features: vec!["dlig".to_string()],
+        features: vec!["dlig".into()],
     })
     .unwrap();
 
@@ -112,7 +112,7 @@ pub(crate) fn test_shaper_with_discovered_font(font_req: &str) -> Option<TestSha
         let disco = Fontconfig::init();
         let mut it = disco
             .discover(&Descriptor {
-                family: Some(font_req.to_string()),
+                family: Some(font_req.into()),
                 size: 12.0,
                 monospace: false,
                 ..Descriptor::default()

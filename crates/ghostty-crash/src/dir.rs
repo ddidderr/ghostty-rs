@@ -20,7 +20,7 @@ pub fn default_dir() -> io::Result<Dir> {
     .map_err(|e| io::Error::other(e.to_string()))?;
     Ok(Dir {
         // The XDG helpers return the encoded form of the OS string.
-        path: path.to_path(),
+        path: path.to_path()?,
     })
 }
 

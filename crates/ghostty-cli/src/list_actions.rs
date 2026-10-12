@@ -22,7 +22,7 @@ cli_options!(Options, help);
 /// Flags:
 ///
 ///   * `--docs`: will print out the documentation for each action.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

@@ -251,7 +251,9 @@ impl SharedGridSet {
 
                     log::warn!(
                         "font-family {style:?} not found: {}",
-                        desc.family.as_deref().unwrap_or("")
+                        desc.family
+                            .as_ref()
+                            .map_or("", ghostty_os::osbytes::EncodedOs::as_encoded)
                     );
                 }
             }
@@ -501,8 +503,8 @@ impl Key {
         let mut descriptors: Vec<Descriptor> = Vec::new();
         for family in &config.font_family.list {
             descriptors.push(Descriptor {
-                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
-                style: config.font_style.name_value().map(str::to_string),
+                family: Some(family.clone()),
+                style: config.font_style.name_value().cloned(),
                 size: font_size.points,
                 variations: config.font_variation.list.clone(),
                 ..Descriptor::default()
@@ -518,9 +520,9 @@ impl Key {
         // no results would be found if we restrict to ALSO searching for
         // italic.
         for family in &config.font_family_bold.list {
-            let style = config.font_style_bold.name_value().map(str::to_string);
+            let style = config.font_style_bold.name_value().cloned();
             descriptors.push(Descriptor {
-                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
+                family: Some(family.clone()),
                 bold: style.is_none(),
                 style,
                 size: font_size.points,
@@ -529,9 +531,9 @@ impl Key {
             });
         }
         for family in &config.font_family_italic.list {
-            let style = config.font_style_italic.name_value().map(str::to_string);
+            let style = config.font_style_italic.name_value().cloned();
             descriptors.push(Descriptor {
-                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
+                family: Some(family.clone()),
                 italic: style.is_none(),
                 style,
                 size: font_size.points,
@@ -540,12 +542,9 @@ impl Key {
             });
         }
         for family in &config.font_family_bold_italic.list {
-            let style = config
-                .font_style_bold_italic
-                .name_value()
-                .map(str::to_string);
+            let style = config.font_style_bold_italic.name_value().cloned();
             descriptors.push(Descriptor {
-                family: Some(ghostty_os::osbytes::config_str_to_text(family)),
+                family: Some(family.clone()),
                 bold: style.is_none(),
                 italic: style.is_none(),
                 style,

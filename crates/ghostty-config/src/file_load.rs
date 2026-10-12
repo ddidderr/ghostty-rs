@@ -159,7 +159,10 @@ impl std::error::Error for OpenFileError {}
 /// if it exists and is non-empty. This also constrains the possible
 /// errors to a smaller set that we can explicitly handle.
 pub fn open(path: &EncodedOs) -> Result<File, OpenFileError> {
-    let real = path.to_path();
+    let real = path.to_path().map_err(|err| {
+        log::warn!("invalid config path: {err}");
+        OpenFileError::FileOpenFailed
+    })?;
     assert!(real.is_absolute());
 
     let file = File::open(&real).map_err(|err| {
@@ -221,16 +224,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let new = EncodedOs::from_path(&dir.join("config.ghostty"));
         let legacy = EncodedOs::from_path(&dir.join("config"));
-        let _ = std::fs::remove_file(new.to_path());
-        let _ = std::fs::remove_file(legacy.to_path());
+        let _ = std::fs::remove_file(new.to_path().unwrap());
+        let _ = std::fs::remove_file(legacy.to_path().unwrap());
 
         // Neither exists: the new one.
         assert_eq!(preferred_of(new.clone(), legacy.clone()), new);
         // Only legacy exists: the legacy one.
-        std::fs::write(legacy.to_path(), "a=b").unwrap();
+        std::fs::write(legacy.to_path().unwrap(), "a=b").unwrap();
         assert_eq!(preferred_of(new.clone(), legacy.clone()), legacy);
         // Both exist: the new one.
-        std::fs::write(new.to_path(), "a=b").unwrap();
+        std::fs::write(new.to_path().unwrap(), "a=b").unwrap();
         assert_eq!(preferred_of(new.clone(), legacy.clone()), new);
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -241,17 +244,17 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let app = EncodedOs::from_path(&dir.join("app"));
         let xdg_p = EncodedOs::from_path(&dir.join("xdg"));
-        let _ = std::fs::remove_file(app.to_path());
-        let _ = std::fs::remove_file(xdg_p.to_path());
+        let _ = std::fs::remove_file(app.to_path().unwrap());
+        let _ = std::fs::remove_file(xdg_p.to_path().unwrap());
         let xdg_fn = || Ok(xdg_p.clone());
 
         // Neither exists: app support.
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), app);
         // XDG exists only: XDG.
-        std::fs::write(xdg_p.to_path(), "a=b").unwrap();
+        std::fs::write(xdg_p.to_path().unwrap(), "a=b").unwrap();
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), xdg_p);
         // App support exists: app support wins.
-        std::fs::write(app.to_path(), "a=b").unwrap();
+        std::fs::write(app.to_path().unwrap(), "a=b").unwrap();
         assert_eq!(preferred_macos(app.clone(), &xdg_fn).unwrap(), app);
         std::fs::remove_dir_all(&dir).unwrap();
     }

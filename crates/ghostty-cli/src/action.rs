@@ -53,7 +53,7 @@ pub trait ActionEnum: Sized + Copy {
 
 /// Detect the action from the process CLI args (Zig: `detectArgs`).
 pub fn detect_args<E: ActionEnum>() -> Result<Option<E>, DetectError> {
-    detect_iter(ghostty_os::args::collect_config_strings())
+    detect_iter(ghostty_os::args::collect_bytes())
 }
 
 /// Detect the action from any iterator. Each iterator value should yield
@@ -61,7 +61,7 @@ pub fn detect_args<E: ActionEnum>() -> Result<Option<E>, DetectError> {
 pub fn detect_iter<E: ActionEnum, I, S>(iter: I) -> Result<Option<E>, DetectError>
 where
     I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    S: AsRef<[u8]>,
 {
     let mut fallback: Option<E> = None;
     let mut pending: Option<E> = None;
@@ -69,7 +69,10 @@ where
         let arg = arg.as_ref();
 
         // Allow handling of special cases.
-        if let Some(special) = E::detect_special_case(arg) {
+        if let Some(special) = std::str::from_utf8(arg)
+            .ok()
+            .and_then(E::detect_special_case)
+        {
             match special {
                 SpecialCase::Action(a) => return Ok(Some(a)),
                 SpecialCase::Fallback(a) => fallback = Some(a),
@@ -82,13 +85,18 @@ where
         }
 
         // Commands must start with "+"
-        let Some(name) = arg.strip_prefix('+') else {
+        let Some(name) = arg.strip_prefix(b"+") else {
             continue;
         };
         if pending.is_some() {
             return Err(DetectError::MultipleActions);
         }
-        pending = Some(E::from_name(name).ok_or(DetectError::InvalidAction)?);
+        pending = Some(
+            std::str::from_utf8(name)
+                .ok()
+                .and_then(E::from_name)
+                .ok_or(DetectError::InvalidAction)?,
+        );
     }
 
     // If we have an action, we always return that action, even if we've

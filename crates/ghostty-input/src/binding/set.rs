@@ -162,7 +162,11 @@ impl Value {
                 let pos = buffer.len();
                 for (k, v) in &set.bindings {
                     buffer.truncate(pos);
-                    let _ = write!(buffer, ">{}", k.0);
+                    let _ = write!(
+                        buffer,
+                        ">{}",
+                        ghostty_os::osbytes::valid_str_to_config_string(&k.0.to_string())
+                    );
                     v.format_entries(buffer, formatter);
                 }
                 buffer.truncate(pos);
@@ -285,9 +289,13 @@ impl Set {
     ///
     /// Any Error returned is validated before any set modifications are made.
     pub fn parse_and_put(&mut self, input: &str) -> Result<(), Error> {
+        self.parse_and_put_bytes(input.as_bytes())
+    }
+
+    pub fn parse_and_put_bytes(&mut self, input: &[u8]) -> Result<(), Error> {
         // To make cleanup easier, we ensure that the full sequence is
         // valid before making any set modifications.
-        let mut it = Parser::new(input)?;
+        let mut it = Parser::from_bytes(input)?;
         while it.next_elem()?.is_some() {}
         it.reset();
 

@@ -9,7 +9,7 @@ use crate::{
 
 /// The `version` command is used to display information about Ghostty. Recognized as
 /// either `+version` or `--version`.
-pub fn run(_args: &[String]) -> Result<u8, Error> {
+pub fn run(_args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let stdout = std::io::stdout();
     let tty = stdout.is_terminal();
     let mut out = std::io::BufWriter::new(stdout.lock());

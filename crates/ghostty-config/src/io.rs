@@ -5,7 +5,7 @@ use std::fmt;
 use ghostty_os::osbytes::EncodedOs;
 
 use crate::{
-    cli_args::{ArgError, ConfigField, split_tagged_union},
+    cli_args::{ArgError, ConfigField},
     formatter::EntryFormatter,
     string,
 };
@@ -18,16 +18,16 @@ use crate::{
 /// might be produced in an intermediate state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadableIO {
-    /// Raw bytes in the reversible OS-byte encoding (decode with
-    /// `osbytes::config_str_to_bytes` after [`ReadableIO::clone_parsed`]).
-    Raw(String),
+    /// Raw bytes, available with `EncodedOs::to_bytes` after
+    /// [`ReadableIO::clone_parsed`] resolves string escapes.
+    Raw(EncodedOs),
     /// A file path (decode with `EncodedOs::to_path` before opening).
     Path(EncodedOs),
 }
 
 impl Default for ReadableIO {
     fn default() -> Self {
-        ReadableIO::Raw(String::new())
+        ReadableIO::Raw(EncodedOs::new())
     }
 }
 
@@ -36,18 +36,20 @@ impl ReadableIO {
     /// the final resulting value all at once.
     #[must_use]
     pub fn clone_parsed(&self) -> Self {
-        // Parsing can't fail because we validate it in parse_cli
+        // Parsing can't fail because we validate it in parse_bytes
         match self {
-            ReadableIO::Raw(v) => ReadableIO::Raw(string::parse(v).unwrap_or_default()),
-            ReadableIO::Path(v) => ReadableIO::Path(EncodedOs::from_encoded(
-                string::parse(v.as_encoded()).unwrap_or_default(),
+            ReadableIO::Raw(v) => ReadableIO::Raw(EncodedOs::from_bytes(
+                &string::parse_bytes(v.to_bytes()).unwrap_or_default(),
+            )),
+            ReadableIO::Path(v) => ReadableIO::Path(EncodedOs::from_bytes(
+                &string::parse_bytes(v.to_bytes()).unwrap_or_default(),
             )),
         }
     }
 }
 
 impl ConfigField for ReadableIO {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let input = input.ok_or(ArgError::ValueRequired)?;
         if input.is_empty() {
             return Err(ArgError::ValueRequired);
@@ -55,22 +57,22 @@ impl ConfigField for ReadableIO {
 
         // We only validate that string parsing works. We store the value
         // as raw so that our formatting can recreate it.
-        string::parse(input)?;
+        string::parse_bytes(input)?;
 
         // Next, parse the tagged union using normal rules. Invalid values in
         // the tagged union are interpreted as raw values.
-        let (tag, rest) = split_tagged_union(input);
+        let (tag, rest) = crate::cli_args::split_tagged_union_bytes(input);
         *self = match tag {
-            "raw" => ReadableIO::Raw(rest.to_string()),
-            "path" => ReadableIO::Path(EncodedOs::from_encoded(rest)),
-            _ => ReadableIO::Raw(input.to_string()),
+            b"raw" => ReadableIO::Raw(EncodedOs::from_bytes(rest)),
+            b"path" => ReadableIO::Path(EncodedOs::from_bytes(rest)),
+            _ => ReadableIO::Raw(EncodedOs::from_bytes(input)),
         };
         Ok(())
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         let (tag, v) = match self {
-            ReadableIO::Raw(v) => ("raw", v.as_str()),
+            ReadableIO::Raw(v) => ("raw", v.as_encoded()),
             ReadableIO::Path(v) => ("path", v.as_encoded()),
         };
         writeln!(f.writer, "{} = {tag}:{v}", f.name)
@@ -93,7 +95,7 @@ impl RepeatableReadableIO {
 }
 
 impl ConfigField for RepeatableReadableIO {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
 
         // Empty value resets the list
@@ -103,7 +105,7 @@ impl ConfigField for RepeatableReadableIO {
         }
 
         let mut io = ReadableIO::default();
-        io.parse_cli(Some(value))?;
+        io.parse_bytes(Some(value))?;
         self.list.push(io);
         Ok(())
     }
@@ -139,8 +141,7 @@ mod tests {
     #[test]
     fn readable_io_path_decodes_to_the_original_bytes() {
         let mut io = ReadableIO::default();
-        let enc = EncodedOs::from_bytes(b"/tmp/\xffin").into_encoded();
-        io.parse_cli(Some(&format!("path:{enc}"))).unwrap();
+        io.parse_bytes(Some(b"path:/tmp/\xffin")).unwrap();
         let ReadableIO::Path(p) = io.clone_parsed() else {
             panic!("path expected")
         };

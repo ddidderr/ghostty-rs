@@ -8,6 +8,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use ghostty_os::osbytes::EncodedOs;
+
 use super::Error;
 
 /// Define a fieldless enum whose variants are named in snake_case in the
@@ -314,9 +316,9 @@ macro_rules! num_param {
 num_param!(f32, usize, isize, i16);
 
 /// Escape in the style of Zig's `std.zig.stringEscape`.
-pub(super) fn string_escape(s: &str, out: &mut String) {
+pub(super) fn string_escape(s: &[u8], out: &mut String) {
     use std::fmt::Write;
-    for &b in s.as_bytes() {
+    for &b in s {
         match b {
             b'\n' => out.push_str("\\n"),
             b'\r' => out.push_str("\\r"),
@@ -353,18 +355,37 @@ impl Action {
     /// action name and value is the action parameter. The parameter
     /// is optional depending on the action.
     pub fn parse(input: &str) -> Result<Action, Error> {
-        // Split our action by colon. A colon may not exist for some
-        // actions so it is optional. The part preceding the colon is the
-        // action name.
-        let colon_idx = input.find(':');
-        let action = &input[..colon_idx.unwrap_or(input.len())];
+        Self::parse_bytes(input.as_bytes())
+    }
 
-        // An action name is always required
-        if action.is_empty() {
+    /// Parse raw action bytes. Only enum/numeric parameters require UTF-8;
+    /// byte payloads are stored without interpreting the OS escape encoding.
+    pub fn parse_bytes(input: &[u8]) -> Result<Action, Error> {
+        let idx = input.iter().position(|b| *b == b':');
+        let name = std::str::from_utf8(&input[..idx.unwrap_or(input.len())])
+            .map_err(|_| Error::InvalidAction)?;
+        if name.is_empty() {
             return Err(Error::InvalidFormat);
         }
-
-        Action::parse_named(action, colon_idx.map(|i| &input[i + 1..]))
+        let param = idx.map(|i| &input[i + 1..]);
+        let bytes = || param.map(EncodedOs::from_bytes).ok_or(Error::InvalidFormat);
+        match name {
+            "csi" => Ok(Self::Csi(bytes()?)),
+            "esc" => Ok(Self::Esc(bytes()?)),
+            "text" => Ok(Self::Text(bytes()?)),
+            "search" => Ok(Self::Search(bytes()?)),
+            "set_surface_title" => Ok(Self::SetSurfaceTitle(bytes()?)),
+            "set_tab_title" => Ok(Self::SetTabTitle(bytes()?)),
+            "activate_key_table" => Ok(Self::ActivateKeyTable(bytes()?)),
+            "activate_key_table_once" => Ok(Self::ActivateKeyTableOnce(bytes()?)),
+            _ => Self::parse_named(
+                name,
+                param
+                    .map(std::str::from_utf8)
+                    .transpose()
+                    .map_err(|_| Error::InvalidAction)?,
+            ),
+        }
     }
 
     /// The action name (Zig `@tagName`).
@@ -423,15 +444,15 @@ pub enum Action {
     /// `\x1b[`).
     ///
     /// For example, `csi:0m` can be sent to reset all styles of the current text.
-    Csi(String),
+    Csi(EncodedOs),
     /// Send an `ESC` sequence.
-    Esc(String),
+    Esc(EncodedOs),
     /// Send the specified text.
     ///
     /// Uses Zig string literal syntax. This is currently not validated.
     /// If the text is invalid (i.e. contains an invalid escape sequence),
     /// the error will currently only show up in logs.
-    Text(String),
+    Text(EncodedOs),
     /// Send data to the pty depending on whether cursor key mode is enabled
     /// (`application`) or disabled (`normal`).
     CursorKey(CursorKey),
@@ -478,7 +499,7 @@ pub enum Action {
     /// should be used.
     ///
     /// If a previous search is active, it is replaced.
-    Search(String),
+    Search(EncodedOs),
     /// Start a search for the current text selection. If there is no
     /// selection, this does nothing. If a search is already active, this
     /// changes the search terms.
@@ -639,11 +660,11 @@ pub enum Action {
     /// Set the title for the current focused surface.
     ///
     /// If the title is empty, the surface title is reset to an empty title.
-    SetSurfaceTitle(String),
+    SetSurfaceTitle(EncodedOs),
     /// Set the title for the current focused tab.
     ///
     /// If the title is empty, the tab title override is cleared.
-    SetTabTitle(String),
+    SetTabTitle(EncodedOs),
     /// Create a new split in the specified direction.
     ///
     /// Valid arguments:
@@ -912,7 +933,7 @@ pub enum Action {
     ///
     /// If the named key table is already the currently active key table,
     /// this action has no effect and performable will report false.
-    ActivateKeyTable(String),
+    ActivateKeyTable(EncodedOs),
     /// Same as activate_key_table, but the key table will only be active
     /// until the first valid keybinding from that table is used (including
     /// any defined `catch_all` bindings).
@@ -921,7 +942,7 @@ pub enum Action {
     /// key table. If another key table is activated later, then this
     /// table will remain active until it pops back out to being the
     /// active key table.
-    ActivateKeyTableOnce(String),
+    ActivateKeyTableOnce(EncodedOs),
     /// Deactivate the currently active key table, if any. The next most
     /// recently activated key table (if any) will become active again.
     /// If no key table is active, this action has no effect.
@@ -1353,15 +1374,15 @@ impl Action {
             }
             "csi" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::Csi(p.to_string()))
+                Ok(Action::Csi(p.into()))
             }
             "esc" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::Esc(p.to_string()))
+                Ok(Action::Esc(p.into()))
             }
             "text" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::Text(p.to_string()))
+                Ok(Action::Text(p.into()))
             }
             "cursor_key" => Err(Error::InvalidAction),
             "reset" => {
@@ -1426,7 +1447,7 @@ impl Action {
             }
             "search" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::Search(p.to_string()))
+                Ok(Action::Search(p.into()))
             }
             "search_selection" => {
                 if param.is_some() {
@@ -1604,11 +1625,11 @@ impl Action {
             }
             "set_surface_title" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::SetSurfaceTitle(p.to_string()))
+                Ok(Action::SetSurfaceTitle(p.into()))
             }
             "set_tab_title" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::SetTabTitle(p.to_string()))
+                Ok(Action::SetTabTitle(p.into()))
             }
             "new_split" => {
                 let Some(p) = param else {
@@ -1798,11 +1819,11 @@ impl Action {
             }
             "activate_key_table" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::ActivateKeyTable(p.to_string()))
+                Ok(Action::ActivateKeyTable(p.into()))
             }
             "activate_key_table_once" => {
                 let p = param.ok_or(Error::InvalidFormat)?;
-                Ok(Action::ActivateKeyTableOnce(p.to_string()))
+                Ok(Action::ActivateKeyTableOnce(p.into()))
             }
             "deactivate_key_table" => {
                 if param.is_some() {
@@ -1892,15 +1913,15 @@ impl Action {
             | Action::Quit => {}
             Action::Csi(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::Esc(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::Text(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::CursorKey(_) => panic!("formatting not supported"),
             Action::CopyToClipboard(v) => {
@@ -1921,7 +1942,7 @@ impl Action {
             }
             Action::Search(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::NavigateSearch(v) => {
                 out.push(':');
@@ -1969,11 +1990,11 @@ impl Action {
             }
             Action::SetSurfaceTitle(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::SetTabTitle(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::NewSplit(v) => {
                 out.push(':');
@@ -2001,11 +2022,11 @@ impl Action {
             }
             Action::ActivateKeyTable(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::ActivateKeyTableOnce(v) => {
                 out.push(':');
-                string_escape(v, out);
+                string_escape(&v.to_bytes(), out);
             }
             Action::Crash(v) => {
                 out.push(':');

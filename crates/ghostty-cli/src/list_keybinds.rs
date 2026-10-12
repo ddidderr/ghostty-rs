@@ -57,7 +57,7 @@ cli_options!(Options, help);
 ///
 ///   * `--plain`: will disable formatting and make the output more
 ///     friendly for Unix tooling. This is default when not printing to a tty.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
@@ -274,12 +274,13 @@ pub fn collect_bindings(keybinds: &Keybinds) -> (Vec<ChordBinding>, u16, u16) {
     for (table_name, table_set) in &keybinds.tables {
         let (mut table_bindings, table_width) = iterate_bindings(table_set);
         for b in &mut table_bindings {
-            b.table_name = Some(table_name.clone());
+            b.table_name = Some(table_name.to_text_lossy());
         }
 
         bindings.extend(table_bindings);
         widest_chord = widest_chord.max(table_width);
-        widest_table_prefix = widest_table_prefix.max(gwidth(table_name) + gwidth("/"));
+        widest_table_prefix =
+            widest_table_prefix.max(gwidth(&table_name.to_text_lossy()) + gwidth("/"));
     }
 
     // std.mem.sort is stable.

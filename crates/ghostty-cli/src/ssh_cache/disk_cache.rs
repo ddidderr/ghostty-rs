@@ -59,7 +59,7 @@ impl DiskCache {
             home: None,
         })
         .map_err(|_| Error::XdgLookupFailed)?;
-        Ok(state_dir.to_path().join("ssh_cache"))
+        Ok(state_dir.to_path()?.join("ssh_cache"))
     }
 
     /// Clear all cache data stored in the disk cache.

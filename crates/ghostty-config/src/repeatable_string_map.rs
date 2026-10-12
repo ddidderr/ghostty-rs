@@ -4,30 +4,31 @@
 
 use std::fmt;
 
+use ghostty_os::osbytes::EncodedOs;
+
 use crate::{
     cli_args::{ArgError, ConfigField},
     formatter::EntryFormatter,
 };
 
-/// std.ascii.whitespace
-fn is_ascii_ws(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c')
-}
-
 /// An insertion-ordered string map.
 #[derive(Debug, Clone, Default)]
 pub struct RepeatableStringMap {
-    map: Vec<(String, String)>,
+    map: Vec<(EncodedOs, EncodedOs)>,
 }
 
 impl PartialEq for RepeatableStringMap {
     /// Order-insensitive comparison (Zig: `equal`).
     fn eq(&self, other: &Self) -> bool {
         self.map.len() == other.map.len()
-            && self
-                .map
-                .iter()
-                .all(|(k, v)| other.get(k).is_some_and(|ov| ov == v))
+            && self.map.iter().all(|(k, v)| {
+                other
+                    .map
+                    .iter()
+                    .find(|(key, _)| key == k)
+                    .map(|(_, v)| v)
+                    .is_some_and(|ov| ov == v)
+            })
     }
 }
 
@@ -39,29 +40,35 @@ impl RepeatableStringMap {
     }
 
     #[must_use]
-    pub fn get(&self, key: &str) -> Option<&str> {
+    pub fn get(&self, key: &str) -> Option<&EncodedOs> {
         self.map
             .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.as_str())
+            .find(|(k, _)| k == &EncodedOs::from_plain_text(key))
+            .map(|(_, v)| v)
     }
 
     /// Insert or replace an entry (Zig: `map.put`).
     pub fn put(&mut self, key: &str, value: &str) {
-        match self.map.iter_mut().find(|(k, _)| k == key) {
-            Some((_, v)) => value.clone_into(v),
-            None => self.map.push((key.to_owned(), value.to_owned())),
+        self.put_bytes(key.as_bytes(), value.as_bytes());
+    }
+
+    pub fn put_bytes(&mut self, key: &[u8], value: &[u8]) {
+        let key = EncodedOs::from_bytes(key);
+        let value = EncodedOs::from_bytes(value);
+        match self.map.iter_mut().find(|(k, _)| k == &key) {
+            Some((_, v)) => *v = value,
+            None => self.map.push((key, value)),
         }
     }
 
     /// Iterator over the entries in the map (insertion order).
-    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.map.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    pub fn iter(&self) -> impl Iterator<Item = (&EncodedOs, &EncodedOs)> {
+        self.map.iter().map(|(k, v)| (k, v))
     }
 }
 
 impl ConfigField for RepeatableStringMap {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
 
         // Empty value resets the list.
@@ -70,21 +77,25 @@ impl ConfigField for RepeatableStringMap {
             return Ok(());
         }
 
-        let index = value.find('=').ok_or(ArgError::ValueRequired)?;
-        let key = value[..index].trim_matches(is_ascii_ws);
-        let val = value[index + 1..].trim_matches(is_ascii_ws);
+        let index = value
+            .iter()
+            .position(|b| *b == b'=')
+            .ok_or(ArgError::ValueRequired)?;
+        let key = EncodedOs::from_bytes(crate::cli_args::trim_ascii_whitespace(&value[..index]));
+        let val =
+            EncodedOs::from_bytes(crate::cli_args::trim_ascii_whitespace(&value[index + 1..]));
 
         // Empty value removes the key from the map.
         if val.is_empty() {
-            if let Some(pos) = self.map.iter().position(|(k, _)| k == key) {
+            if let Some(pos) = self.map.iter().position(|(k, _)| k == &key) {
                 self.map.remove(pos);
             }
             return Ok(());
         }
 
-        match self.map.iter_mut().find(|(k, _)| k == key) {
-            Some(entry) => entry.1 = val.to_string(),
-            None => self.map.push((key.to_string(), val.to_string())),
+        match self.map.iter_mut().find(|(k, _)| k == &key) {
+            Some(entry) => entry.1 = val,
+            None => self.map.push((key, val)),
         }
         Ok(())
     }
@@ -95,7 +106,13 @@ impl ConfigField for RepeatableStringMap {
             return writeln!(f.writer, "{} = ", f.name);
         }
         for (k, v) in &self.map {
-            writeln!(f.writer, "{} = {k}={v}", f.name)?;
+            writeln!(
+                f.writer,
+                "{} = {}={}",
+                f.name,
+                k.as_encoded(),
+                v.as_encoded()
+            )?;
         }
         Ok(())
     }
@@ -130,7 +147,7 @@ mod tests {
         assert_eq!(map.count(), 1);
         map.parse_cli(Some("A=C")).unwrap();
         assert_eq!(map.count(), 1);
-        assert_eq!(map.get("A"), Some("C"));
+        assert_eq!(map.get("A").map(EncodedOs::as_encoded), Some("C"));
 
         // Empty value removes the key
         map.parse_cli(Some("A=")).unwrap();

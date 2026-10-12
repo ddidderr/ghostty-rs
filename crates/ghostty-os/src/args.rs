@@ -57,16 +57,6 @@ pub fn collect_bytes() -> Vec<Vec<u8>> {
     iterator().map(|a| crate::osbytes::os_bytes(&a)).collect()
 }
 
-/// Collect the process arguments as `String`s using the reversible
-/// byte-escape encoding of [`crate::osbytes`]: no bytes are lost, invalid
-/// UTF-8 bytes are carried as private-use escapes that the config layer
-/// decodes back to the original bytes.
-pub fn collect_config_strings() -> Vec<String> {
-    iterator()
-        .map(|a| crate::osbytes::os_to_config_string(&a))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

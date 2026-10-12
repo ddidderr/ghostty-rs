@@ -720,7 +720,7 @@ impl Surface {
                 };
                 // The payload is a config string in the reversible OS-byte
                 // encoding: the pty gets the original bytes.
-                full.extend(ghostty_os::osbytes::config_str_to_bytes(data));
+                full.extend(data.to_bytes());
                 // Zig formats into a fixed 128 byte buffer (`NoSpaceLeft`).
                 if full.len() > 128 {
                     return Err("csi/esc binding sequence too long (max 128 bytes)".into());
@@ -734,10 +734,10 @@ impl Surface {
             Action::Text(data) => {
                 // Decoded bytes: escapes produce UTF-8, everything else is
                 // copied byte for byte (Zig `config/string.zig`).
-                let text = match ghostty_config::string::parse_bytes(data) {
+                let text = match ghostty_config::string::parse_bytes(data.to_bytes()) {
                     Ok(t) => t,
                     Err(err) => {
-                        log::warn!("error parsing text binding text={data} err={err:?}");
+                        log::warn!("error parsing text binding text={data:?} err={err:?}");
                         return Ok(true);
                     }
                 };
@@ -824,9 +824,7 @@ impl Surface {
                     s.handle
                         // The payload is a config string in the reversible
                         // encoding: search for the original bytes.
-                        .send(SearchMessage::ChangeNeedle(
-                            ghostty_os::osbytes::config_str_to_bytes(text),
-                        ));
+                        .send(SearchMessage::ChangeNeedle(text.to_bytes()));
                     s.handle.wakeup();
                 }
             }
@@ -934,15 +932,11 @@ impl Surface {
             }
 
             Action::SetSurfaceTitle(v) => {
-                return Ok(self.perform(RtAction::SetTitle(SetTitle {
-                    title: ghostty_os::osbytes::config_str_to_text(v),
-                })));
+                return Ok(self.perform(RtAction::SetTitle(SetTitle { title: v.clone() })));
             }
 
             Action::SetTabTitle(v) => {
-                return Ok(self.perform(RtAction::SetTabTitle(SetTitle {
-                    title: ghostty_os::osbytes::config_str_to_text(v),
-                })));
+                return Ok(self.perform(RtAction::SetTabTitle(SetTitle { title: v.clone() })));
             }
 
             Action::ClearScreen => {
@@ -1330,7 +1324,7 @@ mod tests {
         // action's EncodedOs decodes back to the same path.
         assert_eq!(path_bytes(&path), path.as_os_str().as_bytes());
         let url = ghostty_os::osbytes::EncodedOs::from_path(&path);
-        assert_eq!(url.to_path(), path);
+        assert_eq!(url.to_path().unwrap(), path);
     }
 
     #[test]

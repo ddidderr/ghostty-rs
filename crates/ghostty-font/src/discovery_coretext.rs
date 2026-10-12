@@ -71,7 +71,9 @@ pub fn to_coretext_descriptor(
 
     // Family
     if let Some(family) = &desc.family {
-        let family = CFString::from_str(family);
+        let family = CFString::from_str(
+            std::str::from_utf8(&family.to_bytes()).map_err(|_| DiscoverError::DescriptorFailed)?,
+        );
         // SAFETY: valid static key.
         keys.push(unsafe { kCTFontFamilyNameAttribute });
         values.push(as_type(&*family));
@@ -79,7 +81,9 @@ pub fn to_coretext_descriptor(
 
     // Style
     if let Some(style) = &desc.style {
-        let style = CFString::from_str(style);
+        let style = CFString::from_str(
+            std::str::from_utf8(&style.to_bytes()).map_err(|_| DiscoverError::DescriptorFailed)?,
+        );
         // SAFETY: valid static key.
         keys.push(unsafe { kCTFontStyleNameAttribute });
         values.push(as_type(&*style));
@@ -414,7 +418,11 @@ fn score(desc: &Descriptor, ct_desc: &CTFontDescriptor) -> Score {
     // The first string in this slice will be used for the exact match,
     // and for the fuzzy match, all matching substrings will increase
     // the rank.
-    let desired_styles = math::desired_styles(desc.style.as_deref(), desc.bold, desc.italic);
+    let style = desc
+        .style
+        .as_ref()
+        .map(ghostty_os::osbytes::EncodedOs::to_text_lossy);
+    let desired_styles = math::desired_styles(style.as_deref(), desc.bold, desc.italic);
     let (exact, fuzzy) = math::style_scores(&style_str, &desired_styles);
     this.exact_style = exact;
     this.fuzzy_style = fuzzy;

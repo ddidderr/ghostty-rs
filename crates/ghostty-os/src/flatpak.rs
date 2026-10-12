@@ -1,3 +1,12 @@
+/// GLib's g_variant_new_string substitutes the entire invalid value (Zig's {ss}).
+fn glib_env_string(value: &std::ffi::OsStr) -> String {
+    let bytes = crate::osbytes::os_bytes(value);
+    let bytes = bytes.split(|b| *b == 0).next().unwrap_or_default();
+    std::str::from_utf8(bytes)
+        .unwrap_or("[Invalid UTF-8]")
+        .to_owned()
+}
+
 use std::{
     collections::HashMap,
     os::fd::{AsFd, OwnedFd},
@@ -147,12 +156,7 @@ impl FlatpakHostCommand {
                 .env
                 .iter()
                 .flat_map(crate::env::EnvMap::iter)
-                .map(|(k, v)| {
-                    (
-                        k.to_string_lossy().into_owned(),
-                        v.to_string_lossy().into_owned(),
-                    )
-                })
+                .map(|(k, v)| (glib_env_string(k), glib_env_string(v)))
                 .collect(),
             fds: [
                 self.stdin
@@ -489,5 +493,22 @@ mod tests {
     fn exit_status_extraction() {
         // Mirrors posix.W.EXITSTATUS on a raw wait status.
         assert_eq!(((3u32 << 8) >> 8) & 0xff, 3);
+    }
+}
+
+#[cfg(test)]
+mod byte_string_tests {
+    #[test]
+    fn glib_env_replaces_the_whole_invalid_value() {
+        use crate::osbytes::EncodedOs;
+        assert_eq!(
+            super::glib_env_string(&EncodedOs::from_bytes(b"before\xffafter").to_os()),
+            "[Invalid UTF-8]"
+        );
+        let literal = "x\u{fdd0}é";
+        assert_eq!(
+            super::glib_env_string(std::ffi::OsStr::new(literal)),
+            literal
+        );
     }
 }

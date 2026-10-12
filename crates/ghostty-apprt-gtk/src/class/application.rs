@@ -401,10 +401,7 @@ impl Application {
         // Keep the inherited bytes: LANG need not be UTF-8.
         let saved_language = std::env::var_os("LANG");
         if let Some(language) = &config.language {
-            set_env(
-                "LANG",
-                ghostty_os::osbytes::EncodedOs::from_encoded(language.clone()).to_os(),
-            );
+            set_env("LANG", language.to_os());
         }
 
         // Set gettext global domain to be our app so that our unqualified
@@ -447,7 +444,9 @@ impl Application {
 
         // Our app ID determines uniqueness and maps to our desktop file.
         let app_id: String = match &config.class {
-            Some(class) if gio::Application::id_is_valid(class) => class.clone(),
+            Some(class) if gio::Application::id_is_valid(&class.to_text_lossy()) => {
+                class.to_text_lossy()
+            }
             Some(_) => {
                 log::warn!("invalid 'class' in config, ignoring");
                 crate::APPLICATION_ID.to_owned()
@@ -1102,7 +1101,7 @@ impl Application {
         let mut working_directory: Option<ghostty_os::osbytes::EncodedOs> = None;
         let mut title: Option<String> = None;
         let mut command: Option<Command> = None;
-        let mut args: Vec<String> = Vec::new();
+        let mut args: Vec<ghostty_os::osbytes::EncodedOs> = Vec::new();
 
         'overrides: {
             // were we given a parameter?
@@ -1121,7 +1120,7 @@ impl Application {
                 log::debug!("new-window argument: {i} {s}");
 
                 if e_seen {
-                    args.push(s.clone());
+                    args.push(ghostty_os::osbytes::EncodedOs::from_plain_text(s));
                     continue;
                 }
                 if s == "-e" {
@@ -1138,9 +1137,9 @@ impl Application {
                     continue;
                 }
                 if let Some(v) = s.strip_prefix("--working-directory=") {
-                    // IPC carries the encoded form of the OS string.
+                    // D-Bus strings are plain UTF-8, including literal U+FDD0.
                     working_directory =
-                        Some(ghostty_os::osbytes::EncodedOs::from_encoded(v.trim()));
+                        Some(ghostty_os::osbytes::EncodedOs::from_plain_text(v.trim()));
                     continue;
                 }
                 if let Some(v) = s.strip_prefix("--title=") {
@@ -1449,7 +1448,7 @@ impl Application {
                 true
             }
             Action::SetTitle(v) => {
-                tgt.with_surface_void("set_title", |s| s.set_title(Some(&v.title)));
+                tgt.with_surface_void("set_title", |s| s.set_title(Some(&v.title.to_text_lossy())));
                 true
             }
             Action::SetTabTitle(v) => {
@@ -1462,11 +1461,8 @@ impl Application {
                         log::warn!("surface is not in a tab, ignoring set_tab_title");
                         return false;
                     };
-                    tab.set_title_override(if v.title.is_empty() {
-                        None
-                    } else {
-                        Some(&v.title)
-                    });
+                    let title = v.title.to_text_lossy();
+                    tab.set_title_override(if title.is_empty() { None } else { Some(&title) });
                     true
                 })
             }

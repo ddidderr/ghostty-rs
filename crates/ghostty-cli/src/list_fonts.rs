@@ -8,10 +8,10 @@ config_struct! {
     pub struct Options {
         /// The font family to search for. If this is set, then only fonts
         /// matching this family will be listed.
-        "family" => family: Option<String> = None,
+        "family" => family: Option<ghostty_os::osbytes::EncodedOs> = None,
 
         /// The style name to search for.
-        "style" => style: Option<String> = None,
+        "style" => style: Option<ghostty_os::osbytes::EncodedOs> = None,
 
         /// Font styles to search for. If this is set, then only fonts that
         /// match the given styles will be listed.
@@ -45,7 +45,7 @@ cli_options!(Options, help);
 ///   * `--family`: Filter results to a specific font family. The family handling
 ///     is identical to the `font-family` set of Ghostty configuration values, so
 ///     this can be used to debug why your desired font may not be loading.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

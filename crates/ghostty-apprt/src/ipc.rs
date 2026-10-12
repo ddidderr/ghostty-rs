@@ -29,7 +29,7 @@ pub struct NewWindow {
     /// shell should be launched.
     ///
     /// It is an error for this to be `Some`, but zero length.
-    pub arguments: Option<Vec<String>>,
+    pub arguments: Option<Vec<Vec<u8>>>,
 }
 
 /// IPC actions.

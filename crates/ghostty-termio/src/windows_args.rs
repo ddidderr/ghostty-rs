@@ -15,21 +15,11 @@ pub enum EncodeError {
     InvalidUtf8,
 }
 
-/// Convert an OS string to UTF-16 code units. On Windows this is lossless
-/// (`encode_wide`); elsewhere the string must be valid UTF-8.
+/// Zig's Windows Command validates UTF-8, including inherited environment strings.
+/// An unpaired UTF-16 surrogate in an OS string is therefore an error.
 pub fn os_str_to_utf16(s: &OsStr) -> Result<Vec<u16>, EncodeError> {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        Ok(s.encode_wide().collect())
-    }
-    #[cfg(not(windows))]
-    {
-        Ok(s.to_str()
-            .ok_or(EncodeError::InvalidUtf8)?
-            .encode_utf16()
-            .collect())
-    }
+    ghostty_os::osbytes::try_utf8_to_wide(&ghostty_os::osbytes::os_bytes(s))
+        .map_err(|_| EncodeError::InvalidUtf8)
 }
 
 /// Create a UTF-16 environment block for `CreateProcessW` with
@@ -155,6 +145,19 @@ mod tests {
 
     fn cl(args: &[&str]) -> String {
         windows_create_command_line(args)
+    }
+
+    #[test]
+    fn inherited_environment_rejects_non_utf8() {
+        let bad = ghostty_os::osbytes::EncodedOs::from_wide(&[0xd800]).to_os();
+        assert_eq!(
+            create_windows_env_block([(std::ffi::OsStr::new("KEY"), bad.as_os_str())]),
+            Err(EncodeError::InvalidUtf8)
+        );
+        assert_eq!(
+            create_windows_env_block([(bad.as_os_str(), std::ffi::OsStr::new("value"))]),
+            Err(EncodeError::InvalidUtf8)
+        );
     }
 
     #[test]

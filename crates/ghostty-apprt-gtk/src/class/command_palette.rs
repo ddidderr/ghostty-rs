@@ -110,9 +110,7 @@ mod command_imp {
         fn prop_get_title(&self) -> Option<String> {
             let mut data = self.data.borrow_mut();
             match &mut *data {
-                CommandData::Regular { command } => {
-                    Some(ghostty_os::osbytes::config_str_to_text(&command.title))
-                }
+                CommandData::Regular { command } => Some(command.title.to_text_lossy()),
                 CommandData::Jump { surface, title, .. } => {
                     if let Some(t) = title {
                         return Some(t.clone());
@@ -127,9 +125,7 @@ mod command_imp {
         fn prop_get_description(&self) -> Option<String> {
             let mut data = self.data.borrow_mut();
             match &mut *data {
-                CommandData::Regular { command } => Some(ghostty_os::osbytes::config_str_to_text(
-                    &command.description,
-                )),
+                CommandData::Regular { command } => Some(command.description.to_text_lossy()),
                 CommandData::Jump {
                     surface,
                     description,

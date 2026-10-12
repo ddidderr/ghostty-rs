@@ -15,9 +15,9 @@ macro_rules! cli_options {
             fn parse_into_field(
                 &mut self,
                 key: &str,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), ::ghostty_config::cli_args::ArgError> {
-                self.parse_field(key, value)
+                self.parse_field_bytes(key, value)
             }
             fn valid_values(&self, key: &str) -> ::core::option::Option<&'static [&'static str]> {
                 Self::valid_values_for(key)
@@ -43,9 +43,9 @@ macro_rules! cli_options {
             fn parse_into_field(
                 &mut self,
                 key: &str,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), ::ghostty_config::cli_args::ArgError> {
-                self.parse_field(key, value)
+                self.parse_field_bytes(key, value)
             }
             fn valid_values(&self, key: &str) -> ::core::option::Option<&'static [&'static str]> {
                 Self::valid_values_for(key)
@@ -66,9 +66,9 @@ macro_rules! cli_options {
             fn parse_into_field(
                 &mut self,
                 key: &str,
-                value: ::core::option::Option<&str>,
+                value: ::core::option::Option<&[u8]>,
             ) -> ::core::result::Result<(), ::ghostty_config::cli_args::ArgError> {
-                self.parse_field(key, value)
+                self.parse_field_bytes(key, value)
             }
             fn valid_values(&self, key: &str) -> ::core::option::Option<&'static [&'static str]> {
                 Self::valid_values_for(key)
@@ -87,8 +87,8 @@ macro_rules! cli_options {
 /// Parse the CLI arguments `args` (the full argv, including `argv[0]`,
 /// which is skipped; `+action` arguments are ignored) into `opts`
 /// (Zig: `args.argsIterator` + `args.parse`).
-pub fn parse_options<T: CliTarget>(opts: &mut T, args: &[String]) -> Result<(), Error> {
-    let mut iter = ArgsIterator::new(args.iter().skip(1).cloned());
+pub fn parse_options<T: CliTarget>(opts: &mut T, args: &[impl AsRef<[u8]>]) -> Result<(), Error> {
+    let mut iter = ArgsIterator::new(args.iter().skip(1).map(AsRef::as_ref));
     cli_args::parse(opts, &mut iter)?;
     Ok(())
 }
@@ -101,7 +101,7 @@ impl CliTarget for NoOptions {
     fn parse_into_field(
         &mut self,
         _key: &str,
-        _value: Option<&str>,
+        _value: Option<&[u8]>,
     ) -> Result<(), cli_args::ArgError> {
         Err(cli_args::ArgError::InvalidField)
     }

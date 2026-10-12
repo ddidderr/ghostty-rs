@@ -50,8 +50,8 @@ use crate::windows_args::{self, create_windows_env_block, windows_create_command
 /// Errors from [`Command::start`].
 #[derive(Debug, thiserror::Error)]
 pub enum StartError {
-    #[error("malformed wtf-8 in a path, argument or environment value")]
-    InvalidWtf8(#[from] ghostty_os::osbytes::InvalidWtf8),
+    #[error("invalid utf-8 in a path, argument or environment value")]
+    InvalidUtf8(#[from] ghostty_os::osbytes::InvalidUtf8),
     #[error("string or environment is not valid unicode")]
     Encode(#[from] windows_args::EncodeError),
     #[error("windows error: {0}")]
@@ -132,14 +132,14 @@ impl Command {
     #[allow(unsafe_code)]
     pub fn start(&mut self) -> Result<(), StartError> {
         // `path` and `args` are the config command's argv strings (encoded
-        // OS strings); decode them to WTF-16 for the Windows API.
+        // OS strings); validate UTF-8 and convert to UTF-16 for the Windows API.
         // Like Zig's fallible `utf8ToUtf16Le*`, malformed input fails the
         // launch instead of selecting a U+FFFD-substituted path or argument.
-        let application_w = EncodedOs::from_encoded(&self.path).try_to_wide_nul()?;
+        let application_w = EncodedOs::from_encoded(&self.path).try_to_utf16_nul()?;
         let cwd_w = self
             .cwd
             .as_ref()
-            .map(EncodedOs::try_to_wide_nul)
+            .map(EncodedOs::try_to_utf16_nul)
             .transpose()?;
         let mut command_line_w = if self.args.is_empty() {
             None
@@ -147,7 +147,7 @@ impl Command {
             let wide: Vec<Vec<u16>> = self
                 .args
                 .iter()
-                .map(|a| EncodedOs::from_encoded(a).try_to_wide())
+                .map(|a| EncodedOs::from_encoded(a).try_to_utf16())
                 .collect::<Result<_, _>>()?;
             let mut line = windows_create_command_line_wide(&wide);
             line.push(0);

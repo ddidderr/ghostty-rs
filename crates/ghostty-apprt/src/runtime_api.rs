@@ -291,7 +291,7 @@ pub trait RtSurface {
     fn close(&self, process_active: bool);
     /// Cgroup path of the surface (Linux, `gtk-single-instance` scopes).
     fn cgroup(&self) -> Option<String>;
-    fn get_title(&self) -> Option<String>;
+    fn get_title(&self) -> Option<ghostty_os::osbytes::EncodedOs>;
     fn get_content_scale(&self) -> ContentScale;
     fn get_size(&self) -> SurfaceSize;
     fn get_cursor_pos(&self) -> CursorPos;

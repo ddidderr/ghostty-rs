@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use ghostty_os::osbytes::EncodedOs;
+
 use crate::{
     cli_args::{ArgError, ConfigField},
     formatter::EntryFormatter,
@@ -33,30 +35,30 @@ pub enum Command {
     /// Index zero is not guaranteed to be an absolute path, and may require
     /// PATH lookup. It is up to the downstream to do this, usually via
     /// delegation to something like `execvp`.
-    Direct(Vec<String>),
+    Direct(Vec<EncodedOs>),
 
     /// Execute a command via shell expansion. This provides the command
     /// as a single string that is expected to be expanded in some way
     /// (up to the downstream). Usually `/bin/sh -c`.
-    Shell(String),
+    Shell(EncodedOs),
 }
 
 impl Default for Command {
     fn default() -> Self {
-        Command::Shell(String::new())
+        Command::Shell(EncodedOs::new())
     }
 }
 
 /// Iterates over each argument in the command.
 #[derive(Debug, Clone)]
 pub struct ArgIterator {
-    args: std::vec::IntoIter<String>,
+    args: std::vec::IntoIter<EncodedOs>,
 }
 
 impl Iterator for ArgIterator {
-    type Item = String;
+    type Item = EncodedOs;
 
-    fn next(&mut self) -> Option<String> {
+    fn next(&mut self) -> Option<EncodedOs> {
         self.args.next()
     }
 }
@@ -64,8 +66,7 @@ impl Iterator for ArgIterator {
 /// Best-effort shell string splitter matching Zig's
 /// `std.process.ArgIteratorGeneral(.{})` (whitespace separated, double
 /// quotes group, backslashes only special before a double quote).
-fn split_general(s: &str) -> Vec<String> {
-    let b = s.as_bytes();
+fn split_general(b: &[u8]) -> Vec<EncodedOs> {
     let mut out = vec![];
     let mut i = 0;
     loop {
@@ -108,7 +109,7 @@ fn split_general(s: &str) -> Vec<String> {
                 }
             }
         }
-        out.push(String::from_utf8_lossy(&cur).into_owned());
+        out.push(EncodedOs::from_bytes(&cur));
     }
     out
 }
@@ -120,8 +121,12 @@ impl Command {
     #[must_use]
     pub fn string(&self) -> String {
         match self {
-            Command::Shell(v) => v.clone(),
-            Command::Direct(v) => v.join(" "),
+            Command::Shell(v) => v.as_encoded().to_owned(),
+            Command::Direct(v) => v
+                .iter()
+                .map(EncodedOs::as_encoded)
+                .collect::<Vec<_>>()
+                .join(" "),
         }
     }
 
@@ -135,7 +140,7 @@ impl Command {
     pub fn arg_iterator(&self) -> ArgIterator {
         let args = match self {
             Command::Direct(v) => v.clone(),
-            Command::Shell(v) => split_general(v),
+            Command::Shell(v) => split_general(&v.to_bytes()),
         };
         ArgIterator {
             args: args.into_iter(),
@@ -143,39 +148,60 @@ impl Command {
     }
 }
 
+fn trim_spaces(value: &[u8]) -> &[u8] {
+    let start = value.iter().position(|b| *b != b' ').unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| *b != b' ')
+        .map_or(start, |i| i + 1);
+    &value[start..end]
+}
+
 impl ConfigField for Command {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         // Input is required. Whitespace on the edges isn't needed.
         // Commands must be non-empty.
         let input = input.ok_or(ArgError::ValueRequired)?;
-        let trimmed = input.trim_matches(' ');
+        let trimmed = trim_spaces(input);
         if trimmed.is_empty() {
             return Err(ArgError::ValueRequired);
         }
 
         // If we have a `:` then we MIGHT have a prefix to specify what
         // tag we should use.
-        let (direct, str) = match trimmed.find(':') {
-            Some(idx) if &trimmed[..idx] == "direct" => (true, &trimmed[idx + 1..]),
-            Some(idx) if &trimmed[..idx] == "shell" => (false, &trimmed[idx + 1..]),
+        let (direct, str) = match trimmed.iter().position(|b| *b == b':') {
+            Some(idx) if &trimmed[..idx] == b"direct" => (true, &trimmed[idx + 1..]),
+            Some(idx) if &trimmed[..idx] == b"shell" => (false, &trimmed[idx + 1..]),
             _ => (false, trimmed),
         };
 
-        let str = str.trim_matches(' ');
+        let str = trim_spaces(str);
         *self = if direct {
             // We're not shell expanding, so the arguments are naively
             // split on spaces.
-            Command::Direct(str.split(' ').map(str::to_string).collect())
+            Command::Direct(
+                str.split(|b| *b == b' ')
+                    .map(EncodedOs::from_bytes)
+                    .collect(),
+            )
         } else {
-            Command::Shell(str.to_string())
+            Command::Shell(EncodedOs::from_bytes(str))
         };
         Ok(())
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
         match self {
-            Command::Shell(v) => writeln!(f.writer, "{} = {v}", f.name),
-            Command::Direct(v) => writeln!(f.writer, "{} = direct:{}", f.name, v.join(" ")),
+            Command::Shell(v) => writeln!(f.writer, "{} = {}", f.name, v.as_encoded()),
+            Command::Direct(v) => writeln!(
+                f.writer,
+                "{} = direct:{}",
+                f.name,
+                v.iter()
+                    .map(EncodedOs::as_encoded)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            ),
         }
     }
 }
@@ -229,7 +255,7 @@ mod tests {
     #[test]
     fn command_arg_iterator_shell_quotes() {
         let v = Command::Shell("echo \"hello world\" a\\\"b".into());
-        let args: Vec<String> = v.arg_iterator().collect();
+        let args: Vec<EncodedOs> = v.arg_iterator().collect();
         assert_eq!(args, ["echo", "hello world", "a\"b"]);
     }
 

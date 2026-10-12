@@ -315,7 +315,12 @@ mod imp {
             // exists, otherwise the overridden title if it exists,
             // otherwise the terminal title if it exists, otherwise a
             // default string.
-            let config_title = config.as_ref().and_then(|c| c.get().title.clone());
+            let config_title = config.as_ref().and_then(|c| {
+                c.get()
+                    .title
+                    .as_ref()
+                    .map(ghostty_os::osbytes::EncodedOs::to_text_lossy)
+            });
             let plain = tab_override
                 .or(surface_override)
                 .or(terminal)

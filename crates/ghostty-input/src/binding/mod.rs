@@ -129,7 +129,11 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(raw_input: &'a str) -> Result<Parser<'a>, Error> {
-        let (flags, start_idx) = parse_flags(raw_input)?;
+        Self::from_bytes(raw_input.as_bytes())
+    }
+
+    pub fn from_bytes(raw_input: &'a [u8]) -> Result<Parser<'a>, Error> {
+        let (flags, start_idx) = parse_flags_bytes(raw_input)?;
         let input = &raw_input[start_idx..];
 
         // Find the equal sign. This is more complicated than it seems on
@@ -140,8 +144,8 @@ impl<'a> Parser<'a> {
             // based parser that parses the trigger fully, then yields the
             // action after. The loop below is a total mess.
             let mut offset = 0usize;
-            let bytes = input.as_bytes();
-            while let Some(offset_idx) = input[offset..].find('=') {
+            let bytes = input;
+            while let Some(offset_idx) = input[offset..].iter().position(|b| *b == b'=') {
                 // Find: '=+ctrl' or '==action'
                 let idx = offset + offset_idx;
                 if idx + 1 < bytes.len() && (bytes[idx + 1] == b'+' || bytes[idx + 1] == b'=') {
@@ -157,7 +161,7 @@ impl<'a> Parser<'a> {
         };
 
         // Detect chains. Chains must not have flags.
-        let chain = &input[..eql_idx] == "chain";
+        let chain = &input[..eql_idx] == b"chain";
         if chain && start_idx > 0 {
             return Err(Error::InvalidFormat);
         }
@@ -169,10 +173,14 @@ impl<'a> Parser<'a> {
                 // This is kind of hacky but we put a dummy trigger
                 // for chained inputs. The `next` will never yield this
                 // because we have chain set.
-                input: if chain { "a" } else { &input[..eql_idx] },
+                input: if chain {
+                    "a"
+                } else {
+                    std::str::from_utf8(&input[..eql_idx]).map_err(|_| Error::InvalidFormat)?
+                },
                 i: 0,
             },
-            action: Action::parse(&input[eql_idx + 1..])?,
+            action: Action::parse_bytes(&input[eql_idx + 1..])?,
             flags,
             chain,
         })
@@ -211,36 +219,36 @@ impl<'a> Parser<'a> {
     }
 }
 
-fn parse_flags(raw_input: &str) -> Result<(Flags, usize), Error> {
+fn parse_flags_bytes(raw_input: &[u8]) -> Result<(Flags, usize), Error> {
     let mut flags = Flags::default();
 
     let mut start_idx = 0usize;
     let mut input = raw_input;
     // Find the next prefix
-    while let Some(idx) = input.find(':') {
+    while let Some(idx) = input.iter().position(|b| *b == b':') {
         let prefix = &input[..idx];
 
         // If the prefix is one of our flags then set it.
         match prefix {
-            "all" => {
+            b"all" => {
                 if flags.all {
                     return Err(Error::InvalidFormat);
                 }
                 flags.all = true;
             }
-            "global" => {
+            b"global" => {
                 if flags.global {
                     return Err(Error::InvalidFormat);
                 }
                 flags.global = true;
             }
-            "unconsumed" => {
+            b"unconsumed" => {
                 if !flags.consumed {
                     return Err(Error::InvalidFormat);
                 }
                 flags.consumed = false;
             }
-            "performable" => {
+            b"performable" => {
                 if flags.performable {
                     return Err(Error::InvalidFormat);
                 }

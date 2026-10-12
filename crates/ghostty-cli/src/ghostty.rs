@@ -158,7 +158,7 @@ impl Action {
     ///
     /// If the action requests its help text (`--help`/`-h`), the help text
     /// is printed to stdout and 0 is returned.
-    pub fn run(self, args: &[String]) -> Result<u8, Error> {
+    pub fn run(self, args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
         match self.run_main(args) {
             Err(Error::ActionHelpRequested) => {
                 // Future note: for now we just output the help text directly
@@ -180,7 +180,7 @@ impl Action {
         }
     }
 
-    fn run_main(self, args: &[String]) -> Result<u8, Error> {
+    fn run_main(self, args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
         match self {
             Action::Version => crate::version::run(args),
             Action::Help => crate::help::run(args),
@@ -239,7 +239,7 @@ impl std::fmt::Display for Action {
 }
 
 /// Detect the CLI action from `args` (full argv, `argv[0]` included).
-pub fn detect(args: &[String]) -> Result<Option<Action>, DetectError> {
+pub fn detect(args: &[impl AsRef<[u8]>]) -> Result<Option<Action>, DetectError> {
     detect_iter::<Action, _, _>(args.iter())
 }
 
@@ -248,21 +248,21 @@ pub fn detect(args: &[String]) -> Result<Option<Action>, DetectError> {
 /// reversible escape encoding of `ghostty_os::osbytes`, which the config
 /// layer (`cli_args`) decodes back to the original bytes.
 #[must_use]
-pub fn os_args_to_strings(args: &[std::ffi::OsString]) -> Vec<String> {
+pub fn os_args_to_bytes(args: &[std::ffi::OsString]) -> Vec<Vec<u8>> {
     args.iter()
-        .map(|a| ghostty_os::osbytes::os_to_config_string(a))
+        .map(|a| ghostty_os::osbytes::os_bytes(a))
         .collect()
 }
 
 /// [`detect`] over raw OS arguments.
 pub fn detect_os(args: &[std::ffi::OsString]) -> Result<Option<Action>, DetectError> {
-    detect(&os_args_to_strings(args))
+    detect(&os_args_to_bytes(args))
 }
 
 /// [`run_from_args`] over raw OS arguments (byte-preserving).
 #[must_use]
 pub fn run_from_os_args(args: &[std::ffi::OsString]) -> Option<u8> {
-    run_from_args(&os_args_to_strings(args))
+    run_from_args(&os_args_to_bytes(args))
 }
 
 /// The CLI entrypoint logic of `main_ghostty.zig` for actions: detect the
@@ -272,7 +272,7 @@ pub fn run_from_os_args(args: &[std::ffi::OsString]) -> Option<u8> {
 /// Returns `None` if no action was requested (the caller should launch the
 /// terminal), or the exit code the process should terminate with.
 #[must_use]
-pub fn run_from_args(args: &[String]) -> Option<u8> {
+pub fn run_from_args(args: &[impl AsRef<[u8]>]) -> Option<u8> {
     let action = match detect(args) {
         Ok(a) => a?,
         Err(err) => {
@@ -370,11 +370,8 @@ mod tests {
             std::ffi::OsString::from("+version"),
         ];
         assert_eq!(Some(Action::Version), detect_os(&args).unwrap());
-        let strings = os_args_to_strings(&args);
-        assert_eq!(
-            ghostty_os::osbytes::config_str_to_bytes(&strings[1]),
-            b"--title=\xff"
-        );
+        let strings = os_args_to_bytes(&args);
+        assert_eq!(strings[1], b"--title=\xff");
     }
 
     #[test]

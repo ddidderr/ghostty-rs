@@ -99,7 +99,8 @@ impl MetricModifier {
 }
 
 impl ConfigField for MetricModifier {
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         *self = Self::parse_cli_value(value)?;
         Ok(())
     }

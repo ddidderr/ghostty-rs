@@ -154,6 +154,13 @@ pub fn expand_home_with_capacity(
     path: &osbytes::EncodedOs,
     cap: usize,
 ) -> Result<osbytes::EncodedOs, ExpandError> {
+    #[cfg(windows)]
+    {
+        // Zig returns the original byte slice on Windows without converting it.
+        let _ = cap;
+        Ok(path.clone())
+    }
+    #[cfg(not(windows))]
     expand_home_os_with_capacity(&path.to_os(), cap).map(osbytes::EncodedOs::from)
 }
 
@@ -185,6 +192,14 @@ pub fn expand_home_os_with_capacity(path: &OsStr, cap: usize) -> Result<OsString
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_home_expansion_keeps_malformed_path_bytes() {
+        let path = osbytes::EncodedOs::from_bytes(b"~/bad\xff");
+        assert_eq!(expand_home(&path).unwrap(), path);
+        assert_eq!(path.to_path().unwrap_err().to_string(), "BadPathName");
+    }
 
     #[test]
     fn home_windows_joins_drive_and_path() {

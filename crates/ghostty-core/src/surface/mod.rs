@@ -459,10 +459,7 @@ impl Surface {
             // don't leak GHOSTTY_LOG to any subprocesses
             env.remove("GHOSTTY_LOG");
 
-            let mut ecfg = exec::Config::new(
-                env,
-                ghostty_os::osbytes::EncodedOs::from_encoded(config.term.clone()),
-            );
+            let mut ecfg = exec::Config::new(env, config.term.clone());
             ecfg.command = command.clone();
             ecfg.env_override = config.env.clone();
             ecfg.shell_integration = config.shell_integration;
@@ -607,7 +604,7 @@ impl Surface {
             rt_app.perform_action(
                 Target::Surface(id),
                 RtAction::SetTitle(SetTitle {
-                    title: ghostty_os::osbytes::config_str_to_text(title),
+                    title: title.clone(),
                 }),
             );
         } else if config.xdg_terminal_exec
@@ -620,7 +617,7 @@ impl Surface {
             rt_app.perform_action(
                 Target::Surface(id),
                 RtAction::SetTitle(SetTitle {
-                    title: ghostty_os::osbytes::config_str_to_text(&cmd.string()),
+                    title: ghostty_os::osbytes::EncodedOs::from_encoded(cmd.string()),
                 }),
             );
         } else if let Some(cmd) = &command {
@@ -636,7 +633,7 @@ impl Surface {
                 rt_app.perform_action(
                     Target::Surface(id),
                     RtAction::SetTitle(SetTitle {
-                        title: ghostty_os::osbytes::config_str_to_text(first),
+                        title: first.clone(),
                     }),
                 );
             }
@@ -872,8 +869,8 @@ impl Surface {
                 }
 
                 let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
-                let title = String::from_utf8_lossy(&buf[..end]).into_owned();
-                log::debug!("changing title \"{title}\"");
+                let title = ghostty_os::osbytes::EncodedOs::from_bytes(&buf[..end]);
+                log::debug!("changing title {title:?}");
                 self.perform(RtAction::SetTitle(SetTitle { title }));
             }
 
@@ -885,11 +882,14 @@ impl Surface {
 
                 let title = self.rt_surface.get_title();
                 let data = match style {
-                    ghostty_apprt::surface::ReportTitleStyle::Csi21T => {
-                        format!("\x1b]l{}\x1b\\", title.unwrap_or_default())
-                    }
+                    ghostty_apprt::surface::ReportTitleStyle::Csi21T => [
+                        b"\x1b]l".as_slice(),
+                        &title.unwrap_or_default().to_bytes(),
+                        b"\x1b\\",
+                    ]
+                    .concat(),
                 };
-                self.queue_io(IoMessage::write_req(data.as_bytes()));
+                self.queue_io(IoMessage::write_req(data.as_slice()));
             }
 
             Message::ColorChange(change) => {
@@ -1306,7 +1306,7 @@ impl Surface {
         // configured title.
         if let Some(title) = &config.title {
             self.perform(RtAction::SetTitle(SetTitle {
-                title: ghostty_os::osbytes::config_str_to_text(title),
+                title: title.clone(),
             }));
         }
 

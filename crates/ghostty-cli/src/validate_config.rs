@@ -11,7 +11,7 @@ config_struct! {
     pub struct Options {
         /// The path of the config file to validate. If this isn't specified,
         /// then the default config file paths will be validated.
-        "config-file" => config_file: Option<String> = None,
+        "config-file" => config_file: Option<EncodedOs> = None,
     }
 }
 cli_options!(Options, help);
@@ -25,7 +25,7 @@ cli_options!(Options, help);
 ///
 ///   * `--config-file`: can be passed to validate a specific target config file in
 ///     a non-default location
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
@@ -42,7 +42,7 @@ fn run_inner(opts: &Options, stdout: &mut dyn Write) -> Result<u8, Error> {
     if let Some(config_path) = &opts.config_file {
         // Byte-preserving: the option string carries non-UTF-8 bytes via the
         // reversible `osbytes` escape and the canonical path may too.
-        let abs_path = std::fs::canonicalize(EncodedOs::from_encoded(config_path).to_path())?;
+        let abs_path = std::fs::canonicalize(config_path.to_path()?)?;
         cfg.load_file(&EncodedOs::from_path(&abs_path))?;
         cfg.load_recursive_files()?;
     } else {
@@ -83,7 +83,7 @@ mod tests {
     fn validate_good_file() {
         let p = write_tmp("good", "font-size = 14\n");
         let opts = Options {
-            config_file: Some(p),
+            config_file: Some(p.into()),
         };
         let mut out = Vec::new();
         assert_eq!(0, run_inner(&opts, &mut out).unwrap());
@@ -94,7 +94,7 @@ mod tests {
     fn validate_bad_file_prints_diagnostics() {
         let p = write_tmp("bad", "not-a-key = 1\nfont-size = abc\n");
         let opts = Options {
-            config_file: Some(p.clone()),
+            config_file: Some(p.clone().into()),
         };
         let mut out = Vec::new();
         assert_eq!(1, run_inner(&opts, &mut out).unwrap());
@@ -117,7 +117,7 @@ mod tests {
         let path = tmp.path().join("config");
         std::fs::write(&path, b"bad\xffkey = 1\n").unwrap();
         let opts = Options {
-            config_file: Some(path.to_string_lossy().into_owned()),
+            config_file: Some(EncodedOs::from_path(&path)),
         };
         let mut out = Vec::new();
         assert_eq!(1, run_inner(&opts, &mut out).unwrap());
@@ -148,7 +148,7 @@ mod tests {
         let link = tmp.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let opts = Options {
-            config_file: Some(link.to_string_lossy().into_owned()),
+            config_file: Some(EncodedOs::from_path(&link)),
         };
         let mut out = Vec::new();
         assert_eq!(0, run_inner(&opts, &mut out).unwrap());

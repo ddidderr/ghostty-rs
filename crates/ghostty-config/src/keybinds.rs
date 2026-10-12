@@ -24,6 +24,7 @@ use ghostty_input::{
         set::{EntryFormatter as BindingEntryFormatter, Value},
     },
 };
+use ghostty_os::osbytes::EncodedOs;
 
 use crate::{
     cli_args::{ArgError, ConfigField},
@@ -38,7 +39,7 @@ use crate::{
 pub enum ChainTarget {
     #[default]
     Root,
-    Table(String),
+    Table(EncodedOs),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -48,7 +49,7 @@ pub struct Keybinds {
     /// Defined key tables. The default key table is always the root "set",
     /// which allows all table names to be available without reservation.
     /// Insertion ordered.
-    pub tables: Vec<(String, Set)>,
+    pub tables: Vec<(EncodedOs, Set)>,
 
     /// The most recent binding target for `chain=` additions.
     pub chain_target: ChainTarget,
@@ -445,27 +446,30 @@ impl Keybinds {
         // others are used to these keys so we set them as defaults. If
         // people want to get back to the fixterm encoding they can set
         // the keybinds to `unbind`.
-        set.put(phys(Key::ArrowRight, sup), Action::Text("\\x05".to_owned()));
-        set.put(phys(Key::ArrowLeft, sup), Action::Text("\\x01".to_owned()));
-        set.put(phys(Key::Backspace, sup), Action::Text("\\x15".to_owned()));
+        set.put(phys(Key::ArrowRight, sup), Action::Text("\\x05".into()));
+        set.put(phys(Key::ArrowLeft, sup), Action::Text("\\x01".into()));
+        set.put(phys(Key::Backspace, sup), Action::Text("\\x15".into()));
         set.put(
             phys(Key::ArrowLeft, mods(false, false, true, false)),
-            Action::Esc("b".to_owned()),
+            Action::Esc("b".into()),
         );
         set.put(
             phys(Key::ArrowRight, mods(false, false, true, false)),
-            Action::Esc("f".to_owned()),
+            Action::Esc("f".into()),
         );
     }
 
-    fn table_index(&self, name: &str) -> Option<usize> {
+    fn table_index(&self, name: &EncodedOs) -> Option<usize> {
         self.tables.iter().position(|(n, _)| n == name)
     }
 
     /// Get a table by name.
     #[must_use]
     pub fn table(&self, name: &str) -> Option<&Set> {
-        self.tables.iter().find(|(n, _)| n == name).map(|(_, s)| s)
+        self.tables
+            .iter()
+            .find(|(n, _)| n == &EncodedOs::from_plain_text(name))
+            .map(|(_, s)| s)
     }
 
     /// Like format_entry but has an option to include docs.
@@ -483,14 +487,18 @@ impl Keybinds {
                 f.writer.write_str("\n")?;
             }
 
-            let mut buf = format!("{}", k.0);
+            let mut buf = ghostty_os::osbytes::valid_str_to_config_string(&k.0.to_string());
             emit(v, &mut buf, f)?;
         }
 
         // Format table bindings
         for (table_name, table_set) in &self.tables {
             for (k, v) in &table_set.bindings {
-                let mut buf = format!("{}/{}", table_name, k.0);
+                let mut buf = format!(
+                    "{}/{}",
+                    table_name.as_encoded(),
+                    ghostty_os::osbytes::valid_str_to_config_string(&k.0.to_string())
+                );
                 emit(v, &mut buf, f)?;
             }
         }
@@ -506,7 +514,9 @@ struct Adapter<'a, 'b> {
 impl BindingEntryFormatter for Adapter<'_, '_> {
     fn format_entry(&mut self, value: &str) {
         if self.result.is_ok() {
-            self.result = self.f.format_entry(&value.to_string());
+            self.result = self
+                .f
+                .format_entry(&ghostty_os::osbytes::EncodedOs::from_encoded(value));
         }
     }
 }
@@ -562,7 +572,12 @@ impl PartialEq for Keybinds {
             return false;
         }
         for (name, set) in &self.tables {
-            let Some(other_set) = other.table(name) else {
+            let Some(other_set) = other
+                .tables
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, set)| set)
+            else {
                 return false;
             };
             if !equal_set(set, other_set) {
@@ -574,7 +589,7 @@ impl PartialEq for Keybinds {
 }
 
 impl ConfigField for Keybinds {
-    fn parse_cli(&mut self, input: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, input: Option<&[u8]>) -> Result<(), ArgError> {
         let value = input.ok_or(ArgError::ValueRequired)?;
 
         // Check for special values
@@ -584,7 +599,7 @@ impl ConfigField for Keybinds {
             return Ok(());
         }
 
-        if value == "clear" {
+        if value == b"clear" {
             log::info!("config has 'keybind = clear', all keybinds cleared");
             self.set = Set::default();
             self.tables = Vec::new();
@@ -595,28 +610,29 @@ impl ConfigField for Keybinds {
         // Check for table syntax: "name/" or "name/binding"
         // We look for '/' only before the first '=' to avoid matching
         // action arguments like "foo=text:/hello".
-        let eq_idx = value.find('=').unwrap_or(value.len());
-        if let Some(slash_idx) = value[..eq_idx].find('/') {
+        let eq_idx = value.iter().position(|b| *b == b'=').unwrap_or(value.len());
+        if let Some(slash_idx) = value[..eq_idx].iter().position(|b| *b == b'/') {
             let table_name = &value[..slash_idx];
 
             // Length zero is valid, so you can set `/=action` for the slash key.
             // Ignore '+', '>' because they can be part of sequences and
             // triggers. This lets things like `ctrl+/=action` work.
-            if !table_name.is_empty() && !table_name.contains(['+', '>']) {
+            if !table_name.is_empty() && !table_name.iter().any(|b| matches!(b, b'+' | b'>')) {
                 let binding = &value[slash_idx + 1..];
+                let table_name = EncodedOs::from_bytes(table_name);
 
                 // Get or create the table
-                let idx = if let Some(i) = self.table_index(table_name) {
+                let idx = if let Some(i) = self.table_index(&table_name) {
                     i
                 } else {
-                    self.tables.push((table_name.to_string(), Set::default()));
+                    self.tables.push((table_name.clone(), Set::default()));
                     self.tables.len() - 1
                 };
 
                 // If there's no binding after the slash, this is a table
                 // definition/clear command
                 if binding.is_empty() {
-                    log::debug!("config has 'keybind = {table_name}/', table cleared");
+                    log::debug!("config has 'keybind = {table_name:?}/', table cleared");
                     self.tables[idx].1 = Set::default();
                     self.chain_target = ChainTarget::Root;
                     return Ok(());
@@ -624,23 +640,23 @@ impl ConfigField for Keybinds {
 
                 // Chains are only allowed at the root level. Their target is
                 // tracked globally by parse order in `self.chain_target`.
-                if binding.starts_with("chain=") {
+                if binding.starts_with(b"chain=") {
                     return Err(ArgError::other("InvalidFormat"));
                 }
 
                 // Parse and add the binding to the table
                 self.tables[idx]
                     .1
-                    .parse_and_put(binding)
+                    .parse_and_put_bytes(binding)
                     .map_err(to_arg_error)?;
-                self.chain_target = ChainTarget::Table(table_name.to_string());
+                self.chain_target = ChainTarget::Table(table_name.clone());
                 return Ok(());
             }
         }
 
-        if value.starts_with("chain=") {
+        if value.starts_with(b"chain=") {
             match self.chain_target.clone() {
-                ChainTarget::Root => self.set.parse_and_put(value).map_err(to_arg_error)?,
+                ChainTarget::Root => self.set.parse_and_put_bytes(value).map_err(to_arg_error)?,
                 ChainTarget::Table(table_name) => {
                     let Some(idx) = self.table_index(&table_name) else {
                         self.chain_target = ChainTarget::Root;
@@ -648,7 +664,7 @@ impl ConfigField for Keybinds {
                     };
                     self.tables[idx]
                         .1
-                        .parse_and_put(value)
+                        .parse_and_put_bytes(value)
                         .map_err(to_arg_error)?;
                 }
             }
@@ -656,7 +672,7 @@ impl ConfigField for Keybinds {
         }
 
         // Parse into default set
-        self.set.parse_and_put(value).map_err(to_arg_error)?;
+        self.set.parse_and_put_bytes(value).map_err(to_arg_error)?;
         self.chain_target = ChainTarget::Root;
         Ok(())
     }
@@ -1037,7 +1053,7 @@ mod tests {
         let Some(Value::Leaf(l)) = lookup(&kb, phys(Key::ArrowLeft, sup)) else {
             panic!()
         };
-        assert_eq!(l.action, Action::Text("\\x01".to_owned()));
+        assert_eq!(l.action, Action::Text("\\x01".into()));
 
         // ctrlOrSuper picks super: super+comma opens the config.
         let Some(Value::Leaf(l)) = lookup(&kb, uni(',', sup)) else {

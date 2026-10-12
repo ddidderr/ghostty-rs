@@ -78,7 +78,7 @@ cli_options!(Options, help, diagnostics);
 ///   * `--presentation`: If set, force searching for a specific presentation
 ///     style. Valid options are `text` and `emoji`. If unset, the presentation
 ///     style of a codepoint will be inferred from the Unicode standard.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

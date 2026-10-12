@@ -30,6 +30,39 @@ pub fn trim_ws(s: &str) -> &str {
     s.trim_matches(|c| c == ' ' || c == '\t')
 }
 
+/// Trim Zig's `std.ascii.whitespace`, including vertical tab.
+pub fn trim_ascii_whitespace(value: &[u8]) -> &[u8] {
+    let is_whitespace = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c);
+    let start = value
+        .iter()
+        .position(|b| !is_whitespace(b))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !is_whitespace(b))
+        .map_or(start, |i| i + 1);
+    &value[start..end]
+}
+
+/// Validate at a text field's parsing boundary, never in the line/argument reader.
+pub fn text_value(value: Option<&[u8]>) -> Result<Option<&str>, ArgError> {
+    value
+        .map(|v| std::str::from_utf8(v).map_err(|_| ArgError::InvalidValue))
+        .transpose()
+}
+
+pub fn trim_bytes(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|b| !matches!(b, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t'))
+        .map_or(start, |i| i + 1);
+    &value[start..end]
+}
+
 /// The base errors for arg parsing. Additional errors can be returned due
 /// to type-specific parsing but these are always possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +136,12 @@ pub trait ConfigField: Clone + PartialEq + Default + fmt::Debug {
 
     /// Parse `value` (the text after `=`, `None` if there was no `=`) into
     /// `self`. Repeatable types accumulate; scalar types overwrite.
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError>;
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError>;
+
+    /// Convenience for plain UTF-8 input. Never accepts the OS escape encoding.
+    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+        self.parse_bytes(value.map(str::as_bytes))
+    }
 
     /// Called when the value was set to the empty string: reset to the
     /// field's default value (Zig: the `init` function or the declared
@@ -143,7 +181,7 @@ pub trait CliTarget {
     /// Parse a single key/value pair into the destination
     /// (Zig: `parseIntoField`). Returns `ArgError::InvalidField` if the key
     /// is unknown.
-    fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError>;
+    fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError>;
 
     /// For enum-typed fields, the valid values (used for diagnostics).
     fn valid_values(&self, _key: &str) -> Option<&'static [&'static str]> {
@@ -159,7 +197,7 @@ pub trait CliTarget {
     /// stop parsing.
     fn parse_manually_hook(
         &mut self,
-        _arg: &str,
+        _arg: &[u8],
         _iter: &mut dyn ArgIter,
     ) -> Result<bool, ArgError> {
         Ok(true)
@@ -177,14 +215,14 @@ pub trait CliTarget {
 
     /// Compatibility handler (Zig: `compatibility` decl). Called when
     /// parsing a field fails. Return true if handled.
-    fn compatibility(&mut self, _key: &str, _value: Option<&str>) -> bool {
+    fn compatibility(&mut self, _key: &str, _value: Option<&[u8]>) -> bool {
         false
     }
 }
 
 /// An iterator over arguments (Zig: any iterator with `next`).
 pub trait ArgIter {
-    fn next_arg(&mut self) -> Option<String>;
+    fn next_arg(&mut self) -> Option<Vec<u8>>;
 
     /// Location for diagnostics.
     fn location(&self) -> Option<Location> {
@@ -206,7 +244,7 @@ pub fn parse<T: CliTarget + ?Sized>(dst: &mut T, iter: &mut dyn ArgIter) -> Resu
 
         // If the destination supports help then we check for it, call
         // the help function and return.
-        if dst.supports_help() && (arg == "--help" || arg == "-h") {
+        if dst.supports_help() && (arg == b"--help" || arg == b"-h") {
             dst.help()?;
             return Ok(());
         }
@@ -214,24 +252,27 @@ pub fn parse<T: CliTarget + ?Sized>(dst: &mut T, iter: &mut dyn ArgIter) -> Resu
         // If this doesn't start with "--" then it isn't a config
         // flag. We don't support positional arguments or configuration
         // values set with spaces so this is an error.
-        let Some(rest) = arg.strip_prefix("--") else {
+        let Some(rest) = arg.strip_prefix(b"--") else {
             let loc = iter.location().unwrap_or_default();
             let Some(diags) = dst.diagnostics_mut() else {
                 return Err(ArgError::InvalidField);
             };
             diags.append(Diagnostic {
-                key: arg.clone(),
+                key: ghostty_os::osbytes::bytes_to_config_string(&arg),
                 message: "invalid field".to_string(),
                 location: loc,
             });
             continue;
         };
 
-        let (key, value): (&str, Option<&str>) = match rest.find('=') {
+        let (key, value) = match rest.iter().position(|b| *b == b'=') {
             Some(idx) => (&rest[..idx], Some(&rest[idx + 1..])),
             None => (rest, None),
         };
 
+        // Keys are ASCII names. Keep arbitrary unknown keys byte-faithful in diagnostics.
+        let key = ghostty_os::osbytes::bytes_to_config_string(key);
+        let key = key.as_str();
         if let Err(err) = dst.parse_into_field(key, value) {
             // Fall back to compatibility handlers if able.
             if dst.compatibility(key, value) {
@@ -251,7 +292,10 @@ pub fn parse<T: CliTarget + ?Sized>(dst: &mut T, iter: &mut dyn ArgIter) -> Resu
                 }
                 ArgError::InvalidValue => {
                     let mut m = match value {
-                        Some(v) => format!("invalid value \"{v}\""),
+                        Some(v) => format!(
+                            "invalid value \"{}\"",
+                            ghostty_os::osbytes::bytes_to_config_string(v)
+                        ),
                         None => "invalid value \"null\"".to_string(),
                     };
                     format_values(dst.valid_values(key), &mut m);
@@ -286,7 +330,7 @@ fn format_values(values: Option<&[&str]>, out: &mut String) {
 pub fn compatibility_renamed<T: CliTarget + ?Sized>(
     dst: &mut T,
     to: &str,
-    value: Option<&str>,
+    value: Option<&[u8]>,
 ) -> bool {
     match dst.parse_into_field(to, value) {
         Ok(()) => true,
@@ -307,6 +351,14 @@ pub fn split_tagged_union(v: &str) -> (&str, &str) {
     }
 }
 
+/// Split an ASCII union tag while preserving arbitrary payload bytes.
+pub fn split_tagged_union_bytes(v: &[u8]) -> (&[u8], &[u8]) {
+    match v.iter().position(|b| *b == b':') {
+        Some(i) => (trim_bytes(&v[..i]), &v[i + 1..]),
+        None => (trim_bytes(v), b""),
+    }
+}
+
 /// Parse an "auto struct" value like `a:hello,b:42` (Zig: `parseAutoStruct`).
 ///
 /// Entries are split by commas (with quoting / escaping, see
@@ -320,21 +372,39 @@ pub fn parse_auto_struct_with(
     v: &str,
     mut set: impl FnMut(&str, &str) -> Result<bool, ArgError>,
 ) -> Result<(), ArgError> {
-    let mut iter = CommaSplitter::new(v);
-    while let Some(entry) = iter.next_field()? {
-        let idx = entry.find(':').ok_or(ArgError::InvalidValue)?;
-        let key = trim_ws(&entry[..idx]);
-        let raw = trim_ws(&entry[idx + 1..]);
+    parse_auto_struct_bytes_with(v.as_bytes(), |k, v| {
+        set(
+            k,
+            std::str::from_utf8(v).map_err(|_| ArgError::InvalidValue)?,
+        )
+    })
+}
+
+pub fn parse_auto_struct_bytes_with(
+    v: &[u8],
+    mut set: impl FnMut(&str, &[u8]) -> Result<bool, ArgError>,
+) -> Result<(), ArgError> {
+    let mut iter = CommaSplitter::from_bytes(v);
+    while let Some(entry) = iter.next_bytes()? {
+        let idx = entry
+            .iter()
+            .position(|b| *b == b':')
+            .ok_or(ArgError::InvalidValue)?;
+        let key = trim_bytes(&entry[..idx]);
+        let raw = trim_bytes(&entry[idx + 1..]);
 
         let decoded;
-        let value = if raw.len() >= 2 && raw.starts_with('"') && raw.ends_with('"') {
-            decoded = parse_zig_string_literal(raw).ok_or(ArgError::InvalidValue)?;
-            decoded.as_str()
+        let value = if raw.len() >= 2 && raw.starts_with(b"\"") && raw.ends_with(b"\"") {
+            decoded = parse_zig_string_literal_bytes(raw).ok_or(ArgError::InvalidValue)?;
+            decoded.as_slice()
         } else {
             raw
         };
 
-        if !set(key, value)? {
+        if !set(
+            std::str::from_utf8(key).map_err(|_| ArgError::InvalidValue)?,
+            value,
+        )? {
             return Err(ArgError::InvalidValue);
         }
     }
@@ -342,22 +412,18 @@ pub fn parse_auto_struct_with(
 }
 
 /// Decode a double-quoted Zig string literal (including the quotes).
-/// Returns `None` on failure. Bytes produced by `\x` escapes that do not form
-/// valid UTF-8 stay raw bytes: they are carried through the reversible
-/// `ghostty_os::osbytes` escape encoding (`\xFF` -> `U+FDD0 U+00FF`, decoded back
-/// to `0xFF` by `config_str_to_bytes`). See [`parse_zig_string_literal_bytes`]
-/// for the raw bytes.
+/// Returns `None` on failure or invalid UTF-8. Byte fields use
+/// [`parse_zig_string_literal_bytes`] to retain arbitrary literal and escaped bytes.
 #[must_use]
 pub fn parse_zig_string_literal(s: &str) -> Option<String> {
-    parse_zig_string_literal_bytes(s).map(|b| ghostty_os::osbytes::bytes_to_config_string(&b))
+    String::from_utf8(parse_zig_string_literal_bytes(s)?).ok()
 }
 
 /// Byte-exact [`parse_zig_string_literal`] (Zig `std.zig.string_literal`
 /// decoding yields a `[]u8`).
 #[must_use]
-pub fn parse_zig_string_literal_bytes(s: &str) -> Option<Vec<u8>> {
-    let b = ghostty_os::osbytes::config_str_to_bytes(s);
-    let b = b.as_slice();
+pub fn parse_zig_string_literal_bytes(s: impl AsRef<[u8]>) -> Option<Vec<u8>> {
+    let b = s.as_ref();
     if b.len() < 2 || b[0] != b'"' || b[b.len() - 1] != b'"' {
         return None;
     }
@@ -494,7 +560,8 @@ impl ConfigField for bool {
         CValue::Bool(*self)
     }
 
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         *self = parse_bool(value.unwrap_or("t"))?;
         Ok(())
     }
@@ -512,7 +579,8 @@ macro_rules! impl_int_field {
                 f(*self)
             }
 
-            fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+            fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
                 let v = value.ok_or(ArgError::ValueRequired)?;
                 let n = parse_int_base0(v).ok_or(ArgError::InvalidValue)?;
                 *self = <$t>::try_from(n).map_err(|_| ArgError::InvalidValue)?;
@@ -546,7 +614,8 @@ macro_rules! impl_float_field {
                 f(*self)
             }
 
-            fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+            fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
                 let v = value.ok_or(ArgError::ValueRequired)?;
                 *self = v.parse::<$t>().map_err(|_| ArgError::InvalidValue)?;
                 Ok(())
@@ -562,20 +631,44 @@ impl_float_field!(f32 => CValue::F32, f64 => CValue::F64);
 
 impl ConfigField for String {
     fn c_value_optional(&self) -> CValue {
-        CValue::String(self.clone())
+        CValue::String(ghostty_os::osbytes::valid_str_to_config_string(self))
     }
 
     fn c_value_none() -> CValue {
         CValue::NullString
     }
 
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         *self = value.ok_or(ArgError::ValueRequired)?.to_string();
         Ok(())
     }
 
     fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
-        writeln!(f.writer, "{} = {}", f.name, self)
+        writeln!(
+            f.writer,
+            "{} = {}",
+            f.name,
+            ghostty_os::osbytes::valid_str_to_config_string(self)
+        )
+    }
+}
+impl ConfigField for ghostty_os::osbytes::EncodedOs {
+    fn c_value_optional(&self) -> CValue {
+        CValue::String(self.as_encoded().to_owned())
+    }
+
+    fn c_value_none() -> CValue {
+        CValue::NullString
+    }
+
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        *self = Self::from_bytes(value.ok_or(ArgError::ValueRequired)?);
+        Ok(())
+    }
+
+    fn format_entry(&self, f: &mut EntryFormatter<'_>) -> fmt::Result {
+        writeln!(f.writer, "{} = {}", f.name, self.as_encoded())
     }
 }
 
@@ -593,13 +686,13 @@ impl<T: ConfigField> ConfigField for Option<T> {
         }
     }
 
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
         // For optional fields, we just treat it as the child type.
         if let Some(v) = self {
-            v.parse_cli(value)
+            v.parse_bytes(value)
         } else {
             let mut tmp = T::default();
-            tmp.parse_cli(value)?;
+            tmp.parse_bytes(value)?;
             *self = Some(tmp);
             Ok(())
         }
@@ -622,7 +715,7 @@ impl<T: ConfigField> ConfigField for Option<T> {
 ///
 /// This also ignores any argument that starts with `+`. It assumes that
 /// actions were parsed out before this iterator was created.
-pub struct ArgsIterator<I: Iterator<Item = String>> {
+pub struct ArgsIterator<I: Iterator> {
     /// The underlying args iterator.
     pub iterator: I,
     /// Our current index into the iterator. This is 1-indexed because
@@ -630,28 +723,34 @@ pub struct ArgsIterator<I: Iterator<Item = String>> {
     pub index: usize,
 }
 
-impl<I: Iterator<Item = String>> ArgsIterator<I> {
+impl<I: Iterator> ArgsIterator<I>
+where
+    I::Item: AsRef<[u8]>,
+{
     pub fn new(iterator: I) -> Self {
         Self { iterator, index: 0 }
     }
 
-    pub fn next(&mut self) -> Option<String> {
+    pub fn next(&mut self) -> Option<Vec<u8>> {
         loop {
             let value = self.iterator.next()?;
             self.index += 1;
             // We ignore any argument that starts with "+". This is used
             // to indicate actions and are expected to be parsed out before
             // this iterator is created.
-            if value.starts_with('+') {
+            if value.as_ref().starts_with(b"+") {
                 continue;
             }
-            return Some(value);
+            return Some(value.as_ref().to_vec());
         }
     }
 }
 
-impl<I: Iterator<Item = String>> ArgIter for ArgsIterator<I> {
-    fn next_arg(&mut self) -> Option<String> {
+impl<I: Iterator> ArgIter for ArgsIterator<I>
+where
+    I::Item: AsRef<[u8]>,
+{
+    fn next_arg(&mut self) -> Option<Vec<u8>> {
         self.next()
     }
 
@@ -662,47 +761,46 @@ impl<I: Iterator<Item = String>> ArgIter for ArgsIterator<I> {
 
 /// Create an args iterator for the process args. This will skip argv0.
 #[must_use]
-pub fn args_iterator() -> ArgsIterator<std::iter::Skip<std::vec::IntoIter<String>>> {
-    // Byte-safe: non-UTF-8 arguments keep their bytes (reversible escape
-    // encoding, see `ghostty_os::osbytes`).
-    ArgsIterator::new(
-        ghostty_os::args::collect_config_strings()
-            .into_iter()
-            .skip(1),
-    )
+pub fn args_iterator() -> ArgsIterator<std::iter::Skip<std::vec::IntoIter<Vec<u8>>>> {
+    // Keep original bytes until each field chooses whether to validate UTF-8.
+    ArgsIterator::new(ghostty_os::args::collect_bytes().into_iter().skip(1))
 }
 
 /// An iterator valid for arg parsing from a slice.
-pub struct SliceIterator<'a> {
-    pub slice: &'a [String],
+pub struct SliceIterator<'a, T> {
+    pub slice: &'a [T],
     pub idx: usize,
 }
 
-impl ArgIter for SliceIterator<'_> {
-    fn next_arg(&mut self) -> Option<String> {
+impl<T: AsRef<[u8]>> ArgIter for SliceIterator<'_, T> {
+    fn next_arg(&mut self) -> Option<Vec<u8>> {
         let v = self.slice.get(self.idx)?;
         self.idx += 1;
-        Some(v.clone())
+        Some(v.as_ref().to_vec())
     }
 }
 
 /// Construct a [`SliceIterator`] from a slice.
 #[must_use]
-pub fn slice_iterator(slice: &[String]) -> SliceIterator<'_> {
+pub fn slice_iterator<T: AsRef<[u8]>>(slice: &[T]) -> SliceIterator<'_, T> {
     SliceIterator { slice, idx: 0 }
 }
 
 /// A simple whitespace-splitting iterator used in tests and for
 /// string-based argument parsing.
 pub struct VecIterator {
-    items: std::vec::IntoIter<String>,
+    items: std::vec::IntoIter<Vec<u8>>,
 }
 
 impl VecIterator {
     #[must_use]
-    pub fn new(items: Vec<String>) -> Self {
+    pub fn new<T: AsRef<[u8]>>(items: Vec<T>) -> Self {
         Self {
-            items: items.into_iter(),
+            items: items
+                .into_iter()
+                .map(|v| v.as_ref().to_vec())
+                .collect::<Vec<_>>()
+                .into_iter(),
         }
     }
 
@@ -714,7 +812,7 @@ impl VecIterator {
 }
 
 impl ArgIter for VecIterator {
-    fn next_arg(&mut self) -> Option<String> {
+    fn next_arg(&mut self) -> Option<Vec<u8>> {
         self.items.next()
     }
 }
@@ -785,9 +883,9 @@ impl<R: BufRead> LineIterator<R> {
         }
     }
 
-    pub fn next(&mut self) -> Option<String> {
+    pub fn next(&mut self) -> Option<Vec<u8>> {
         let mut buf = Vec::new();
-        let entry: String = loop {
+        let entry: Vec<u8> = loop {
             buf.clear();
             match self.r.read_until(b'\n', &mut buf) {
                 Ok(0) => return None,
@@ -807,42 +905,48 @@ impl<R: BufRead> LineIterator<R> {
 
             self.line += 1;
 
-            // Raw bytes survive via the reversible escape encoding.
-            let line = ghostty_os::osbytes::bytes_to_config_string(&buf);
-            // Trim any whitespace (including CR) around it
-            let trim = line.trim_matches(|c| c == ' ' || c == '\t' || c == '\r');
+            // Zig trims spaces, tabs and carriage returns, without decoding text.
+            let start = buf
+                .iter()
+                .position(|b| !matches!(b, b' ' | b'\t' | b'\r'))
+                .unwrap_or(buf.len());
+            let end = buf
+                .iter()
+                .rposition(|b| !matches!(b, b' ' | b'\t' | b'\r'))
+                .map_or(start, |i| i + 1);
+            let trim = &buf[start..end];
 
             // Ignore blank lines and comments
-            if trim.is_empty() || trim.starts_with('#') {
+            if trim.is_empty() || trim.starts_with(b"#") {
                 continue;
             }
-            break trim.to_string();
+            break trim.to_vec();
         };
 
-        let mut result = String::from("--");
-        if let Some(idx) = entry.find('=') {
-            let key = trim_ws(&entry[..idx]);
-            let mut value = trim_ws(&entry[idx + 1..]);
+        let mut result = b"--".to_vec();
+        if let Some(idx) = entry.iter().position(|b| *b == b'=') {
+            let key = trim_bytes(&entry[..idx]);
+            let mut value = trim_bytes(&entry[idx + 1..]);
 
             // Detect a quoted string.
-            if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
+            if value.len() >= 2 && value.starts_with(b"\"") && value.ends_with(b"\"") {
                 // Trim quotes since our CLI args processor expects
                 // quotes to already be gone.
                 value = &value[1..value.len() - 1];
             }
 
-            result.push_str(key);
-            result.push('=');
-            result.push_str(value);
+            result.extend_from_slice(key);
+            result.push(b'=');
+            result.extend_from_slice(value);
         } else {
-            result.push_str(&entry);
+            result.extend_from_slice(&entry);
         }
         Some(result)
     }
 }
 
 impl<R: BufRead> ArgIter for LineIterator<R> {
-    fn next_arg(&mut self) -> Option<String> {
+    fn next_arg(&mut self) -> Option<Vec<u8>> {
         self.next()
     }
 
@@ -889,8 +993,8 @@ mod tests {
         }
     }
     impl CliTarget for Simple {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
-            self.parse_field(key, value)
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
+            self.parse_field_bytes(key, value)
         }
     }
 
@@ -901,8 +1005,8 @@ mod tests {
         }
     }
     impl CliTarget for Quoted {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
-            self.parse_field(key, value)
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
+            self.parse_field_bytes(key, value)
         }
     }
 
@@ -913,8 +1017,8 @@ mod tests {
         }
     }
     impl CliTarget for Reset {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
-            self.parse_field(key, value)
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
+            self.parse_field_bytes(key, value)
         }
     }
 
@@ -932,8 +1036,8 @@ mod tests {
         }
     }
     impl CliTarget for Diag {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
-            self.parse_field(key, value)
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
+            self.parse_field_bytes(key, value)
         }
         fn valid_values(&self, key: &str) -> Option<&'static [&'static str]> {
             Self::valid_values_for(key)
@@ -1029,15 +1133,15 @@ mod tests {
         pub a: bool,
     }
     impl CliTarget for Compat {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
             if key == "a" {
                 // Fails for anything but a valid bool.
-                return self.a.parse_cli(value);
+                return self.a.parse_bytes(value);
             }
             Err(ArgError::InvalidField)
         }
-        fn compatibility(&mut self, key: &str, value: Option<&str>) -> bool {
-            if key == "a" && value == Some("yuh") {
+        fn compatibility(&mut self, key: &str, value: Option<&[u8]>) -> bool {
+            if key == "a" && value == Some(b"yuh") {
                 self.a = true;
                 return true;
             }
@@ -1057,14 +1161,14 @@ mod tests {
         pub b: bool,
     }
     impl CliTarget for Renamed {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
             match key {
-                "a" => self.a.parse_cli(value),
-                "b" => self.b.parse_cli(value),
+                "a" => self.a.parse_bytes(value),
+                "b" => self.b.parse_bytes(value),
                 _ => Err(ArgError::InvalidField),
             }
         }
-        fn compatibility(&mut self, key: &str, value: Option<&str>) -> bool {
+        fn compatibility(&mut self, key: &str, value: Option<&[u8]>) -> bool {
             if key == "old" {
                 return compatibility_renamed(self, "a", value);
             }
@@ -1086,12 +1190,12 @@ mod tests {
         }
     }
     impl CliTarget for Underscore {
-        fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
             // Underscore-prefixed fields are never parseable.
             if key.starts_with('_') {
                 return Err(ArgError::InvalidField);
             }
-            self.parse_field(key, value)
+            self.parse_field_bytes(key, value)
         }
     }
 
@@ -1099,7 +1203,7 @@ mod tests {
     fn parse_into_field_ignore_underscore_prefixed_fields() {
         let mut data = Underscore::raw_default();
         assert_eq!(
-            data.parse_into_field("_a", Some("42")),
+            data.parse_into_field("_a", Some(b"42")),
             Err(ArgError::InvalidField)
         );
         assert_eq!(data.a, "12");
@@ -1117,7 +1221,8 @@ mod tests {
         }
     }
     impl ConfigField for WithInit {
-        fn parse_cli(&mut self, _value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_bytes(&mut self, _value: Option<&[u8]>) -> Result<(), ArgError> {
+            let _value = crate::cli_args::text_value(_value)?;
             Ok(())
         }
         fn reset(&mut self, _default: Self) {
@@ -1272,7 +1377,8 @@ mod tests {
         pub v: String,
     }
     impl ConfigField for WithParse {
-        fn parse_cli(&mut self, _value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_bytes(&mut self, _value: Option<&[u8]>) -> Result<(), ArgError> {
+            let _value = crate::cli_args::text_value(_value)?;
             self.v = "HELLO!".into();
             Ok(())
         }
@@ -1313,7 +1419,8 @@ mod tests {
         }
     }
     impl ConfigField for Basic {
-        fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+            let value = crate::cli_args::text_value(value)?;
             let v = value.ok_or(ArgError::ValueRequired)?;
             let mut r = Basic::default();
             let mut set = [false; 3];
@@ -1381,7 +1488,8 @@ mod tests {
         D(String),
     }
     impl ConfigField for Tu {
-        fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+        fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+            let value = crate::cli_args::text_value(value)?;
             let v = value.ok_or(ArgError::ValueRequired)?;
             let (tag, rest) = split_tagged_union(v);
             *self = match tag {
@@ -1454,8 +1562,8 @@ mod tests {
     fn args_iterator() {
         let child = split_args("--what +list-things --a=42").into_iter();
         let mut iter = ArgsIterator::new(child);
-        assert_eq!(iter.next().unwrap(), "--what");
-        assert_eq!(iter.next().unwrap(), "--a=42");
+        assert_eq!(iter.next().unwrap(), b"--what");
+        assert_eq!(iter.next().unwrap(), b"--a=42");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1469,12 +1577,12 @@ mod tests {
         let mut iter = line_iter(
             "A\nB=42\nC\n\n# A comment\nD\n\n  # An indented comment\n  E\n\n# A quoted string with whitespace\nF=  \"value \"",
         );
-        assert_eq!(iter.next().unwrap(), "--A");
-        assert_eq!(iter.next().unwrap(), "--B=42");
-        assert_eq!(iter.next().unwrap(), "--C");
-        assert_eq!(iter.next().unwrap(), "--D");
-        assert_eq!(iter.next().unwrap(), "--E");
-        assert_eq!(iter.next().unwrap(), "--F=value ");
+        assert_eq!(iter.next().unwrap(), b"--A");
+        assert_eq!(iter.next().unwrap(), b"--B=42");
+        assert_eq!(iter.next().unwrap(), b"--C");
+        assert_eq!(iter.next().unwrap(), b"--D");
+        assert_eq!(iter.next().unwrap(), b"--E");
+        assert_eq!(iter.next().unwrap(), b"--F=value ");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1482,7 +1590,7 @@ mod tests {
     #[test]
     fn line_iterator_end_in_newline() {
         let mut iter = line_iter("A\n\n");
-        assert_eq!(iter.next().unwrap(), "--A");
+        assert_eq!(iter.next().unwrap(), b"--A");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1490,7 +1598,7 @@ mod tests {
     #[test]
     fn line_iterator_spaces_around_equals() {
         let mut iter = line_iter("A = B\n\n");
-        assert_eq!(iter.next().unwrap(), "--A=B");
+        assert_eq!(iter.next().unwrap(), b"--A=B");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1498,15 +1606,15 @@ mod tests {
     #[test]
     fn line_iterator_no_value() {
         let mut iter = line_iter("A = \n\n");
-        assert_eq!(iter.next().unwrap(), "--A=");
+        assert_eq!(iter.next().unwrap(), b"--A=");
         assert_eq!(iter.next(), None);
     }
 
     #[test]
     fn line_iterator_with_crlf_line_endings() {
         let mut iter = line_iter("A\r\nB = C\r\n");
-        assert_eq!(iter.next().unwrap(), "--A");
-        assert_eq!(iter.next().unwrap(), "--B=C");
+        assert_eq!(iter.next().unwrap(), b"--A");
+        assert_eq!(iter.next().unwrap(), b"--B=C");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1515,8 +1623,8 @@ mod tests {
     fn line_iterator_with_buffered_reader() {
         let r = std::io::BufReader::with_capacity(2, Cursor::new(b"A\nB = C\n".to_vec()));
         let mut iter = LineIterator::new(r);
-        assert_eq!(iter.next().unwrap(), "--A");
-        assert_eq!(iter.next().unwrap(), "--B=C");
+        assert_eq!(iter.next().unwrap(), b"--A");
+        assert_eq!(iter.next().unwrap(), b"--B=C");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1527,8 +1635,8 @@ mod tests {
         let mut r = std::io::BufReader::with_capacity(2, Cursor::new(b"A\nB = C\n".to_vec()));
         r.fill_buf().unwrap();
         let mut iter = LineIterator::new(r);
-        assert_eq!(iter.next().unwrap(), "--A");
-        assert_eq!(iter.next().unwrap(), "--B=C");
+        assert_eq!(iter.next().unwrap(), b"--A");
+        assert_eq!(iter.next().unwrap(), b"--B=C");
         assert_eq!(iter.next(), None);
         assert_eq!(iter.next(), None);
     }
@@ -1558,21 +1666,16 @@ mod tests {
             parse_zig_string_literal_bytes("\"a\\xFFb\"").unwrap(),
             vec![b'a', 0xff, b'b']
         );
-        let s = parse_zig_string_literal("\"a\\xFFb\"").unwrap();
-        assert_eq!(
-            ghostty_os::osbytes::config_str_to_bytes(&s),
-            vec![b'a', 0xff, b'b']
-        );
-        assert!(!s.contains('\u{fffd}'));
+        assert!(parse_zig_string_literal("\"a\\xFFb\"").is_none());
         // Valid multi-byte sequences spelled with escapes still decode.
         assert_eq!(
             parse_zig_string_literal("\"\\xC3\\xA9\"").unwrap(),
             "\u{e9}"
         );
-        // Raw (unescaped) invalid input bytes survive the escape encoding.
-        let raw = ghostty_os::osbytes::bytes_to_config_string(b"\"x\xfey\"");
+        // Raw (unescaped) invalid input bytes survive literal parsing.
+        let raw = b"\"x\xfey\"";
         assert_eq!(
-            parse_zig_string_literal_bytes(&raw).unwrap(),
+            parse_zig_string_literal_bytes(raw).unwrap(),
             vec![b'x', 0xfe, b'y']
         );
     }
@@ -1582,10 +1685,6 @@ mod tests {
         let data: &[u8] = b"title = a\xffb\n";
         let mut it = LineIterator::new(data);
         let line = it.next().unwrap();
-        assert_eq!(
-            ghostty_os::osbytes::config_str_to_bytes(&line),
-            b"--title=a\xffb".to_vec()
-        );
-        assert!(!line.contains('\u{fffd}'));
+        assert_eq!(line, b"--title=a\xffb".to_vec());
     }
 }

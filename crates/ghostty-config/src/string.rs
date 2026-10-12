@@ -75,58 +75,43 @@ fn parse_escape_sequence(bytes: &[u8], i: &mut usize) -> Option<u32> {
     Some(cp)
 }
 
-/// Parse a string literal into the original bytes (Zig `parse`'s output).
-/// `input` is a config string in the reversible OS-byte encoding; the result
-/// is decoded, so it can be written to the pty / OS directly.
-pub fn parse_bytes(input: &str) -> Result<Vec<u8>, StringError> {
-    parse(input).map(|s| ghostty_os::osbytes::config_str_to_bytes(&s))
-}
-
-/// Parse a string literal into a string. The string can contain
-/// any valid Zig string literal escape sequences.
-///
-/// The input and output are in the reversible OS-byte encoding (see
-/// `ghostty_os::osbytes`): bytes are copied through unchanged, and a
-/// code point produced by an escape is encoded as plain text, so a
-/// literal `U+FDD0` from `\u{fdd0}` stays distinct from the escape
-/// character. Use [`parse_bytes`] for the raw bytes.
-pub fn parse(bytes: &str) -> Result<String, StringError> {
-    let b = bytes.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
+/// Parse literal escapes from the original bytes, copying unescaped bytes verbatim.
+/// Like Zig, \xFF denotes U+00FF; only unescaped bytes bypass UTF-8 validation.
+pub fn parse_bytes(input: impl AsRef<[u8]>) -> Result<Vec<u8>, StringError> {
+    let bytes = input.as_ref();
+    let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
-    while i < b.len() {
-        if b[i] != b'\\' {
-            // Copy a whole UTF-8 character.
-            let ch = bytes[i..]
-                .chars()
-                .next()
-                .ok_or(StringError::InvalidString)?;
-            out.push(ch);
-            i += ch.len_utf8();
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            out.push(bytes[i]);
+            i += 1;
             continue;
         }
-
-        let cp = parse_escape_sequence(b, &mut i).ok_or(StringError::InvalidString)?;
-        // Surrogates cannot be encoded.
+        let cp = parse_escape_sequence(bytes, &mut i).ok_or(StringError::InvalidString)?;
         let ch = char::from_u32(cp).ok_or(StringError::InvalidString)?;
-        if ch == '\u{FDD0}' {
-            out.push_str("\u{FDD0}\u{FDD0}");
-        } else {
-            out.push(ch);
-        }
+        out.extend_from_slice(ch.encode_utf8(&mut [0; 4]).as_bytes());
     }
     Ok(out)
+}
+
+/// Plain-text convenience; byte consumers use [`parse_bytes`].
+pub fn parse(input: &str) -> Result<String, StringError> {
+    String::from_utf8(parse_bytes(input)?).map_err(|_| StringError::InvalidString)
 }
 
 /// Creates an iterator that requires no allocation to extract codepoints
 /// from the string literal, parsing escape sequences as it goes.
 #[must_use]
 pub fn codepoint_iterator(bytes: &str) -> CodepointIterator<'_> {
+    codepoint_iterator_bytes(bytes.as_bytes())
+}
+
+pub fn codepoint_iterator_bytes(bytes: &[u8]) -> CodepointIterator<'_> {
     CodepointIterator { bytes, i: 0 }
 }
 
 pub struct CodepointIterator<'a> {
-    bytes: &'a str,
+    bytes: &'a [u8],
     i: usize,
 }
 
@@ -136,19 +121,31 @@ impl CodepointIterator<'_> {
         if self.i >= self.bytes.len() {
             return Ok(None);
         }
-        if self.bytes.as_bytes()[self.i] == b'\\' {
+        if self.bytes[self.i] == b'\\' {
             // An escape sequence
-            return parse_escape_sequence(self.bytes.as_bytes(), &mut self.i)
+            return parse_escape_sequence(self.bytes, &mut self.i)
                 .map(Some)
                 .ok_or(StringError::InvalidString);
         }
 
         // Not an escape, parse as UTF-8
-        let ch = self.bytes[self.i..]
+        let len = match self.bytes[self.i] {
+            0..=0x7f => 1,
+            0xc2..=0xdf => 2,
+            0xe0..=0xef => 3,
+            0xf0..=0xf4 => 4,
+            _ => return Err(StringError::InvalidString),
+        };
+        let raw = self
+            .bytes
+            .get(self.i..self.i + len)
+            .ok_or(StringError::InvalidString)?;
+        let ch = std::str::from_utf8(raw)
+            .map_err(|_| StringError::InvalidString)?
             .chars()
             .next()
             .ok_or(StringError::InvalidString)?;
-        self.i += ch.len_utf8();
+        self.i += len;
         Ok(Some(u32::from(ch)))
     }
 }
@@ -157,17 +154,23 @@ impl CodepointIterator<'_> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     #[test]
-    fn parse_bytes_decodes_the_reversible_encoding() {
+    fn parse_bytes_copies_original_bytes() {
         use ghostty_os::osbytes::EncodedOs;
 
         use super::{parse, parse_bytes};
 
         // Raw non-UTF-8 bytes pass through as the same bytes.
         let enc = EncodedOs::from_bytes(b"a\xffb\\n").into_encoded();
-        assert_eq!(parse_bytes(&enc).unwrap(), b"a\xffb\n");
+        assert_eq!(
+            parse_bytes(EncodedOs::from_encoded(enc).to_bytes()).unwrap(),
+            b"a\xffb\n"
+        );
         // A literal U+FDD0 (typed or via an escape) is that character.
         let lit = EncodedOs::from_plain_text("\u{fdd0}").into_encoded();
-        assert_eq!(parse_bytes(&lit).unwrap(), "\u{fdd0}".as_bytes());
+        assert_eq!(
+            parse_bytes(EncodedOs::from_encoded(lit).to_bytes()).unwrap(),
+            "\u{fdd0}".as_bytes()
+        );
         assert_eq!(parse_bytes("\\u{fdd0}").unwrap(), "\u{fdd0}".as_bytes());
         // An escape producing U+FF is the UTF-8 encoding, not byte FF.
         assert_eq!(parse_bytes("\\xff").unwrap(), "\u{ff}".as_bytes());

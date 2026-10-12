@@ -17,7 +17,6 @@ use std::{
     cell::{Cell, OnceCell, RefCell},
     collections::HashMap,
     ffi::{CStr, CString, c_char, c_int, c_void},
-    fmt::Write as _,
     rc::{Rc, Weak},
     sync::Arc,
 };
@@ -547,7 +546,7 @@ pub struct SurfaceRt {
     cursor_pos: Cell<CursorPos>,
     /// The current title of the surface. The embedded apprt saves this so
     /// that `get_title` works without the implementer needing to save it.
-    title: RefCell<Option<String>>,
+    title: RefCell<Option<ghostty_os::osbytes::EncodedOs>>,
 }
 
 impl SurfaceRt {
@@ -570,7 +569,7 @@ impl RtSurface for SurfaceRt {
         None
     }
 
-    fn get_title(&self) -> Option<String> {
+    fn get_title(&self) -> Option<ghostty_os::osbytes::EncodedOs> {
         self.title.borrow().clone()
     }
 
@@ -854,36 +853,21 @@ unsafe fn platform_view_from_c(
     }
 }
 
-/// Zig's `std.zig.stringEscape` with non-ASCII code points written as
-/// `\u{...}` (the config value is parsed as a Zig string; the bytes of
-/// valid UTF-8 round trip either way). Bytes that are not valid UTF-8 are
-/// emitted in the reversible OS-byte encoding, which the string parser
-/// copies through unchanged, so `string::parse_bytes(string_escape(b)) == b`.
-fn string_escape(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len());
-    for chunk in input.utf8_chunks() {
-        for c in chunk.valid().chars() {
-            match c {
-                '\n' => out.push_str("\\n"),
-                '\r' => out.push_str("\\r"),
-                '\t' => out.push_str("\\t"),
-                '\\' => out.push_str("\\\\"),
-                '"' => out.push_str("\\\""),
-                ' ' | '!' | '#'..='&' | '\'' | '('..='[' | ']'..='~' => out.push(c),
-                c if c.is_ascii() => {
-                    let _ = write!(out, "\\x{:02x}", c as u32);
-                }
-                c => {
-                    let _ = write!(out, "\\u{{{:x}}}", c as u32);
-                }
-            }
-        }
-        for &b in chunk.invalid() {
-            out.push('\u{FDD0}');
-            out.push(char::from(b));
+/// Escape initial input for config/string while retaining arbitrary original bytes.
+fn string_escape(input: &[u8]) -> ghostty_os::osbytes::EncodedOs {
+    let mut out = Vec::with_capacity(input.len());
+    for &byte in input {
+        match byte {
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'"' => out.extend_from_slice(b"\\\""),
+            0..=0x1f | 0x7f => out.extend_from_slice(format!("\\x{byte:02x}").as_bytes()),
+            _ => out.push(byte),
         }
     }
-    out
+    ghostty_os::osbytes::EncodedOs::from_bytes(&out)
 }
 
 /// Apply the surface options to the config (the first half of Zig's
@@ -921,7 +905,7 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
     if let Some(cmd) = unsafe { cstr(opts.command) }.map(CStr::to_bytes)
         && !cmd.is_empty()
     {
-        config.command = Some(Command::Shell(osbytes::bytes_to_config_string(cmd)));
+        config.command = Some(Command::Shell(osbytes::EncodedOs::from_bytes(cmd)));
         config.wait_after_command = true;
     }
 
@@ -934,10 +918,7 @@ unsafe fn apply_surface_options(config: &mut Config, opts: &ghostty_surface_conf
             let (Some(k), Some(v)) = (unsafe { cstr(var.key) }, unsafe { cstr(var.value) }) else {
                 continue;
             };
-            config.env.put(
-                &osbytes::bytes_to_config_string(k.to_bytes()),
-                &osbytes::bytes_to_config_string(v.to_bytes()),
-            );
+            config.env.put_bytes(k.to_bytes(), v.to_bytes());
         }
     }
 
@@ -1946,11 +1927,10 @@ pub unsafe extern "C" fn ghostty_surface_binding_action(
     let bytes = unsafe { std::slice::from_raw_parts(action.cast::<u8>(), len) };
     // The action text is bytes (Zig `[]const u8`); the parser works on the
     // reversible OS-byte encoding so a `text:` payload keeps invalid UTF-8.
-    let action_str = ghostty_os::osbytes::bytes_to_config_string(bytes);
-    let action = match BindingAction::parse(&action_str) {
+    let action = match BindingAction::parse_bytes(bytes) {
         Ok(a) => a,
         Err(err) => {
-            log::error!("error parsing binding action action={action_str} err={err:?}");
+            log::error!("error parsing binding action action={bytes:?} err={err:?}");
             return false;
         }
     };
@@ -2194,7 +2174,7 @@ mod tests {
         ] {
             let esc = string_escape(raw);
             assert_eq!(
-                ghostty_config::string::parse_bytes(&esc).unwrap(),
+                ghostty_config::string::parse_bytes(esc.to_bytes()).unwrap(),
                 raw,
                 "{esc:?}"
             );
@@ -2241,10 +2221,10 @@ mod tests {
         let Some(Command::Shell(c)) = &config.command else {
             panic!("no command");
         };
-        assert_eq!(osbytes::config_str_to_bytes(c), b"echo \xfe");
+        assert_eq!(c.to_bytes(), b"echo \xfe");
         let (k, v) = config.env.iter().next().unwrap();
-        assert_eq!(osbytes::config_str_to_bytes(k), b"K\xfd");
-        assert_eq!(osbytes::config_str_to_bytes(v), b"v\xfc");
+        assert_eq!(k.to_bytes(), b"K\xfd");
+        assert_eq!(v.to_bytes(), b"v\xfc");
         assert!(matches!(
             config.input.list.first(),
             Some(ReadableIO::Raw(_))

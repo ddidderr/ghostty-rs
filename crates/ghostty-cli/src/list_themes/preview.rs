@@ -442,7 +442,7 @@ impl Preview {
                 continue;
             }
             if searching {
-                theme.rank = rank(&theme.theme, &tokens);
+                theme.rank = rank(&theme.display_name(), &tokens);
                 if theme.rank.is_some() {
                     self.filtered.push(i);
                 }
@@ -771,7 +771,7 @@ impl Preview {
                 theme_list.print("\u{276f} ", self.ui_selected(), row, 0);
             }
             theme_list.print_ex(
-                &theme.theme,
+                &theme.display_name(),
                 match style {
                     St::Normal => self.ui_standard(),
                     St::Highlighted => self.ui_highlighted(),
@@ -783,7 +783,7 @@ impl Preview {
                 None,
             );
             if style == St::Selected {
-                let name_len = gw(&theme.theme);
+                let name_len = gw(&theme.display_name());
                 if name_len + 4 < LIST_WIDTH {
                     for i in (2 + name_len)..(LIST_WIDTH - 2) {
                         theme_list.print(" ", self.ui_selected(), row, i);
@@ -869,7 +869,7 @@ impl Preview {
                         height,
                         self.ui_standard(),
                     );
-                    let theme_line = format!("theme = {}", theme.theme);
+                    let theme_line = format!("theme = {}", theme.display_name());
                     let save_instructions: [&str; 14] = [
                         "To apply this theme, add the following line to your Ghostty configuration:",
                         "",
@@ -958,7 +958,7 @@ impl Preview {
                 let child = win.child(x_off, 0, width, area.height);
                 child.fill(ui_std);
                 let middle = child.area.height / 2;
-                let text = format!("Unable to open {} from:", theme.theme);
+                let text = format!("Unable to open {} from:", theme.display_name());
                 child.print(
                     &text,
                     ui_err,
@@ -966,10 +966,10 @@ impl Preview {
                     (child.area.width / 2).saturating_sub(gw(&text) / 2),
                 );
                 child.print_ex(
-                    theme.path.as_encoded(),
+                    &theme.path.to_text_lossy(),
                     ui_err,
                     middle,
-                    (child.area.width / 2).saturating_sub(gw(theme.path.as_encoded()) / 2),
+                    (child.area.width / 2).saturating_sub(gw(&theme.path.to_text_lossy()) / 2),
                     Some(&theme.to_uri()),
                     None,
                 );
@@ -1017,18 +1017,18 @@ impl Preview {
             child.fill(standard);
             let uri = theme.to_uri();
             child.print_ex(
-                &theme.theme,
+                &theme.display_name(),
                 standard_bold_italic,
                 1,
-                (child.area.width / 2).saturating_sub(gw(&theme.theme) / 2),
+                (child.area.width / 2).saturating_sub(gw(&theme.display_name()) / 2),
                 Some(&uri),
                 None,
             );
             child.print_ex(
-                theme.path.as_encoded(),
+                &theme.path.to_text_lossy(),
                 standard,
                 2,
-                (child.area.width / 2).saturating_sub(gw(theme.path.as_encoded()) / 2),
+                (child.area.width / 2).saturating_sub(gw(&theme.path.to_text_lossy()) / 2),
                 Some(&uri),
                 None,
             );
@@ -1048,7 +1048,7 @@ impl Preview {
             );
             for (i, diag) in config.diagnostics.items().iter().enumerate() {
                 child.print(
-                    &diag.to_string(),
+                    &ghostty_os::osbytes::config_str_to_text(&diag.to_string()),
                     ui_err,
                     2 + u16::try_from(i).unwrap_or(0),
                     2,
@@ -1409,7 +1409,7 @@ fn error_name(e: &ghostty_config::config::Error) -> String {
 pub fn resolve_auto_theme_path() -> Result<std::path::PathBuf, Error> {
     let main_cfg_path = ghostty_config::file_load::preferred_default_file_path()
         .map_err(|e| Error::Other(e.to_string()))?
-        .to_path();
+        .to_path()?;
     let base_dir = main_cfg_path
         .parent()
         .ok_or_else(|| Error::Other("BadPathName".to_string()))?;
@@ -1955,6 +1955,21 @@ mod tests {
         assert_eq!("theme = alpha\n", std::fs::read_to_string(&auto).unwrap());
         p.update(&key(KeyCode::Esc));
         assert_eq!(Mode::Normal, p.mode);
+    }
+
+    #[test]
+    fn theme_preview_renders_plain_unicode_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut p = app(&tmp);
+        let name = "Alpha\u{fdd0}é";
+        p.themes[0].theme = ghostty_os::osbytes::EncodedOs::from_plain_text(name).into_encoded();
+        render(&mut p, 120, 60);
+        assert!(p.overlays().iter().any(|overlay| overlay.text == name));
+        assert!(
+            !p.overlays()
+                .iter()
+                .any(|overlay| overlay.text.contains("\u{fdd0}\u{fdd0}"))
+        );
     }
 
     #[test]

@@ -38,49 +38,58 @@ pub struct Options {
 
     /// All of the arguments after `+new-window`. They will be sent to Ghostty
     /// for processing.
-    pub arguments: Vec<String>,
-}
-
-fn is_ascii_ws(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c')
+    pub arguments: Vec<Vec<u8>>,
 }
 
 impl Options {
-    fn check_arg(&mut self, arg: &str) -> Result<Option<String>, ArgError> {
-        if let Some(rest) = arg.strip_prefix("--class=") {
-            self.class = Some(rest.trim_matches(is_ascii_ws).to_string());
+    fn check_arg(&mut self, arg: &[u8]) -> Result<Option<Vec<u8>>, ArgError> {
+        if let Some(rest) = arg.strip_prefix(b"--class=") {
+            self.class = Some(
+                std::str::from_utf8(ghostty_config::cli_args::trim_ascii_whitespace(rest))
+                    .map_err(|_| ArgError::InvalidValue)?
+                    .to_owned(),
+            );
             return Ok(None);
         }
 
-        if let Some(rest) = arg.strip_prefix("--working-directory=") {
-            let stripped = rest.trim_matches(is_ascii_ws);
-            if stripped == "home" || stripped == "inherit" {
-                return Ok(Some(arg.to_string()));
+        if let Some(rest) = arg.strip_prefix(b"--working-directory=") {
+            let stripped = ghostty_config::cli_args::trim_ascii_whitespace(rest);
+            if stripped == b"home" || stripped == b"inherit" {
+                return Ok(Some(arg.to_vec()));
             }
-            // The CLI argument is an encoded OS string.
-            let expanded = ghostty_os::expand_home(&EncodedOs::from_encoded(stripped))
+            // Preserve the original argument bytes while expanding its path.
+            let expanded = ghostty_os::expand_home(&EncodedOs::from_bytes(stripped))
                 .map_err(|e| ArgError::Other(e.to_string()))?;
-            let realpath = std::fs::canonicalize(expanded.to_path())
+            let realpath = expanded
+                .to_path()
+                .and_then(std::fs::canonicalize)
                 .map_err(|e| ArgError::Other(e.to_string()))?;
             self.working_directory_seen = true;
-            return Ok(Some(format!(
-                "--working-directory={}",
-                EncodedOs::from_path(&realpath).as_encoded()
-            )));
+            return Ok(Some(
+                [
+                    b"--working-directory=".as_slice(),
+                    &EncodedOs::from_path(&realpath).to_bytes(),
+                ]
+                .concat(),
+            ));
         }
 
-        Ok(Some(arg.to_string()))
+        Ok(Some(arg.to_vec()))
     }
 }
 
 impl CliTarget for Options {
-    fn parse_into_field(&mut self, _key: &str, _value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_into_field(&mut self, _key: &str, _value: Option<&[u8]>) -> Result<(), ArgError> {
         Err(ArgError::InvalidField)
     }
 
     /// Manual parse hook, collect all of the arguments after `+new-window`.
-    fn parse_manually_hook(&mut self, arg: &str, iter: &mut dyn ArgIter) -> Result<bool, ArgError> {
-        let mut e_seen = arg == "-e";
+    fn parse_manually_hook(
+        &mut self,
+        arg: &[u8],
+        iter: &mut dyn ArgIter,
+    ) -> Result<bool, ArgError> {
+        let mut e_seen = arg == b"-e";
 
         // Include the argument that triggered the manual parse hook.
         if let Some(a) = self.check_arg(arg)? {
@@ -93,7 +102,7 @@ impl CliTarget for Options {
                 self.arguments.push(param);
                 continue;
             }
-            if param == "-e" {
+            if param == b"-e" {
                 e_seen = true;
                 self.arguments.push(param);
                 continue;
@@ -177,9 +186,10 @@ impl CliTarget for Options {
 ///     default command.
 ///
 /// Available since: 1.2.0
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
-    let mut iter = ghostty_config::cli_args::ArgsIterator::new(args.iter().skip(1).cloned());
+    let mut iter =
+        ghostty_config::cli_args::ArgsIterator::new(args.iter().skip(1).map(AsRef::as_ref));
     match ghostty_config::cli_args::parse(&mut opts, &mut iter) {
         Ok(()) => {}
         Err(ArgError::Other(n)) if n == crate::error::HELP_ERROR_NAME => {
@@ -196,10 +206,11 @@ pub fn run(args: &[String]) -> Result<u8, Error> {
         let wd = std::fs::canonicalize(".")?;
         opts.arguments.insert(
             0,
-            format!(
-                "--working-directory={}",
-                ghostty_os::osbytes::path_to_config_string(&wd)
-            ),
+            [
+                b"--working-directory=".as_slice(),
+                &EncodedOs::from_path(&wd).to_bytes(),
+            ]
+            .concat(),
         );
     }
 
@@ -259,7 +270,13 @@ mod tests {
     fn gathers_arguments_and_class() {
         let o = parse_str("--class=foo.bar --title=hi --command=ls");
         assert_eq!(Some("foo.bar".to_string()), o.class);
-        assert_eq!(vec!["--title=hi", "--command=ls"], o.arguments);
+        assert_eq!(
+            vec!["--title=hi", "--command=ls"],
+            o.arguments
+                .iter()
+                .map(|v| std::str::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
+        );
         assert!(!o.working_directory_seen);
     }
 
@@ -275,6 +292,9 @@ mod tests {
                 "--working-directory=/nonexistent"
             ],
             o.arguments
+                .iter()
+                .map(|v| std::str::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
         );
     }
 
@@ -282,17 +302,35 @@ mod tests {
     fn working_directory_is_resolved() {
         let o = parse_str("--working-directory=/");
         assert!(o.working_directory_seen);
-        assert_eq!(vec!["--working-directory=/"], o.arguments);
+        assert_eq!(
+            vec!["--working-directory=/"],
+            o.arguments
+                .iter()
+                .map(|v| std::str::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
+        );
         let o = parse_str("--working-directory=home");
         assert!(!o.working_directory_seen);
-        assert_eq!(vec!["--working-directory=home"], o.arguments);
+        assert_eq!(
+            vec!["--working-directory=home"],
+            o.arguments
+                .iter()
+                .map(|v| std::str::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
     fn help_is_gathered_not_special() {
         // Like Zig, the manual hook runs before the help check.
         let o = parse_str("--help");
-        assert_eq!(vec!["--help"], o.arguments);
+        assert_eq!(
+            vec!["--help"],
+            o.arguments
+                .iter()
+                .map(|v| std::str::from_utf8(v).unwrap())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

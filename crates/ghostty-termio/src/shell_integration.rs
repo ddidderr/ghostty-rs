@@ -48,6 +48,9 @@ pub use ghostty_config::{command::Command, types_b::ShellIntegrationFeatures};
 pub enum Error {
     #[error("unable to determine home directory: {0}")]
     Home(#[from] homedir::Error),
+    #[cfg(windows)]
+    #[error(transparent)]
+    InvalidUtf8(#[from] ghostty_os::osbytes::InvalidUtf8),
 }
 
 /// The result of setting up a shell integration.
@@ -65,11 +68,17 @@ pub struct ShellIntegration {
 /// `<resource_dir>/<rel>` as an OS string. `resource_dir` carries the
 /// reversible config-string encoding (it may hold non-UTF-8 bytes), so it is
 /// decoded before reaching the filesystem or the child environment.
-fn resource_path(resource_dir: &EncodedOs, rel: &str) -> std::ffi::OsString {
-    let mut p = resource_dir.to_os();
-    p.push("/");
-    p.push(rel);
-    p
+fn resource_path(resource_dir: &EncodedOs, rel: &str) -> Option<std::ffi::OsString> {
+    let mut path = resource_dir.to_bytes();
+    path.push(b'/');
+    path.extend_from_slice(rel.as_bytes());
+    match EncodedOs::from_bytes(&path).to_path() {
+        Ok(path) => Some(path.into_os_string()),
+        Err(error) => {
+            log::warn!("invalid shell integration path: {error}");
+            None
+        }
+    }
 }
 
 /// Set up the command execution environment for automatic
@@ -118,7 +127,7 @@ fn detect_shell(command: &Command) -> Option<Shell> {
 fn detect_shell_for(command: &Command, darwin: bool) -> Option<Shell> {
     let mut it = command.arg_iterator();
     let arg0 = it.next()?;
-    let exe = basename(&arg0);
+    let exe = basename(arg0.as_encoded());
 
     match exe {
         "bash" => {
@@ -195,7 +204,7 @@ fn setup_bash(
 
     // Start accumulating arguments with the executable and initial flags.
     match iter.next() {
-        Some(exe) => cmd.append_arg(&exe),
+        Some(exe) => cmd.append_arg(exe.as_encoded()),
         None => return Ok(None),
     }
     cmd.append_arg("--posix");
@@ -216,6 +225,7 @@ fn setup_bash(
     //  --posix     POSIX mode (a la /bin/sh)
     let mut rcfile: Option<String> = None;
     while let Some(arg) = iter.next() {
+        let arg = arg.as_encoded();
         if arg == "--posix" {
             return Ok(None);
         } else if arg == "--norc" {
@@ -223,23 +233,23 @@ fn setup_bash(
         } else if arg == "--noprofile" {
             inject.push_str(" --noprofile");
         } else if arg == "--rcfile" || arg == "--init-file" {
-            rcfile = iter.next();
+            rcfile = iter.next().map(EncodedOs::into_encoded);
         } else if arg.len() > 1 && arg.starts_with('-') && !arg[1..].starts_with('-') {
             // '-c command' is always non-interactive
             if arg.contains('c') {
                 return Ok(None);
             }
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
         } else if arg == "-" || arg == "--" {
             // All remaining arguments should be passed directly to the shell
             // command. We shouldn't perform any further option processing.
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
             for remaining in iter.by_ref() {
-                cmd.append_arg(&remaining);
+                cmd.append_arg(remaining.as_encoded());
             }
             break;
         } else {
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
         }
     }
 
@@ -249,7 +259,11 @@ fn setup_bash(
     }
 
     // Set our new ENV to point to our integration script.
-    let script_path = resource_path(resource_dir, "shell-integration/bash/ghostty.bash");
+    let Some(script_path) = resource_path(resource_dir, "shell-integration/bash/ghostty.bash")
+    else {
+        env.remove("GHOSTTY_BASH_ENV");
+        return Ok(None);
+    };
     match std::fs::File::open(&script_path) {
         Ok(_) => {
             env.insert("ENV", script_path);
@@ -265,7 +279,12 @@ fn setup_bash(
     if let Some(v) = rcfile {
         // The intercepted argument is an encoded OS string; the env var gets
         // its original bytes (Zig inserts the argument slice unchanged).
-        env.insert("GHOSTTY_BASH_RCFILE", EncodedOs::from_encoded(v).to_os());
+        let value = EncodedOs::from_encoded(v);
+        #[cfg(windows)]
+        let value = value.try_to_utf8_os()?;
+        #[cfg(not(windows))]
+        let value = value.to_os();
+        env.insert("GHOSTTY_BASH_RCFILE", value);
     }
 
     // In POSIX mode, HISTFILE defaults to ~/.sh_history, so unless we're
@@ -281,7 +300,7 @@ fn setup_bash(
     }
 
     // Return a copy of our modified command line to use as the shell command.
-    Ok(Some(Command::Shell(cmd.written().to_owned())))
+    Ok(Some(Command::Shell(EncodedOs::from_encoded(cmd.written()))))
 }
 
 /// Setup automatic shell integration for shells that include
@@ -293,7 +312,9 @@ fn setup_bash(
 /// from `XDG_DATA_DIRS` when integration is complete.
 fn setup_xdg_data_dirs(resource_dir: &EncodedOs, env: &mut EnvMap) -> bool {
     // Get our path to the shell integration directory.
-    let integ_path = resource_path(resource_dir, "shell-integration");
+    let Some(integ_path) = resource_path(resource_dir, "shell-integration") else {
+        return false;
+    };
     if let Err(err) = std::fs::read_dir(&integ_path) {
         log::warn!("unable to open {}: {err}", integ_path.to_string_lossy());
         return false;
@@ -336,7 +357,7 @@ fn setup_nushell(command: &Command, resource_dir: &EncodedOs, env: &mut EnvMap) 
     let mut iter = command.arg_iterator();
 
     // Start accumulating arguments with the executable and initial flags.
-    cmd.append_arg(&iter.next()?);
+    cmd.append_arg(iter.next()?.as_encoded());
 
     // Tell nu to immediately "use" all of the exported functions in our
     // 'ghostty' module.
@@ -355,28 +376,29 @@ fn setup_nushell(command: &Command, resource_dir: &EncodedOs, env: &mut EnvMap) 
     //  -c / --command      -c is always non-interactive
     //  --lsp               --lsp starts the language server
     while let Some(arg) = iter.next() {
+        let arg = arg.as_encoded();
         if arg == "--command" || arg == "--lsp" {
             return None;
         } else if arg.len() > 1 && arg.starts_with('-') && !arg[1..].starts_with('-') {
             if arg.contains('c') {
                 return None;
             }
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
         } else if arg == "-" || arg == "--" {
             // All remaining arguments should be passed directly to the shell
             // command. We shouldn't perform any further option processing.
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
             for remaining in iter.by_ref() {
-                cmd.append_arg(&remaining);
+                cmd.append_arg(remaining.as_encoded());
             }
             break;
         } else {
-            cmd.append_arg(&arg);
+            cmd.append_arg(arg);
         }
     }
 
     // Return a copy of our modified command line to use as the shell command.
-    Some(Command::Shell(cmd.written().to_owned()))
+    Some(Command::Shell(EncodedOs::from_encoded(cmd.written())))
 }
 
 /// Setup the zsh automatic shell integration. This works by setting
@@ -389,7 +411,7 @@ fn setup_zsh(command: &Command, resource_dir: &EncodedOs, env: &mut EnvMap) -> O
     }
 
     // Set our new ZDOTDIR to point to our shell resource directory.
-    let integ_path = resource_path(resource_dir, "shell-integration/zsh");
+    let integ_path = resource_path(resource_dir, "shell-integration/zsh")?;
     if !Path::new(&integ_path).is_dir() {
         // Mirrors openDirAbsolute failing (missing or not a directory).
         log::warn!("unable to open {}", integ_path.to_string_lossy());
@@ -449,12 +471,12 @@ mod tests {
     }
 
     fn sh(s: &str) -> Command {
-        Command::Shell(s.to_owned())
+        Command::Shell(s.into())
     }
 
     fn shell_str(c: Option<&Command>) -> &str {
         match c.unwrap() {
-            Command::Shell(s) => s,
+            Command::Shell(s) => s.as_encoded(),
             Command::Direct(_) => panic!("expected shell"),
         }
     }
@@ -682,13 +704,33 @@ mod tests {
         for raw in [&b"/home/x/\xffrc"[..], "/home/x/\u{fdd0}rc".as_bytes()] {
             let mut env = EnvMap::new();
             let command = Command::Direct(vec![
-                "bash".to_owned(),
-                "--rcfile".to_owned(),
-                EncodedOs::from_bytes(raw).into_encoded(),
+                "bash".into(),
+                "--rcfile".into(),
+                EncodedOs::from_bytes(raw),
             ]);
             setup_bash(&command, &res.enc(), &mut env).unwrap();
             assert_eq!(env.get("GHOSTTY_BASH_RCFILE").unwrap().as_bytes(), raw);
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_bash_rcfile_rejects_invalid_utf8_before_env_conversion() {
+        let res = TmpResourcesDir::new(Shell::Bash);
+        for raw in [b"bad\xff".as_slice(), b"bad\xed\xa0\x80"] {
+            let command = Command::Direct(vec![
+                "bash".into(),
+                "--rcfile".into(),
+                EncodedOs::from_bytes(raw),
+            ]);
+            let mut env = EnvMap::new();
+            assert!(matches!(
+                setup_bash(&command, &res.enc(), &mut env),
+                Err(Error::InvalidUtf8(_))
+            ));
+            assert!(!env.contains_key("GHOSTTY_BASH_RCFILE"));
+        }
+        assert!(resource_path(&EncodedOs::from_bytes(b"bad\xff"), "shell-integration").is_none());
     }
 
     #[test]

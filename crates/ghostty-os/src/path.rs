@@ -28,7 +28,7 @@ pub enum Error {
 /// Search for "cmd" in the PATH and return the absolute path. Non-UTF-8
 /// bytes are carried via [`crate::osbytes`]; see [`expand_os`].
 pub fn expand(cmd: &crate::osbytes::EncodedOs) -> Result<Option<crate::osbytes::EncodedOs>, Error> {
-    Ok(expand_os(&cmd.to_os())?.map(crate::osbytes::EncodedOs::from))
+    Ok(expand_os(cmd.to_path()?.as_os_str())?.map(crate::osbytes::EncodedOs::from))
 }
 
 /// Byte-preserving [`expand`]: `$PATH` and the command are handled as raw
@@ -61,7 +61,7 @@ pub fn expand_os(cmd: &OsStr) -> Result<Option<PathBuf>, Error> {
         let mut full = search_path.to_vec();
         full.push(SEP as u8);
         full.extend_from_slice(&cmd_bytes);
-        let full_path = PathBuf::from(crate::osbytes::os_from_bytes(full));
+        let full_path = crate::osbytes::EncodedOs::from_bytes(&full).to_path()?;
 
         // Stat it
         let f = match std::fs::File::open(&full_path) {
@@ -111,6 +111,16 @@ mod tests {
     }
 
     // `uname -n` is the *nix equivalent of `hostname.exe` on Windows
+    #[cfg(windows)]
+    #[test]
+    fn expand_rejects_malformed_windows_path_bytes() {
+        let path = crate::osbytes::EncodedOs::from_bytes(b"bad\xff");
+        let Error::Io(error) = super::expand(&path).unwrap_err() else {
+            panic!("path conversion error")
+        };
+        assert_eq!(error.to_string(), "BadPathName");
+    }
+
     #[test]
     fn expand_hostname() {
         let executable = if cfg!(windows) {

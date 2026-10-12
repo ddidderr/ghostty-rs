@@ -59,5 +59,5 @@ pub struct Options {
     /// Note: eventually, this will move to font.Face probably as we may
     /// want to support per-face feature configuration. For now, we only
     /// support applying features globally.
-    pub features: Vec<String>,
+    pub features: Vec<ghostty_os::osbytes::EncodedOs>,
 }

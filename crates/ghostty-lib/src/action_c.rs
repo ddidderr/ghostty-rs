@@ -127,8 +127,8 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
             v.desktop_notification.title = keep.cstr(&n.title);
             v.desktop_notification.body = keep.cstr(&n.body);
         }
-        Action::SetTitle(t) => v.set_title.title = keep.cstr(&t.title),
-        Action::SetTabTitle(t) => v.set_tab_title.title = keep.cstr(&t.title),
+        Action::SetTitle(t) => v.set_title.title = keep.cstr_bytes(&t.title.to_bytes()),
+        Action::SetTabTitle(t) => v.set_tab_title.title = keep.cstr_bytes(&t.title.to_bytes()),
         Action::PromptTitle(p) => v.prompt_title = *p as c_int,
         Action::Pwd(p) => {
             v.pwd.pwd = keep.cstr_bytes(&p.pwd.to_bytes());
@@ -158,8 +158,9 @@ pub fn action_to_c(action: &Action, keep: &mut Keep) -> ghostty_action_s {
         }
         Action::KeyTable(KeyTable::Activate(name)) => {
             v.key_table.tag = 0;
-            v.key_table.value.activate.name = keep.cstr(name);
-            v.key_table.value.activate.len = name.len();
+            let bytes = name.to_bytes();
+            v.key_table.value.activate.name = keep.cstr_bytes(&bytes);
+            v.key_table.value.activate.len = bytes.len();
         }
         Action::KeyTable(KeyTable::Deactivate) => v.key_table.tag = 1,
         Action::KeyTable(KeyTable::DeactivateAll) => v.key_table.tag = 2,
@@ -239,6 +240,39 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn c_title_actions_and_key_table_names_forward_original_bytes() {
+        use ghostty_os::osbytes::EncodedOs;
+        let raw = b"name\xff\xef\xb7\x90\xc3\xa9";
+        let mut keep = Keep::default();
+        for tab in [false, true] {
+            let title = SetTitle {
+                title: EncodedOs::from_bytes(raw),
+            };
+            let action = if tab {
+                Action::SetTabTitle(title)
+            } else {
+                Action::SetTitle(title)
+            };
+            let c = action_to_c(&action, &mut keep);
+            // SAFETY: both title union members have identical layout, pointer owned by keep.
+            let title = unsafe { std::ffi::CStr::from_ptr(c.action.set_title.title) };
+            assert_eq!(title.to_bytes(), raw);
+        }
+        let c = action_to_c(
+            &Action::KeyTable(KeyTable::Activate(EncodedOs::from_bytes(raw))),
+            &mut keep,
+        );
+        // SAFETY: the tag is key_table.activate and keep owns the buffer.
+        let name = unsafe {
+            std::slice::from_raw_parts(
+                c.action.key_table.value.activate.name.cast::<u8>(),
+                c.action.key_table.value.activate.len,
+            )
+        };
+        assert_eq!(name, raw);
+    }
 
     #[test]
     fn target_cval() {

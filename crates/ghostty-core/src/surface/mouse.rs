@@ -2543,8 +2543,8 @@ mod tests {
         // The OSC 7 pwd is raw bytes.
         let pwd = dir.as_os_str().as_bytes().to_vec();
         let t = open_link_target(Some(&pwd), "file.txt");
-        assert_eq!(t.to_path(), dir.join("file.txt"));
-        assert!(t.to_path().exists());
+        assert_eq!(t.to_path().unwrap(), dir.join("file.txt"));
+        assert!(t.to_path().unwrap().exists());
     }
 
     #[test]

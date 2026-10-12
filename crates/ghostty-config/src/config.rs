@@ -56,7 +56,7 @@ crate::config_struct! {
         ///
         /// GTK only.
         /// Available since 1.3.0.
-        "language" => language: Option<String> = None,
+        "language" => language: Option<EncodedOs> = None,
 
         /// The font families to use.
         ///
@@ -1444,7 +1444,7 @@ crate::config_struct! {
         /// sequence will be honored but previous changes will not retroactively
         /// be set. This latter case may require you to restart programs such as Neovim
         /// to get the new title.
-        "title" => title: Option<String> = None,
+        "title" => title: Option<EncodedOs> = None,
 
         /// The setting that will change the application class value.
         ///
@@ -1466,7 +1466,7 @@ crate::config_struct! {
         /// The default is `com.mitchellh.ghostty`.
         ///
         /// This only affects GTK builds.
-        "class" => class: Option<String> = None,
+        "class" => class: Option<EncodedOs> = None,
 
         /// This controls the instance name field of the `WM_CLASS` X11 property when
         /// running under X11. It has no effect otherwise.
@@ -1474,7 +1474,7 @@ crate::config_struct! {
         /// The default is `ghostty`.
         ///
         /// This only affects GTK builds.
-        "x11-instance-name" => x11_instance_name: Option<String> = None,
+        "x11-instance-name" => x11_instance_name: Option<EncodedOs> = None,
 
         /// The directory to change to after starting the command.
         ///
@@ -2049,7 +2049,7 @@ crate::config_struct! {
         /// required to be a fixed-width font.
         ///
         /// Available since: 1.0.0 on macOS, 1.1.0 on GTK
-        "window-title-font-family" => window_title_font_family: Option<String> = None,
+        "window-title-font-family" => window_title_font_family: Option<EncodedOs> = None,
 
         /// The text that will be displayed in the subtitle of the window. Valid values:
         ///
@@ -2626,7 +2626,7 @@ crate::config_struct! {
         /// GTK Wayland only.
         ///
         /// Available since: 1.2.0
-        "gtk-quick-terminal-namespace" => gtk_quick_terminal_namespace: String = "ghostty-quick-terminal".to_string(),
+        "gtk-quick-terminal-namespace" => gtk_quick_terminal_namespace: EncodedOs = EncodedOs::from_plain_text("ghostty-quick-terminal"),
 
         /// The screen where the quick terminal should show up.
         ///
@@ -3360,7 +3360,7 @@ crate::config_struct! {
         /// Supported formats include PNG, JPEG, and ICNS.
         ///
         /// Defaults to `~/.config/ghostty/Ghostty.icns`
-        "macos-custom-icon" => macos_custom_icon: Option<String> = None,
+        "macos-custom-icon" => macos_custom_icon: Option<EncodedOs> = None,
 
         /// The material to use for the frame of the macOS app icon.
         ///
@@ -3648,11 +3648,11 @@ crate::config_struct! {
         /// features. An option exists in vim to modify this: `:set
         /// keyprotocol=ghostty:kitty`, however a bug in the implementation prevents it
         /// from working properly. https://github.com/vim/vim/pull/13211 fixes this.
-        "term" => term: String = "xterm-ghostty".to_string(),
+        "term" => term: EncodedOs = EncodedOs::from_plain_text("xterm-ghostty"),
 
         /// String to send when we receive `ENQ` (`0x05`) from the command that we are
         /// running. Defaults to an empty string if not set.
-        "enquiry-response" => enquiry_response: String = String::new(),
+        "enquiry-response" => enquiry_response: EncodedOs = EncodedOs::new(),
 
         /// Configures the low-level API to use for async IO, eventing, etc.
         ///
@@ -3764,7 +3764,7 @@ pub enum Error {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ReplayStep {
     /// An argument to parse as if it came from the CLI or file.
-    Arg(String),
+    Arg(Vec<u8>),
 
     /// A base path to expand relative paths against.
     Expand(EncodedOs),
@@ -3774,7 +3774,7 @@ pub enum ReplayStep {
     /// having multiple conditional arg entries.
     ConditionalArg {
         conditions: Vec<Conditional>,
-        arg: String,
+        arg: Vec<u8>,
     },
 
     /// A diagnostic to be added to the new configuration when
@@ -3815,7 +3815,7 @@ impl Default for Config {
 /// bytes are carried as encoded command text (so non-UTF-8 bytes and a
 /// literal U+FDD0 round-trip exactly, like Zig's byte slice).
 fn shell_from_env(value: &std::ffi::OsStr) -> Command {
-    Command::Shell(ghostty_os::osbytes::EncodedOs::from_os(value).into_encoded())
+    Command::Shell(ghostty_os::osbytes::EncodedOs::from_os(value))
 }
 
 impl Config {
@@ -3886,13 +3886,13 @@ impl Config {
     ///
     /// `path` must be resolved and absolute.
     pub fn load_file(&mut self, path: &EncodedOs) -> Result<(), Error> {
-        assert!(path.to_path().is_absolute());
+        assert!(path.to_path()?.is_absolute());
         let file = match crate::file_load::open(path) {
             Ok(f) => f,
             Err(crate::file_load::OpenFileError::NotAFile) => {
                 log::warn!(
                     "config-file {}: not reading because it is not a file",
-                    path.as_encoded()
+                    path.to_text_lossy()
                 );
                 return Ok(());
             }
@@ -3907,7 +3907,7 @@ impl Config {
 
     /// Load config from the given File.
     fn load_fs_file(&mut self, file: std::fs::File, path: &EncodedOs) -> Result<(), Error> {
-        log::info!("reading configuration file path={}", path.as_encoded());
+        log::info!("reading configuration file path={}", path.to_text_lossy());
         let mut reader = std::io::BufReader::with_capacity(2048, file);
         self.load_reader(&mut reader, path)
     }
@@ -3929,7 +3929,7 @@ impl Config {
         let mut iter = cli_args::LineIterator::with_path(reader, path.as_encoded());
         self.load_iter(&mut iter)?;
         let dir = path
-            .to_path()
+            .to_path()?
             .parent()
             .map(EncodedOs::from_path)
             .unwrap_or_default();
@@ -3949,7 +3949,7 @@ impl Config {
             Err(err) => {
                 log::warn!(
                     "error reading optional config file, not loading err={err} path={}",
-                    path.as_encoded()
+                    path.to_text_lossy()
                 );
                 OptionalFileAction::Error
             }
@@ -3971,8 +3971,11 @@ impl Config {
     }
 
     fn write_config_template(path: &EncodedOs) -> std::io::Result<()> {
-        log::info!("creating template config file: path={}", path.as_encoded());
-        let os_path = path.to_path();
+        log::info!(
+            "creating template config file: path={}",
+            path.to_text_lossy()
+        );
+        let os_path = path.to_path()?;
         if let Some(dir) = os_path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -3999,8 +4002,8 @@ impl Config {
             {
                 log::warn!(
                     "both config files `{}` and `{}` exist.",
-                    legacy_xdg_path.as_encoded(),
-                    xdg_path.as_encoded()
+                    legacy_xdg_path.to_text_lossy(),
+                    xdg_path.to_text_lossy()
                 );
                 log::warn!("loading them both in that order");
                 true
@@ -4034,8 +4037,8 @@ impl Config {
                 {
                     log::warn!(
                         "both config files `{}` and `{}` exist.",
-                        legacy_app_support_path.as_encoded(),
-                        app_support_path.as_encoded()
+                        legacy_app_support_path.to_text_lossy(),
+                        app_support_path.to_text_lossy()
                     );
                     log::warn!("loading them both in that order");
                     true
@@ -4102,10 +4105,11 @@ impl Config {
 
                 // Next, take all remaining args and use that to build up
                 // a command to execute.
-                let mut builder: Vec<String> = Vec::new();
+                let mut builder: Vec<EncodedOs> = Vec::new();
                 for arg in args {
-                    let copy = ghostty_os::osbytes::bytes_to_config_string(arg.to_bytes());
-                    self.replay_steps.push(ReplayStep::Arg(copy.clone()));
+                    let copy = EncodedOs::from_bytes(arg.to_bytes());
+                    self.replay_steps
+                        .push(ReplayStep::Arg(arg.to_bytes().to_vec()));
                     builder.push(copy);
                 }
 
@@ -4207,7 +4211,7 @@ impl Config {
 
             // All paths should already be absolute at this point because
             // they're fixed up after each load.
-            assert!(path.to_path().is_absolute());
+            assert!(path.to_path()?.is_absolute());
 
             // We must only load a unique file once
             if !loaded.insert(path.clone()) {
@@ -4220,7 +4224,7 @@ impl Config {
                 continue;
             }
 
-            let file = match std::fs::File::open(path.to_path()) {
+            let file = match path.to_path().and_then(std::fs::File::open) {
                 Ok(f) => f,
                 Err(err) => {
                     if err.kind() != std::io::ErrorKind::NotFound || !optional {
@@ -4334,7 +4338,7 @@ impl Config {
 
                 ReplayStep::DashE => {
                     // The "-e" hook consumes every remaining argument.
-                    let mut args = vec!["-e".to_string()];
+                    let mut args = vec![b"-e".to_vec()];
                     while i < steps.len() {
                         match &steps[i] {
                             ReplayStep::Expand(base) => {
@@ -4351,7 +4355,7 @@ impl Config {
                                 }
                             }
                             ReplayStep::Arg(arg) => args.push(arg.clone()),
-                            ReplayStep::DashE => args.push("-e".to_string()),
+                            ReplayStep::DashE => args.push(b"-e".to_vec()),
                         }
                         i += 1;
                     }
@@ -4363,8 +4367,8 @@ impl Config {
         Ok(())
     }
 
-    fn load_one_arg(&mut self, arg: &str) -> Result<(), ArgError> {
-        let mut it = cli_args::VecIterator::new(vec![arg.to_string()]);
+    fn load_one_arg(&mut self, arg: &[u8]) -> Result<(), ArgError> {
+        let mut it = cli_args::VecIterator::new(vec![arg.to_vec()]);
         self.load_iter(&mut it)
     }
 
@@ -4391,7 +4395,7 @@ impl Config {
         // Load the correct theme depending on the conditional state.
         // Dark/light themes were programmed prior to conditional configuration
         // so when we introduce that we probably want to replace this.
-        let name: &str = match self.conditional_state.theme {
+        let name = match self.conditional_state.theme {
             conditional::Theme::Light => &theme.light,
             conditional::Theme::Dark => &theme.dark,
         };
@@ -4399,7 +4403,7 @@ impl Config {
         // Find our theme file and open it. See the open function for details.
         let resources_dir = ghostty_os::resources_dir().ok();
         let Some(themefile) = crate::theme::open(
-            &EncodedOs::from_encoded(name),
+            name,
             resources_dir.as_ref().and_then(|r| r.app()),
             &mut self.diagnostics,
         ) else {
@@ -4520,7 +4524,7 @@ impl Config {
         // Prevent setting TERM to an empty string
         if self.term.is_empty() {
             // HACK: See comment above at definition
-            self.term = "xterm-ghostty".to_string();
+            self.term = "xterm-ghostty".into();
         }
 
         // The default for the working directory depends on the system.
@@ -4647,7 +4651,7 @@ impl Config {
     fn platform_defaults(&mut self, wd: &mut WorkingDirectory) -> Result<(), Error> {
         if self.command.is_none() {
             log::warn!("no default shell found, will default to using cmd");
-            self.command = Some(Command::Shell("cmd.exe".to_owned()));
+            self.command = Some(Command::Shell("cmd.exe".into()));
         }
 
         if *wd == WorkingDirectory::Home {
@@ -4665,8 +4669,8 @@ impl Config {
         let pw = ghostty_os::passwd::get()?;
         if self.command.is_none() {
             if let Some(sh) = pw.shell {
-                log::info!("default shell src=passwd value={}", sh.as_encoded());
-                self.command = Some(Command::Shell(sh.into_encoded()));
+                log::info!("default shell src=passwd value={}", sh.to_text_lossy());
+                self.command = Some(Command::Shell(sh));
             }
         }
 
@@ -4674,7 +4678,7 @@ impl Config {
             if let Some(home) = pw.home {
                 log::info!(
                     "default working directory src=passwd value={}",
-                    home.as_encoded()
+                    home.to_text_lossy()
                 );
                 *wd = WorkingDirectory::Path(home);
             } else {
@@ -4809,8 +4813,8 @@ fn probable_cli_environment() -> bool {
 }
 
 impl CliTarget for Config {
-    fn parse_into_field(&mut self, key: &str, value: Option<&str>) -> Result<(), ArgError> {
-        self.parse_field(key, value)
+    fn parse_into_field(&mut self, key: &str, value: Option<&[u8]>) -> Result<(), ArgError> {
+        self.parse_field_bytes(key, value)
     }
 
     fn valid_values(&self, key: &str) -> Option<&'static [&'static str]> {
@@ -4823,24 +4827,28 @@ impl CliTarget for Config {
 
     /// Callback for the arg parser to allow us to handle special cases
     /// like `-e`. Returns `Ok(false)` if the CLI parsing should halt.
-    fn parse_manually_hook(&mut self, arg: &str, iter: &mut dyn ArgIter) -> Result<bool, ArgError> {
-        if arg == "-e" {
+    fn parse_manually_hook(
+        &mut self,
+        arg: &[u8],
+        iter: &mut dyn ArgIter,
+    ) -> Result<bool, ArgError> {
+        if arg == b"-e" {
             // Add the special -e marker. This prevents:
             // (1) config-file from adding args to the end (see #2908)
             // (2) dark/light theme from making this conditional
             self.replay_steps.push(ReplayStep::DashE);
 
             // Build up the command.
-            let mut command: Vec<String> = Vec::new();
+            let mut command: Vec<EncodedOs> = Vec::new();
             while let Some(param) = iter.next_arg() {
                 self.replay_steps.push(ReplayStep::Arg(param.clone()));
-                command.push(param);
+                command.push(EncodedOs::from_bytes(&param));
             }
 
             if command.is_empty() {
                 self.diagnostics.append(Diagnostic {
                     location: iter.location().unwrap_or_default(),
-                    message: format!("missing command after {arg}"),
+                    message: "missing command after -e".to_owned(),
                     ..Diagnostic::default()
                 });
 
@@ -4861,13 +4869,13 @@ impl CliTarget for Config {
         }
 
         // Keep track of our input args for replay
-        self.replay_steps.push(ReplayStep::Arg(arg.to_string()));
+        self.replay_steps.push(ReplayStep::Arg(arg.to_vec()));
 
         // If we didn't find a special case, continue parsing normally
         Ok(true)
     }
 
-    fn compatibility(&mut self, key: &str, value: Option<&str>) -> bool {
+    fn compatibility(&mut self, key: &str, value: Option<&[u8]>) -> bool {
         match key {
             // Ghostty 1.1 introduced background-blur support for Linux which
             // doesn't support a specific radius value. The renaming is to let
@@ -4886,7 +4894,7 @@ impl CliTarget for Config {
             // Ghostty 1.2 removed the `hidden` value from `gtk-tabs-location` and
             // moved it to `window-show-tab-bar`.
             "gtk-tabs-location" => {
-                if value.unwrap_or("") == "hidden" {
+                if value.unwrap_or(b"") == b"hidden" {
                     self.window_show_tab_bar = WindowShowTabBar::Never;
                     return true;
                 }
@@ -4907,7 +4915,9 @@ impl CliTarget for Config {
                 // Realistically, these fields were mutually exclusive so anyone
                 // relying on that behavior should just upgrade to the new
                 // cursor-color/cursor-text fields.
-                let Ok(set) = cli_args::parse_bool(value.unwrap_or("t")) else {
+                let Ok(set) = cli_args::text_value(value)
+                    .and_then(|v| cli_args::parse_bool(v.unwrap_or("t")))
+                else {
                     return false;
                 };
                 if set {
@@ -4917,7 +4927,9 @@ impl CliTarget for Config {
                 true
             }
             "selection-invert-fg-bg" => {
-                let Ok(set) = cli_args::parse_bool(value.unwrap_or("t")) else {
+                let Ok(set) = cli_args::text_value(value)
+                    .and_then(|v| cli_args::parse_bool(v.unwrap_or("t")))
+                else {
                     return false;
                 };
                 if set {
@@ -4930,7 +4942,9 @@ impl CliTarget for Config {
             // Ghostty 1.2 merged `bold-is-bright` into the new `bold-color`
             // by setting the value to "bright".
             "bold-is-bright" => {
-                let Ok(isset) = cli_args::parse_bool(value.unwrap_or("t")) else {
+                let Ok(isset) = cli_args::text_value(value)
+                    .and_then(|v| cli_args::parse_bool(v.unwrap_or("t")))
+                else {
                     return false;
                 };
                 if isset {
@@ -4942,7 +4956,7 @@ impl CliTarget for Config {
             // Ghostty 1.2 removed the "desktop" option and renamed it to "detect".
             // The semantics also changed slightly but this is the correct mapping.
             "gtk-single-instance" => {
-                if value.unwrap_or("") == "desktop" {
+                if value.unwrap_or(b"") == b"desktop" {
                     self.gtk_single_instance = GtkSingleInstance::Detect;
                     return true;
                 }
@@ -4952,7 +4966,7 @@ impl CliTarget for Config {
             // Ghostty 1.3 rename the "window" option to "new-window".
             // See: https://github.com/ghostty-org/ghostty/pull/9764
             "macos-dock-drop-behavior" => {
-                if value.unwrap_or("") == "window" {
+                if value.unwrap_or(b"") == b"window" {
                     self.macos_dock_drop_behavior = MacOSDockDropBehavior::NewWindow;
                     return true;
                 }
@@ -4983,7 +4997,7 @@ mod tests {
             let Command::Shell(text) = shell_from_env(std::ffi::OsStr::from_bytes(raw)) else {
                 panic!("not a shell command");
             };
-            assert_eq!(ghostty_os::osbytes::config_str_to_bytes(&text), raw);
+            assert_eq!(text.to_bytes(), raw);
         }
         let Command::Shell(plain) = shell_from_env(std::ffi::OsStr::new("/bin/zsh")) else {
             panic!()
@@ -5063,7 +5077,7 @@ mod tests {
     fn parse_hook_invalid_command() {
         let mut cfg = Config::default();
         let mut i = it(&["foo"]);
-        assert!(cfg.parse_manually_hook("--command", &mut i).unwrap());
+        assert!(cfg.parse_manually_hook(b"--command", &mut i).unwrap());
         assert!(cfg.command.is_none());
     }
 
@@ -5071,7 +5085,7 @@ mod tests {
     fn parse_e_command_only() {
         let mut cfg = Config::default();
         let mut i = it(&["foo"]);
-        assert!(!cfg.parse_manually_hook("-e", &mut i).unwrap());
+        assert!(!cfg.parse_manually_hook(b"-e", &mut i).unwrap());
 
         let Some(Command::Direct(cmd)) = &cfg.initial_command else {
             panic!("expected direct");
@@ -5083,7 +5097,7 @@ mod tests {
     fn parse_e_command_and_args() {
         let mut cfg = Config::default();
         let mut i = it(&["echo", "foo", "bar baz"]);
-        assert!(!cfg.parse_manually_hook("-e", &mut i).unwrap());
+        assert!(!cfg.parse_manually_hook(b"-e", &mut i).unwrap());
 
         let Some(Command::Direct(cmd)) = &cfg.initial_command else {
             panic!("expected direct");

@@ -21,7 +21,7 @@ pub fn open_path() -> io::Result<EncodedOs> {
 
     // The config path is an encoded OS string: decode before touching the
     // filesystem.
-    let real_path = config_path.to_path();
+    let real_path = config_path.to_path()?;
 
     // Create config directory recursively.
     if let Some(config_dir) = real_path.parent() {
@@ -55,7 +55,11 @@ fn config_path() -> io::Result<EncodedOs> {
     // exists.
     let mut exists: Option<&EncodedOs> = None;
     for path in &paths {
-        let meta = match std::fs::File::open(path.to_path()).and_then(|f| f.metadata()) {
+        let meta = match path
+            .to_path()
+            .and_then(std::fs::File::open)
+            .and_then(|f| f.metadata())
+        {
             Ok(m) => m,
             // File doesn't exist, continue.
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
@@ -115,7 +119,7 @@ mod tests {
         let value = std::ffi::OsString::from_vec(xdg.as_os_str().as_bytes().to_vec());
         temp_env::with_var("XDG_CONFIG_HOME", Some(&value), || {
             let p = open_path().unwrap();
-            let real = p.to_path();
+            let real = p.to_path().unwrap();
             assert_eq!(real, xdg.join("ghostty/config.ghostty"));
             assert!(real.is_file());
             // Nothing was created at the escaped (encoded) pathname.

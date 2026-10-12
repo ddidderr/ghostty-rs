@@ -200,7 +200,7 @@ enum HighlightTag {
 pub struct DerivedConfig {
     pub font_thicken: bool,
     pub font_thicken_strength: u8,
-    pub font_features: Vec<String>,
+    pub font_features: Vec<ghostty_os::osbytes::EncodedOs>,
     pub font_styles: [bool; 4],
     pub font_shaping_break: FontShapingBreak,
     pub cursor_color: Option<TerminalColor>,
@@ -243,10 +243,18 @@ impl DerivedConfig {
             .custom_shader
             .value
             .iter()
-            .map(|p| match p {
-                // Decode the config path (encoded OS string) here, once.
-                ConfigPath::Optional(s) => PathItem::Optional(s.to_path()),
-                ConfigPath::Required(s) => PathItem::Required(s.to_path()),
+            .filter_map(|p| {
+                let path = match p.path().to_path() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        log::warn!("invalid shader path: {error}");
+                        return None;
+                    }
+                };
+                Some(match p {
+                    ConfigPath::Optional(_) => PathItem::Optional(path),
+                    ConfigPath::Required(_) => PathItem::Required(path),
+                })
             })
             .collect();
 
@@ -859,8 +867,13 @@ impl<G: GraphicsApi> DrawState<G> {
     fn prep_background_image(&mut self) {
         // Then we try to load the background image if we have a path.
         if let Some(p) = &self.config.bg_image
-            && let Some(image) =
-                load_background_image(&p.path().to_path()).map(image::Image::Pending)
+            && let Some(image) = p
+                .path()
+                .to_path()
+                .map_err(|error| log::warn!("invalid background image path: {error}"))
+                .ok()
+                .and_then(|path| load_background_image(&path))
+                .map(image::Image::Pending)
         {
             // If we have an existing background image, replace it.
             // Otherwise, set this as our background image directly.

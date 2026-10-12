@@ -1553,6 +1553,7 @@ name = "ghostty-input"
 version = "0.1.0"
 dependencies = [
  "ghostty-helpgen",
+ "ghostty-os",
  "ghostty-unicode",
  "ghostty-vt",
  "indexmap",

@@ -22,7 +22,7 @@ cli_options!(Options);
 ///
 /// You can also specify `--help` or `-h` along with any action such as
 /// `+list-themes` to see help for a specific action.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

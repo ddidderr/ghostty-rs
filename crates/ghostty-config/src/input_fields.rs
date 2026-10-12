@@ -12,7 +12,8 @@ use crate::{
 };
 
 impl ConfigField for KeyRemapSet {
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         self.parse_cli(value).map_err(|_| ArgError::InvalidValue)
     }
 
@@ -40,7 +41,8 @@ impl ConfigField for OptionAsAlt {
         })
     }
 
-    fn parse_cli(&mut self, value: Option<&str>) -> Result<(), ArgError> {
+    fn parse_bytes(&mut self, value: Option<&[u8]>) -> Result<(), ArgError> {
+        let value = crate::cli_args::text_value(value)?;
         let v = value.ok_or(ArgError::ValueRequired)?;
         *self = match v {
             "false" => OptionAsAlt::False,

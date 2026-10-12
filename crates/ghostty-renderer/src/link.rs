@@ -43,7 +43,7 @@ impl Set {
         let mut links = Vec::with_capacity(config.len());
         for link in config {
             links.push(Link {
-                regex: Regex::new(&ghostty_os::osbytes::config_str_to_text(&link.regex))?,
+                regex: Regex::new(&link.regex)?,
                 highlight: link.highlight,
             });
         }

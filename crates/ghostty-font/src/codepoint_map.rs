@@ -16,7 +16,7 @@ mod tests {
 
     fn desc(family: &str) -> Descriptor {
         Descriptor {
-            family: Some(family.to_string()),
+            family: Some(family.into()),
             ..Default::default()
         }
     }
@@ -35,11 +35,27 @@ mod tests {
         // Exact range
         assert!(m.get(1).is_none());
         m.add(entry(1, 1, "A"));
-        assert_eq!("A", m.get(1).unwrap().family.as_deref().unwrap());
+        assert_eq!(
+            "A",
+            m.get(1)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded)
+                .unwrap()
+        );
 
         // Later entry takes priority
         m.add(entry(1, 2, "B"));
-        assert_eq!("B", m.get(1).unwrap().family.as_deref().unwrap());
+        assert_eq!(
+            "B",
+            m.get(1)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded)
+                .unwrap()
+        );
 
         // Non-matching
         assert!(m.get(0).is_none());
@@ -47,8 +63,24 @@ mod tests {
 
         m.add(entry(3, 4, "C"));
         m.add(entry(5, 6, "D"));
-        assert_eq!("C", m.get(3).unwrap().family.as_deref().unwrap());
-        assert_eq!("B", m.get(1).unwrap().family.as_deref().unwrap());
+        assert_eq!(
+            "C",
+            m.get(3)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded)
+                .unwrap()
+        );
+        assert_eq!(
+            "B",
+            m.get(1)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded)
+                .unwrap()
+        );
     }
 
     #[test]

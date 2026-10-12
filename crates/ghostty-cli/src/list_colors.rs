@@ -52,7 +52,7 @@ pub fn sorted_colors() -> Vec<(String, (u8, u8, u8))> {
 ///
 ///   * `--plain`: will disable formatting and make the output more
 ///     friendly for Unix tooling. This is default when not printing to a tty.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

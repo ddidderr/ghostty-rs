@@ -24,6 +24,7 @@ use ghostty_input::{
     key_encode,
 };
 use ghostty_inspector as inspector;
+use ghostty_os::osbytes::EncodedOs;
 use ghostty_terminal::terminal::{MouseEvents, ScrollViewport, Terminal};
 use ghostty_termio::message::Message as IoMessage;
 use ghostty_vt::{modes::Mode, mouse_shape::MouseShape};
@@ -40,7 +41,7 @@ pub enum SetRoot {
     /// The root keybinding set.
     Root,
     /// A named key table.
-    Table(String),
+    Table(EncodedOs),
 }
 
 /// The currently active key sequence: the set it started in plus the
@@ -54,7 +55,7 @@ pub struct SequencePath {
 /// An entry of the key table stack.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableEntry {
-    pub name: String,
+    pub name: EncodedOs,
     pub once: bool,
 }
 
@@ -796,12 +797,16 @@ impl Surface {
     /// Activate a key table by name (Zig: `activate_key_table[_once]`).
     /// Returns whether the table was activated.
     #[allow(dead_code, clippy::unnecessary_wraps)] // used by the binding-actions module
-    pub(crate) fn activate_key_table(&self, name: &str, once: bool) -> Result<bool, CoreError> {
+    pub(crate) fn activate_key_table(
+        &self,
+        name: &EncodedOs,
+        once: bool,
+    ) -> Result<bool, CoreError> {
         let cfg = self.cfg();
 
         // Look up the table in our config
         if root_set(&cfg, &SetRoot::Table(name.to_owned())).is_none() {
-            log::debug!("key table not found: {name}");
+            log::debug!("key table not found: {name:?}");
             return Ok(false);
         }
 
@@ -810,14 +815,14 @@ impl Surface {
 
             // If this is the same table as is currently active, then do
             // nothing.
-            if kb.table_stack.last().is_some_and(|t| t.name == name) {
-                log::debug!("ignoring duplicate activate table: {name}");
+            if kb.table_stack.last().is_some_and(|t| &t.name == name) {
+                log::debug!("ignoring duplicate activate table: {name:?}");
                 return Ok(false);
             }
 
             // If we're already at the max, ignore it.
             if kb.table_stack.len() >= MAX_ACTIVE_KEY_TABLES {
-                log::info!("ignoring activate table, max depth reached: {name}");
+                log::info!("ignoring activate table, max depth reached: {name:?}");
                 return Ok(false);
             }
 
@@ -831,7 +836,7 @@ impl Surface {
         // Notify the UI.
         self.perform(RtAction::KeyTable(KeyTable::Activate(name.to_owned())));
 
-        log::debug!("key table activated: {name}");
+        log::debug!("key table activated: {name:?}");
         Ok(true)
     }
 

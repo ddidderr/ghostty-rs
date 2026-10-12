@@ -74,12 +74,17 @@ pub enum ShapeRunError {
 
 /// Create a CoreFoundation Dictionary suitable for settings the font
 /// features of a CoreText font (`makeFeaturesDict`).
-fn make_features_dict(feats: &[Feature]) -> CfBox<CFDictionary> {
+fn make_features_dict(feats: &[Feature]) -> Result<CfBox<CFDictionary>, ShapeError> {
     let mut items: Vec<CFRetained<CFDictionary<CFString, CFType>>> = Vec::new();
 
     for feat in feats {
         // Keys can only be ASCII.
-        let key = CFString::from_str(&String::from_utf8_lossy(&feat.tag));
+        if !feat.tag.is_ascii() {
+            return Err(ShapeError::CoreTextFailed);
+        }
+        let key = CFString::from_str(
+            std::str::from_utf8(&feat.tag).map_err(|_| ShapeError::CoreTextFailed)?,
+        );
         let value = CFNumber::new_i32(feat.value as i32);
 
         // SAFETY: valid static keys.
@@ -98,7 +103,9 @@ fn make_features_dict(feats: &[Feature]) -> CfBox<CFDictionary> {
     let k = unsafe { kCTFontFeatureSettingsAttribute };
     let dict = CFDictionary::<CFString, CFType>::from_slices(&[k], &[list.as_ref()]);
     // SAFETY: the attribute dictionary is used as an untyped CFDictionary.
-    CfBox::new(unsafe { CFRetained::cast_unchecked::<CFDictionary>(dict) })
+    Ok(CfBox::new(unsafe {
+        CFRetained::cast_unchecked::<CFDictionary>(dict)
+    }))
 }
 
 /// Shaper that uses CoreText.
@@ -146,7 +153,7 @@ impl Shaper {
     pub fn new(opts: &shape::Options) -> Result<Shaper, ShapeError> {
         let mut feature_list = FeatureList::default();
         for feature_str in &opts.features {
-            feature_list.append_from_string(feature_str);
+            feature_list.append_from_bytes(&feature_str.to_bytes());
         }
 
         // We need to construct two attrs dictionaries for font features;
@@ -155,8 +162,8 @@ impl Shaper {
         let mut feats_df: Vec<Feature> = DEFAULT_FEATURES.to_vec();
         feats_df.extend_from_slice(feats);
 
-        let features = make_features_dict(&feats_df);
-        let features_no_default = make_features_dict(feats);
+        let features = make_features_dict(&feats_df)?;
+        let features_no_default = make_features_dict(feats)?;
 
         // For now we only support LTR text. If we shape RTL text then
         // rendering will be very wrong so we need to explicitly force

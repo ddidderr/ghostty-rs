@@ -344,7 +344,11 @@ impl FeatureList {
     /// Append features to this list from a string with a comma separated list.
     /// See `Feature::from_reader` for more docs.
     pub fn append_from_string(&mut self, s: &str) {
-        let mut reader = Reader::new(s.as_bytes());
+        self.append_from_bytes(s.as_bytes());
+    }
+
+    pub fn append_from_bytes(&mut self, s: &[u8]) {
+        let mut reader = Reader::new(s);
         while !reader.at_end() {
             let i = reader.pos;
             if let Some(feature) = Feature::from_reader(&mut reader) {
@@ -352,7 +356,7 @@ impl FeatureList {
             } else {
                 log::warn!(
                     "failed to parse font feature setting: \"{}\"",
-                    String::from_utf8_lossy(&s.as_bytes()[i..reader.pos])
+                    String::from_utf8_lossy(&s[i..reader.pos])
                 );
             }
         }

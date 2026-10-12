@@ -113,6 +113,13 @@ impl CssProviders {
                 Path::Optional(path) => (path.to_path(), true),
                 Path::Required(path) => (path.to_path(), false),
             };
+            let path = match path {
+                Ok(path) => path,
+                Err(error) => {
+                    log::warn!("invalid custom CSS path: {error}");
+                    continue;
+                }
+            };
             let shown = path.display();
             let meta = match std::fs::metadata(&path) {
                 Ok(m) => m,
@@ -215,7 +222,7 @@ pub fn runtime_css(config: &Config, gtk_416: bool) -> String {
     }
 
     if let Some(family) = &config.window_title_font_family {
-        let family = ghostty_os::osbytes::config_str_to_text(family);
+        let family = family.to_text_lossy();
         let _ = write!(
             out,
             ".window headerbar {{\n  font-family: \"{family}\";\n}}\n"

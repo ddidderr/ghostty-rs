@@ -790,7 +790,7 @@ impl Subprocess {
 
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
-            log::info!("found Ghostty resources dir: {}", dir.as_encoded());
+            log::info!("found Ghostty resources dir: {}", dir.to_text_lossy());
             env.insert("GHOSTTY_RESOURCES_DIR", dir.to_os());
         }
 
@@ -900,10 +900,7 @@ impl Subprocess {
 
         // Add the environment variables that override any others.
         for (k, v) in cfg.env_override.iter() {
-            env.insert(
-                ghostty_os::osbytes::config_str_to_os(k),
-                ghostty_os::osbytes::config_str_to_os(v),
-            );
+            env.insert(k.to_os(), v.to_os());
         }
 
         // Build our args list
@@ -1033,10 +1030,10 @@ impl Subprocess {
                 }
             }
             Some(proposed) => {
-                if proposed.to_path().exists() {
+                if proposed.to_path().is_ok_and(|p| p.exists()) {
                     Some(proposed.clone())
                 } else {
-                    log::warn!("cannot access cwd, ignoring: {}", proposed.as_encoded());
+                    log::warn!("cannot access cwd, ignoring: {}", proposed.to_text_lossy());
                     None
                 }
             }
@@ -1399,7 +1396,7 @@ pub fn exec_command_with(
 
     match command {
         // We need to clone the command since there's no guarantee the config remains valid.
-        ConfigCommand::Direct(args) => args.clone(),
+        ConfigCommand::Direct(args) => args.iter().map(|v| v.as_encoded().to_owned()).collect(),
 
         ConfigCommand::Shell(v) => {
             let mut args: Vec<String> = Vec::with_capacity(4);
@@ -1414,7 +1411,7 @@ pub fn exec_command_with(
                 args.push("-l".into());
             }
             args.push("-c".into());
-            args.push(v.clone());
+            args.push(v.as_encoded().to_owned());
             args
         }
     }
@@ -1442,7 +1439,7 @@ fn darwin_login_command(
     let hush = match &passwd.home {
         Some(home) => {
             // The passwd home is an encoded OS string: decode it first.
-            let home = home.to_path();
+            let home = home.to_path().ok()?;
             if std::fs::read_dir(&home).is_err() {
                 log::warn!("failed to open home dir, not checking for hushlogin");
                 false
@@ -1517,13 +1514,13 @@ fn darwin_login_command(
         // Direct args can be passed directly to login, since
         // login uses execvp we don't need to worry about PATH
         // searching.
-        ConfigCommand::Direct(v) => args.extend(v.iter().cloned()),
+        ConfigCommand::Direct(v) => args.extend(v.iter().map(|v| v.as_encoded().to_owned())),
 
         ConfigCommand::Shell(v) => {
             // Use "exec" to replace the bash process with
             // our intended command so we don't have a parent
             // process hanging around.
-            let cmd = format!("exec -l {v}");
+            let cmd = format!("exec -l {}", v.as_encoded());
 
             // We execute bash with "--noprofile --norc" so that it doesn't
             // load startup files so that (1) our shell integration doesn't

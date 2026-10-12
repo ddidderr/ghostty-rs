@@ -369,10 +369,7 @@ fn text_csi_esc_and_ignore_bindings() {
 
 #[test]
 fn config_loaded_text_csi_esc_write_decoded_bytes() {
-    use ghostty_os::osbytes::EncodedOs;
-
     let h = harness!(Harness::recorder("", &[]));
-    let enc = |raw: &[u8]| EncodedOs::from_bytes(raw).into_encoded();
     // Byte FF and a literal U+FDD0 must reach the pty unchanged, not as
     // the reversible escape encoding.
     for (kind, raw, want) in [
@@ -386,7 +383,8 @@ fn config_loaded_text_csi_esc_write_decoded_bytes() {
         ("esc", "\u{fdd0}".as_bytes(), b"\x1b\xef\xb7\x90".to_vec()),
     ] {
         h.mark();
-        let a = ghostty_input::binding::Action::parse(&format!("{kind}:{}", enc(raw))).unwrap();
+        let a = ghostty_input::binding::Action::parse_bytes(&[kind.as_bytes(), b":", raw].concat())
+            .unwrap();
         assert!(h.surface.perform_binding_action(&a).unwrap());
         h.expect_input(&want);
     }

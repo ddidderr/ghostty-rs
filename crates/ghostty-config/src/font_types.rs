@@ -40,13 +40,13 @@ pub struct Descriptor {
     ///
     /// On systems that use fontconfig (Linux), this can be a full
     /// fontconfig pattern, such as "Fira Code-14:bold".
-    pub family: Option<String>,
+    pub family: Option<ghostty_os::osbytes::EncodedOs>,
 
     /// Specific font style to search for. This will filter the style
     /// string the font advertises. The "bold/italic" booleans later in this
     /// struct filter by the style trait the font has, not the string, so
     /// these can be used in conjunction or not.
-    pub style: Option<String>,
+    pub style: Option<ghostty_os::osbytes::EncodedOs>,
 
     /// A codepoint that this font must be able to render.
     pub codepoint: u32,
@@ -184,11 +184,25 @@ mod tests {
         let mut m = CodepointMap::default();
         assert!(m.get(1).is_none());
         m.add(e(1, 1, "A"));
-        assert_eq!(m.get(1).unwrap().family.as_deref(), Some("A"));
+        assert_eq!(
+            m.get(1)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded),
+            Some("A")
+        );
 
         // Later entry takes priority
         m.add(e(1, 2, "B"));
-        assert_eq!(m.get(1).unwrap().family.as_deref(), Some("B"));
+        assert_eq!(
+            m.get(1)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded),
+            Some("B")
+        );
 
         // Non-matching
         assert!(m.get(0).is_none());
@@ -196,8 +210,29 @@ mod tests {
 
         m.add(e(3, 4, "C"));
         m.add(e(5, 6, "D"));
-        assert_eq!(m.get(3).unwrap().family.as_deref(), Some("C"));
-        assert_eq!(m.get(6).unwrap().family.as_deref(), Some("D"));
-        assert_eq!(m.get(2).unwrap().family.as_deref(), Some("B"));
+        assert_eq!(
+            m.get(3)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded),
+            Some("C")
+        );
+        assert_eq!(
+            m.get(6)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded),
+            Some("D")
+        );
+        assert_eq!(
+            m.get(2)
+                .unwrap()
+                .family
+                .as_ref()
+                .map(ghostty_os::osbytes::EncodedOs::as_encoded),
+            Some("B")
+        );
     }
 }

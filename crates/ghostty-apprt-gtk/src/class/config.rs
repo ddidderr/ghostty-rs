@@ -8,6 +8,27 @@ use std::{cell::RefCell, sync::Arc};
 use ghostty_config::config::Config as CoreConfig;
 use gtk::{glib, glib::subclass::prelude::*};
 
+/// GTK accepts UTF-8, while the diagnostic formatter transports original bytes.
+/// Upstream inserts each diagnostic separately, skipping invalid text but still
+/// inserting its newline, and skips diagnostics exceeding its 4095-byte buffer.
+fn diagnostics_text(config: &CoreConfig) -> String {
+    let mut text = String::new();
+    for diag in config.diagnostics.items() {
+        let bytes = ghostty_os::osbytes::config_str_to_bytes(&diag.to_string());
+        if bytes.len() > 4095 {
+            log::warn!("diagnostic exceeds GTK buffer capacity");
+            continue;
+        }
+        if !bytes.contains(&0)
+            && let Ok(line) = std::str::from_utf8(&bytes)
+        {
+            text.push_str(line);
+        }
+        text.push('\n');
+    }
+    text
+}
+
 mod imp {
     use gtk::{
         glib,
@@ -57,15 +78,7 @@ mod imp {
                 return None;
             }
             let buf = gtk::TextBuffer::new(None);
-            let mut text = String::new();
-            for diag in config.diagnostics.items() {
-                if let Err(err) = diag.format(&mut text) {
-                    log::warn!("error writing diagnostic to buffer err={err}");
-                    continue;
-                }
-                text.push('\n');
-            }
-            buf.set_text(&text);
+            buf.set_text(&super::diagnostics_text(&config));
             Some(buf)
         }
     }
@@ -124,6 +137,20 @@ impl Default for Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_display_original_text_and_skip_invalid_utf8() {
+        let mut config = CoreConfig::default();
+        config
+            .load_iter(&mut ghostty_config::cli_args::LineIterator::new(
+                b"font-size=\xef\xb7\x90\xc3\xa9\nfont-size=\xff\n".as_slice(),
+            ))
+            .expect("parse diagnostics");
+        let text = diagnostics_text(&config);
+        assert!(text.contains("invalid value \"\u{fdd0}é\""));
+        assert!(!text.contains("\u{fdd0}\u{fdd0}"));
+        assert!(text.ends_with("\n\n"));
+    }
 
     #[test]
     fn ghostty_config() {

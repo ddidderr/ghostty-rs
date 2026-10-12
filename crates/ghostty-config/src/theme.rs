@@ -37,7 +37,7 @@ impl Location {
             .ok(),
             Location::Resources => {
                 let base = resources_dir?;
-                Some(EncodedOs::from_path(&base.to_path().join("themes")))
+                Some(EncodedOs::from_path(&base.to_path().ok()?.join("themes")))
             }
         }
     }
@@ -157,7 +157,13 @@ pub fn open(
     resources_dir: Option<&EncodedOs>,
     diags: &mut DiagnosticList,
 ) -> Option<OpenedTheme> {
-    let theme_path = theme.to_path();
+    let theme_path = match theme.to_path() {
+        Ok(path) => path,
+        Err(error) => {
+            diag(diags, format!("failed to load theme: {error}"));
+            return None;
+        }
+    };
     let theme_text = theme.as_encoded();
 
     // Absolute themes are loaded a different path.
@@ -190,8 +196,8 @@ pub fn open(
     // one that exists.
     let mut it = LocationIterator::new(resources_dir);
     while let Some((_, dir)) = it.next_location() {
-        let path = EncodedOs::from_path(&dir.to_path().join(theme.to_os()));
-        match File::open(path.to_path()) {
+        let path = EncodedOs::from_path(&dir.to_path().ok()?.join(&theme_path));
+        match path.to_path().and_then(File::open) {
             Ok(file) => {
                 if !check_regular(&file, theme_text, diags) {
                     return None;
@@ -218,7 +224,7 @@ pub fn open(
     // our iterator, reiterate over in order to build a better error message.
     it.reset();
     while let Some((_, dir)) = it.next_location() {
-        let path = EncodedOs::from_path(&dir.to_path().join(theme.to_os()));
+        let path = EncodedOs::from_path(&dir.to_path().ok()?.join(&theme_path));
         diag(
             diags,
             format!(
@@ -235,8 +241,9 @@ pub fn open(
 /// then messages will be appended to the given error list and None is
 /// returned.
 pub fn open_absolute(theme: &EncodedOs, diags: &mut DiagnosticList) -> Option<File> {
+    let path = theme.to_path();
     let theme = theme.as_encoded();
-    match File::open(EncodedOs::from_encoded(theme).to_path()) {
+    match path.and_then(File::open) {
         Ok(f) => Some(f),
         Err(err) => {
             if err.kind() == std::io::ErrorKind::NotFound {

@@ -30,7 +30,7 @@ pub use crate::options::NoOptions as Options;
 /// This command prefers the `$VISUAL` environment variable over `$EDITOR`,
 /// if both are set. If neither are set, it will print an error
 /// and exit.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut stderr = std::io::stderr().lock();
 
     let mut opts = Options;
@@ -78,14 +78,14 @@ fn run_inner(stderr: &mut dyn Write) -> Result<u8, Error> {
 /// Windows branch of `run`: print the path and fail.
 #[cfg(windows)]
 fn write_windows_unsupported(stderr: &mut dyn Write, path: &EncodedOs) -> Result<u8, Error> {
-    write!(
-        stderr,
+    let message = format!(
         "The `ghostty +edit-config` command is not supported on Windows.\n\
          Please edit the configuration file manually at the following path:\n\
          \n\
          {}\n",
         path.as_encoded()
-    )?;
+    );
+    stderr.write_all(&ghostty_os::osbytes::config_str_to_bytes(&message))?;
     Ok(1)
 }
 

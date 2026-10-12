@@ -46,7 +46,7 @@ cli_options!(Options, help);
 ///   ghostty +ssh-cache --remove=example.com     # Remove host from cache
 ///   ghostty +ssh-cache --clear                  # Clear entire cache
 ///   ghostty +ssh-cache --expire-days=30         # Set custom expiration period
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 

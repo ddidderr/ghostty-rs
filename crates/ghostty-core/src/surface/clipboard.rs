@@ -409,21 +409,9 @@ impl Surface {
     }
 }
 
-/// The clipboard codepoint map with string replacements decoded from the
-/// config encoding (a literal `U+FDD0` is restored; bytes that are not
-/// UTF-8 can't be represented in the formatter's text output).
+/// Clipboard replacements are validated UTF-8 by the config field parser.
 fn decode_codepoint_map(list: &[formatter::CodepointMap]) -> Vec<formatter::CodepointMap> {
-    list.iter()
-        .map(|e| formatter::CodepointMap {
-            range: e.range,
-            replacement: match &e.replacement {
-                formatter::Replacement::String(s) => {
-                    formatter::Replacement::String(ghostty_os::osbytes::config_str_to_text(s))
-                }
-                r @ formatter::Replacement::Codepoint(_) => r.clone(),
-            },
-        })
-        .collect()
+    list.to_vec()
 }
 
 #[cfg(test)]
@@ -431,9 +419,8 @@ mod decode_map_tests {
     use super::*;
 
     #[test]
-    fn string_replacements_are_decoded() {
-        let enc = ghostty_os::osbytes::valid_str_to_config_string("a\u{fdd0}");
-        assert_ne!(enc, "a\u{fdd0}");
+    fn string_replacements_are_plain_text() {
+        let enc = "a\u{fdd0}".to_owned();
         let list = [formatter::CodepointMap {
             range: [1, 2],
             replacement: formatter::Replacement::String(enc),

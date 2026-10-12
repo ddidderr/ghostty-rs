@@ -824,7 +824,7 @@ fn set_clone_with_leaf_chained_containing_allocated_data() {
     ) else {
         panic!("expected text");
     };
-    assert_ne!(orig.as_ptr(), copy.as_ptr());
+    assert_ne!(orig.as_encoded().as_ptr(), copy.as_encoded().as_ptr());
 }
 
 #[test]

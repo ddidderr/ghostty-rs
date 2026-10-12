@@ -80,9 +80,9 @@ pub enum Error {
     #[error(transparent)]
     ShellIntegration(#[from] shell_integration::Error),
     /// A configured path, argument or environment value is not well-formed
-    /// WTF-8 (Zig's process launch conversions fail on such input).
+    /// UTF-8 (Zig's process launch conversions fail on such input).
     #[error(transparent)]
-    InvalidWtf8(#[from] ghostty_os::osbytes::InvalidWtf8),
+    InvalidUtf8(#[from] ghostty_os::osbytes::InvalidUtf8),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("failed to get WINDIR, cannot run shell command")]
@@ -588,19 +588,16 @@ fn write_thread_main(handle: &OwnedHandle, rx: &Receiver<Vec<u8>>) {
 // Subprocess
 
 /// Insert the config `env` overrides, decoding the encoded key/value text
-/// to OS strings (WTF-16 on Windows) like the Unix implementation.
+/// to OS strings after strict UTF-8 validation, as in Zig.
 ///
-/// Malformed WTF-8 fails (Zig's conversions for the environment block are
+/// Invalid UTF-8 fails (Zig's conversions for the environment block are
 /// fallible) instead of being substituted with U+FFFD.
 fn apply_env_overrides(
     env: &mut EnvMap,
     overrides: &RepeatableStringMap,
-) -> Result<(), ghostty_os::osbytes::InvalidWtf8> {
+) -> Result<(), ghostty_os::osbytes::InvalidUtf8> {
     for (k, v) in overrides.iter() {
-        env.insert(
-            EncodedOs::from_encoded(k).try_to_os()?,
-            EncodedOs::from_encoded(v).try_to_os()?,
-        );
+        env.insert(k.try_to_utf8_os()?, v.try_to_utf8_os()?);
     }
     Ok(())
 }
@@ -625,10 +622,10 @@ impl Subprocess {
 
         // If we have a resources dir then set our env var
         if let Some(dir) = &cfg.resources_dir {
-            log::info!("found Ghostty resources dir: {}", dir.as_encoded());
+            log::info!("found Ghostty resources dir: {}", dir.to_text_lossy());
             // The resources dir is an encoded OS string: decode it for the
             // child's environment.
-            env.insert("GHOSTTY_RESOURCES_DIR", dir.try_to_os()?);
+            env.insert("GHOSTTY_RESOURCES_DIR", dir.try_to_utf8_os()?);
         }
 
         // Set our TERM var. This is a bit complicated because we want to use
@@ -636,13 +633,13 @@ impl Subprocess {
         // ghostty in the TERMINFO database.
         if let Some(base) = &cfg.resources_dir {
             // The configured TERM is an encoded OS string: export its bytes.
-            env.insert("TERM", cfg.term.try_to_os()?);
+            env.insert("TERM", cfg.term.try_to_utf8_os()?);
             env.insert("COLORTERM", "truecolor");
 
             // Assume that the resources directory is adjacent to the terminfo
             // database
-            base.try_to_os()?; // malformed WTF-8 fails like Zig
-            env.insert("TERMINFO", terminfo_dir(base));
+            base.try_to_utf8_os()?; // invalid UTF-8 fails like Zig
+            env.insert("TERMINFO", terminfo_dir(base)?);
         } else {
             env.insert("TERM", "xterm-256color");
             env.insert("COLORTERM", "truecolor");
@@ -716,7 +713,7 @@ impl Subprocess {
         // Build our args list. If we fail to find the shell, we'd still like
         // to try to run something so Ghostty can launch.
         // %WINDIR% may hold lone surrogates: carry it in the encoded form the
-        // argv strings use (decoded to WTF-16 when the process is created).
+        // argv strings use (validated as UTF-8 when the process is created).
         let windir = std::env::var_os("WINDIR").map(|v| EncodedOs::from_os(&v).into_encoded());
         let args = match exec_command(&shell_command, windir.as_deref()) {
             Ok(args) => args,
@@ -733,7 +730,7 @@ impl Subprocess {
 
         // Propagate the current working directory (CWD) to the shell.
         if let Some(pwd) = &cwd {
-            env.insert("PWD", pwd.try_to_os()?);
+            env.insert("PWD", pwd.try_to_utf8_os()?);
         }
 
         Ok(Subprocess {
@@ -804,7 +801,7 @@ impl Subprocess {
         // and we don't want to break new windows.
         let cwd: Option<EncodedOs> = match &self.cwd {
             None => None,
-            Some(proposed) => match std::fs::metadata(proposed.to_path()) {
+            Some(proposed) => match proposed.to_path().and_then(std::fs::metadata) {
                 Ok(_) => Some(proposed.clone()),
                 Err(err) => {
                     log::warn!("cannot access cwd, ignoring: {err}");
@@ -912,13 +909,13 @@ fn add_ghostty_path_for(env: &mut EnvMap, exe: &std::path::Path) {
 
 /// The `TERMINFO` value for a resources dir: `<parent of base>\\terminfo` as
 /// an OS string (the resources dir is an encoded OS string).
-fn terminfo_dir(base: &EncodedOs) -> std::ffi::OsString {
-    let base = base.to_path();
+fn terminfo_dir(base: &EncodedOs) -> std::io::Result<std::ffi::OsString> {
+    let base = base.to_path()?;
     let mut out = base
         .parent()
         .map_or_else(std::ffi::OsString::new, |p| p.as_os_str().to_owned());
     out.push("\\terminfo");
-    out
+    Ok(out)
 }
 
 /// Terminate the underlying subprocess and wait for it to exit
@@ -937,11 +934,11 @@ fn kill_command(command: &Command) -> Result<(), Error> {
 pub fn exec_command(command: &ConfigCommand, windir: Option<&str>) -> Result<Vec<String>, Error> {
     match command {
         // We need to clone the command since there's no guarantee the config remains valid.
-        ConfigCommand::Direct(args) => Ok(args.clone()),
+        ConfigCommand::Direct(args) => Ok(args.iter().map(|v| v.as_encoded().to_owned()).collect()),
 
         ConfigCommand::Shell(v) => {
             let windir = windir.ok_or(Error::SystemError)?;
-            Ok(windows_shell_args(windir, v))
+            Ok(windows_shell_args(windir, v.as_encoded()))
         }
     }
 }
@@ -949,35 +946,24 @@ pub fn exec_command(command: &ConfigCommand, windir: Option<&str>) -> Result<Vec
 #[cfg(test)]
 mod tests {
     #[test]
-    fn env_overrides_are_decoded() {
-        use std::os::windows::ffi::OsStringExt;
-
+    fn env_overrides_keep_literal_fdd0_and_reject_surrogates() {
         use ghostty_config::cli_args::ConfigField;
-
-        // A lone surrogate (escaped) value and a literal U+FDD0 key.
-        let lone = EncodedOs::from_wide(&[0x61, 0xD800]).into_encoded();
-        let lit = EncodedOs::from_plain_text("K\u{fdd0}").into_encoded();
-        let mut m = RepeatableStringMap::default();
-        m.parse_cli(Some(&format!("A={lone}"))).unwrap();
-        m.parse_cli(Some(&format!("{lit}=v"))).unwrap();
+        let mut overrides = RepeatableStringMap::default();
+        overrides
+            .parse_cli(Some("K\u{fdd0}é=value\u{fdd0}é"))
+            .unwrap();
         let mut env = EnvMap::new();
-        super::apply_env_overrides(&mut env, &m).unwrap();
-        assert_eq!(
-            env.get("A").unwrap(),
-            std::ffi::OsString::from_wide(&[0x61, 0xD800])
-        );
-        assert_eq!(env.get("K\u{fdd0}").unwrap(), "v");
-    }
-
-    #[test]
-    fn malformed_wtf8_env_overrides_fail() {
-        use ghostty_config::cli_args::ConfigField;
-
-        let bad = EncodedOs::from_bytes(b"a\xff").into_encoded();
-        let mut m = RepeatableStringMap::default();
-        m.parse_cli(Some(&format!("A={bad}"))).unwrap();
-        let mut env = EnvMap::new();
-        assert!(super::apply_env_overrides(&mut env, &m).is_err());
+        super::apply_env_overrides(&mut env, &overrides).unwrap();
+        assert_eq!(env.get("K\u{fdd0}é").unwrap(), "value\u{fdd0}é");
+        for raw in [
+            b"A=\xff".as_slice(),
+            b"A=\xed\xa0\x80",
+            b"\xed\xa0\x80=value",
+        ] {
+            let mut overrides = RepeatableStringMap::default();
+            overrides.parse_bytes(Some(raw)).unwrap();
+            assert!(super::apply_env_overrides(&mut env, &overrides).is_err());
+        }
     }
 
     #[test]
@@ -989,7 +975,7 @@ mod tests {
         wide.push(0xD800);
         wide.extend("\\share\\ghostty".encode_utf16());
         let base = EncodedOs::from_wide(&wide);
-        let got = super::terminfo_dir(&base);
+        let got = super::terminfo_dir(&base).unwrap();
         let mut want: Vec<u16> = "C:\\Users\\".encode_utf16().collect();
         want.push(0xD800);
         want.extend("\\share\\terminfo".encode_utf16());

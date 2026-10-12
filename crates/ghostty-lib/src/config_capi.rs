@@ -147,8 +147,8 @@ fn build_backing(value: &CValue) -> Backing {
             for c in cmds {
                 b.strings.push(cstring_value(&c.action_key));
                 b.strings.push(cstring_value(&c.action));
-                b.strings.push(cstring_value(&c.title));
-                b.strings.push(cstring_value(&c.description));
+                b.strings.push(cstring_value(c.title.as_encoded()));
+                b.strings.push(cstring_value(c.description.as_encoded()));
             }
             // The CStrings' heap buffers don't move when the Vec grows.
             b.commands = b
@@ -265,7 +265,7 @@ pub unsafe extern "C" fn ghostty_config_load_file(ptr: ghostty_config_t, path: *
     if let Err(err) = c.config.load_file(&path) {
         log::error!(
             "error loading config from file path={} err={err}",
-            path.as_encoded()
+            path.to_text_lossy()
         );
     }
 }
@@ -511,11 +511,7 @@ pub unsafe extern "C" fn ghostty_config_trigger(
     }
     // SAFETY: `str` points to `len` bytes.
     let s = unsafe { std::slice::from_raw_parts(str.cast::<u8>(), len) };
-    let Ok(s) = std::str::from_utf8(s) else {
-        log::error!("error finding trigger err=InvalidFormat");
-        return default_trigger();
-    };
-    match BindingAction::parse(s) {
+    match BindingAction::parse_bytes(s) {
         Ok(action) => {
             let trigger = c
                 .config

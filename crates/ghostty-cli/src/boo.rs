@@ -179,7 +179,7 @@ impl Boo {
 }
 
 /// The `boo` command is used to display the animation from the Ghostty website in the terminal
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     // Disable on non-desktop systems.
     if cfg!(not(any(
         windows,

@@ -37,12 +37,12 @@ impl ResourcesDir {
     /// Byte-preserving [`ResourcesDir::app`]: the string fields carry
     /// non-UTF-8 bytes via [`crate::osbytes`], this decodes them.
     pub fn app_os(&self) -> Option<PathBuf> {
-        self.app().map(EncodedOs::to_path)
+        self.app().and_then(|p| p.to_path().ok())
     }
 
     /// Byte-preserving [`ResourcesDir::host`].
     pub fn host_os(&self) -> Option<PathBuf> {
-        self.host().map(EncodedOs::to_path)
+        self.host().and_then(|p| p.to_path().ok())
     }
 }
 

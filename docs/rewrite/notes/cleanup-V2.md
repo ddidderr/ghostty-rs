@@ -3,7 +3,7 @@
 ## Resources (self-contained)
 - `resources/` mirrors Ghostty's `share/ghostty` plus its sibling `share/terminfo`:
   `shell-integration/`, `themes/` (463 files copied from the installed Ghostty 1.3.1,
-  `themes/LICENSE-iTerm2-Color-Schemes` = MIT attribution, written from the upstream license;
+  `LICENSE-iTerm2-Color-Schemes` = MIT attribution, written from the upstream license;
   no upstream copy existed on this machine, check the copyright line if it matters) and
   `terminfo/` (compiled `xterm-ghostty`, `g/ghostty`).
 - `scripts/gen-terminfo.sh` (`just terminfo`): `cargo run -p ghostty-termio --example terminfo`

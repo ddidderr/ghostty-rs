@@ -62,9 +62,19 @@ impl ThemeListElement {
     /// TODO: use Unicode-aware comparison (as in Zig).
     #[must_use]
     pub fn order(&self, other: &ThemeListElement) -> Ordering {
-        let a = self.theme.bytes().map(|c| c.to_ascii_lowercase());
-        let b = other.theme.bytes().map(|c| c.to_ascii_lowercase());
+        let a = config_str_to_bytes(&self.theme)
+            .into_iter()
+            .map(|c| c.to_ascii_lowercase());
+        let b = config_str_to_bytes(&other.theme)
+            .into_iter()
+            .map(|c| c.to_ascii_lowercase());
         a.cmp(b)
+    }
+
+    /// Plain text for TUI display/search, separate from byte-preserving export.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        ghostty_os::osbytes::config_str_to_text(&self.theme)
     }
 
     /// `file://` URI of the theme file (Zig: `toUri`).
@@ -122,11 +132,11 @@ pub fn collect_themes(resources_dir: Option<&EncodedOs>) -> Vec<ThemeListElement
     let mut themes = vec![];
     let mut it = LocationIterator::new(resources_dir);
     while let Some((location, dir)) = it.next_location() {
-        let rd = match std::fs::read_dir(dir.to_path()) {
+        let rd = match dir.to_path().and_then(std::fs::read_dir) {
             Ok(rd) => rd,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => {
-                eprintln!("error trying to open {}: {e}", dir.as_encoded());
+                eprintln!("error trying to open {}: {e}", dir.to_text_lossy());
                 continue;
             }
         };
@@ -145,7 +155,7 @@ pub fn collect_themes(resources_dir: Option<&EncodedOs>) -> Vec<ThemeListElement
                 continue;
             }
             themes.push(ThemeListElement {
-                path: EncodedOs::from_path(&dir.to_path().join(&raw_name)),
+                path: dir.join(&EncodedOs::from_os(&raw_name)),
                 location,
                 theme: name,
                 rank: None,
@@ -170,7 +180,9 @@ pub fn should_include_theme(theme_filter: ColorScheme, theme_config: &Config) ->
 
 /// Make `path` absolute (`Config::load_file` requires absolute paths).
 pub(crate) fn absolute_path(path: &EncodedOs) -> EncodedOs {
-    std::path::absolute(path.to_path()).map_or_else(|_| path.clone(), |p| EncodedOs::from_path(&p))
+    path.to_path()
+        .and_then(std::path::absolute)
+        .map_or_else(|_| path.clone(), |p| EncodedOs::from_path(&p))
 }
 
 fn resources_dir() -> Option<EncodedOs> {
@@ -216,7 +228,7 @@ fn resources_dir() -> Option<EncodedOs> {
 ///
 ///   * `--color`: Specify the color scheme of the themes included in the list.
 ///                This can be `dark`, `light`, or `all`. The default is `all`.
-pub fn run(args: &[String]) -> Result<u8, Error> {
+pub fn run(args: &[impl AsRef<[u8]>]) -> Result<u8, Error> {
     let mut opts = Options::default();
     crate::parse_options(&mut opts, args)?;
 
@@ -316,10 +328,24 @@ mod tests {
         assert_eq!(1, themes.len());
         assert_eq!(config_str_to_bytes(&themes[0].theme), b"th\xffeme".to_vec());
         // The path points at the real file and the listing loads it.
-        assert_eq!(themes[0].path.to_path(), dir.join(raw));
+        assert_eq!(themes[0].path.to_path().unwrap(), dir.join(raw));
         let mut out = Vec::new();
         write_plain(&mut out, &themes, &Options::default()).unwrap();
         assert_eq!(out, b"th\xffeme (resources)\n");
+    }
+
+    #[test]
+    fn theme_display_and_sort_use_original_names() {
+        let theme = |name: EncodedOs| ThemeListElement {
+            theme: name.into_encoded(),
+            path: EncodedOs::new(),
+            location: Location::Resources,
+            rank: None,
+        };
+        let literal = theme(EncodedOs::from_plain_text("\u{fdd0}é"));
+        let invalid = theme(EncodedOs::from_bytes(b"\xff"));
+        assert_eq!(literal.display_name(), "\u{fdd0}é");
+        assert_eq!(literal.order(&invalid), Ordering::Less);
     }
 
     #[test]
@@ -407,13 +433,9 @@ mod tests {
     #[test]
     fn options_color() {
         let mut opts = Options::default();
-        crate::parse_options(
-            &mut opts,
-            &["g".into(), "--color=dark".into(), "--path".into()],
-        )
-        .unwrap();
+        crate::parse_options(&mut opts, &["g", "--color=dark", "--path"]).unwrap();
         assert_eq!(ColorScheme::Dark, opts.color);
         assert!(opts.path);
-        assert!(crate::parse_options(&mut opts, &["g".into(), "--color=blue".into()]).is_err());
+        assert!(crate::parse_options(&mut opts, &["g", "--color=blue"]).is_err());
     }
 }
