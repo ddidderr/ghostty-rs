@@ -49,6 +49,10 @@ use ghostty_vt::modes::Mode;
 use super::{MOUSE_BUTTON_COUNT, Surface};
 use crate::surface_mouse;
 
+/// Bound synchronous link lookup while the terminal mutex is held. Oversized
+/// logical lines are skipped, rather than truncating a URL into another target.
+const MAX_LINK_CELLS: usize = 64 * 1024;
+
 /// Mouse state for the surface (Zig: `Surface.Mouse`).
 pub struct Mouse {
     /// The last tracked mouse button state by button.
@@ -1570,35 +1574,37 @@ impl Surface {
         mouse_mods: Option<Mods>,
     ) -> Option<Link> {
         let cfg = self.cfg();
-        if cfg.links.is_empty() {
+        // Check eligibility before walking scrollback or allocating a string
+        // map. Ordinary mouse movement needs no URL lookup without Ctrl/Super.
+        let mut links = cfg
+            .links
+            .iter()
+            .filter(|link| {
+                mouse_mods.is_none_or(|mods| match link.highlight {
+                    Highlight::Always | Highlight::Hover => true,
+                    Highlight::AlwaysMods(v) | Highlight::HoverMods(v) => v.equal(mods),
+                })
+            })
+            .peekable();
+        if links.peek().is_none() {
             return None;
         }
 
-        let line = screen.select_line(SelectLine {
-            pin: mouse_pin,
-            whitespace: None,
-            semantic_prompt_boundary: false,
-        })?;
+        let line = screen.select_line_bounded(
+            SelectLine {
+                pin: mouse_pin,
+                whitespace: None,
+                semantic_prompt_boundary: false,
+            },
+            MAX_LINK_CELLS / usize::from(screen.pages.cols),
+        )?;
 
         let strmap = screen.selection_string_map(SelectionString {
             sel: line,
             trim: false,
         });
 
-        for link in &cfg.links {
-            // Skip highlight/mods check when mouse_mods is None
-            // (double-click mode)
-            if let Some(mods) = mouse_mods {
-                match link.highlight {
-                    Highlight::Always | Highlight::Hover => {}
-                    Highlight::AlwaysMods(v) | Highlight::HoverMods(v) => {
-                        if !v.equal(mods) {
-                            continue;
-                        }
-                    }
-                }
-            }
-
+        for link in links {
             let mut it = strmap.search_iterator(&link.regex);
             while let Some(m) = it.next_match() {
                 let sel = m.selection();

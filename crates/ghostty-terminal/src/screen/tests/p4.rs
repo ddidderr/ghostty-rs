@@ -293,6 +293,39 @@ fn screen_select_line_across_full_soft_wrap() {
 }
 
 #[test]
+fn screen_select_line_bounded_counts_both_directions_and_history() {
+    let mut s = init(4, 3, 100_000);
+    s.test_write_string("abcdefghijklmnopqrstuvwx").unwrap();
+    for y in 0..6 {
+        let opts = SelectLine {
+            pin: pin(&s, screen_pt(1, y)),
+            whitespace: None,
+            semantic_prompt_boundary: false,
+        };
+        assert!(s.select_line_bounded(opts, 0).is_none());
+        assert!(s.select_line_bounded(opts, 5).is_none());
+        assert_eq!(s.select_line_bounded(opts, 6), s.select_line(opts));
+        assert!(s.select_line_bounded(opts, 6).is_some());
+    }
+}
+
+#[test]
+fn screen_select_line_bounded_stops_at_hard_line_boundary() {
+    let mut s = init(4, 5, 0);
+    s.test_write_string("HEAD\nabcdefghijkl\nTAIL").unwrap();
+    for y in 1..4 {
+        let opts = SelectLine {
+            pin: pin(&s, screen_pt(1, y)),
+            whitespace: None,
+            semantic_prompt_boundary: false,
+        };
+        let sel = s.select_line_bounded(opts, 3).unwrap();
+        assert_eq!(sel, s.select_line(opts).unwrap());
+        assert!(s.select_line_bounded(opts, 2).is_none());
+    }
+}
+
+#[test]
 fn screen_select_line_across_soft_wrap_ignores_blank_lines() {
     let mut s = init(5, 10, 0);
     s.test_write_string(" 12 34012             \n 123").unwrap();

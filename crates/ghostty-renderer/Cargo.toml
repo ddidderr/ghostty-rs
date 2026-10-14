@@ -13,6 +13,7 @@ ghostty-os.workspace = true
 ghostty-datastruct.workspace = true
 ghostty-font.workspace = true
 ghostty-input.workspace = true
+ghostty-onig.workspace = true
 ghostty-terminal.workspace = true
 ghostty-unicode.workspace = true
 ghostty-vt.workspace = true

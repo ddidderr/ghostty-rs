@@ -343,6 +343,43 @@ fn regex_url_ctrl_click_opens_and_plain_click_does_not() {
 }
 
 #[test]
+fn long_unwrapped_output_allows_mouse_motion_and_new_tab_shortcut() {
+    let h = harness!(Harness::recorder("", &[]));
+    let (cols, rows) = h.grid();
+    {
+        let mut t = h.surface.lock_terminal();
+        t.full_reset();
+        // One logical line extending far beyond the viewport into history,
+        // as produced by base64 -w0. Keep an otherwise valid URL at its tail.
+        let mut bytes = vec![b'a'; usize::from(cols) * 4096];
+        bytes.extend_from_slice(b"https://example.com");
+        t.vt_stream().next_slice(&bytes).unwrap();
+    }
+    h.clear_actions();
+    for mods in [none(), ctrl(), ctrl_shift()] {
+        h.move_to(5, u32::from(rows - 1), Some(mods));
+        h.move_to(6, u32::from(rows - 1), Some(mods));
+    }
+    h.key(Key::KeyT, ctrl_shift(), "T");
+    assert!(h.has_action(|a| matches!(a, Action::NewTab)));
+    assert!(!h.has_action(|a| matches!(a, Action::MouseOverLink(l) if !l.url.is_empty())));
+
+    // A hard newline bounds the next URL normally; skipping an oversized
+    // logical line must not disable link detection on subsequent output.
+    {
+        let mut t = h.surface.lock_terminal();
+        t.vt_stream()
+            .next_slice(b"\r\nhttps://example.com")
+            .unwrap();
+    }
+    h.move_to(7, u32::from(rows - 1), Some(ctrl()));
+    h.wait_action("URL hover after long output", |a| match a {
+        Action::MouseOverLink(l) if l.url.to_text_lossy() == "https://example.com" => Some(()),
+        _ => None,
+    });
+}
+
+#[test]
 fn middle_click_pastes_selection_clipboard() {
     let h = harness!(Harness::recorder("", &[]));
     h.set_clipboard_text(Clipboard::Selection, "sel-text");

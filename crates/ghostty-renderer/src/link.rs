@@ -7,7 +7,12 @@ use ghostty_input::{
     link::{Highlight, Link as InputLink},
 };
 use ghostty_terminal::{point::Coordinate, render::RenderState};
-use onig::{Regex, Region, SearchOptions};
+use onig::{MatchParam, Regex, Region, SearchOptions};
+
+/// Match the whole-search work budget used by terminal StringMap searches.
+/// Renderer searches also need a limit: a busy matcher holds the renderer
+/// thread's state lock and can block tab switches and renderer shutdown.
+const ONI_SEARCH_RETRY_LIMIT: u32 = 100_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -103,16 +108,20 @@ impl Set {
             while offset < str.len() {
                 let haystack = &str[offset..];
                 let mut region = Region::new();
-                let found = link.regex.search_with_options(
+                let mut param = MatchParam::default();
+                ghostty_onig::set_retry_limit_in_search(&mut param, ONI_SEARCH_RETRY_LIMIT);
+                let found = link.regex.search_with_param(
                     haystack,
                     0,
                     haystack.len(),
                     SearchOptions::SEARCH_OPTION_NONE,
                     Some(&mut region),
+                    param,
                 );
                 // A mismatch (or any search failure such as hitting the
                 // retry limit) ends the search for this link.
-                let Some((offset_start, offset_end)) = found.and(region.pos(0)) else {
+                let Some((offset_start, offset_end)) = found.ok().flatten().and(region.pos(0))
+                else {
                     break;
                 };
 
@@ -283,5 +292,25 @@ mod tests {
     #[test]
     fn invalid_regex_is_error() {
         assert!(Set::from_config(&[link("(", Highlight::Always)]).is_err());
+    }
+
+    #[test]
+    fn render_cell_map_limits_backtracking_and_continues_with_other_links() {
+        let mut t = Terminal::new(Options::new(80, 1)).unwrap();
+        // A long near-match must not monopolize the renderer thread. In a
+        // tab switch the main thread may need that thread's locks to proceed.
+        let text = format!("{}b", "a".repeat(60));
+        t.vt_stream().next_slice(text.as_bytes()).unwrap();
+        let mut state = RenderState::new();
+        state.update(&mut t).unwrap();
+        let set = Set::from_config(&[
+            link("(a+)+$", Highlight::Always),
+            link("b", Highlight::Always),
+        ])
+        .unwrap();
+        let mut result = HashSet::new();
+        set.render_cell_map(&mut result, &state, None, Mods::default())
+            .unwrap();
+        assert_eq!(result, HashSet::from([c(60, 0)]));
     }
 }

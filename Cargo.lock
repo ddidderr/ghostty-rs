@@ -1654,6 +1654,7 @@ dependencies = [
  "ghostty-datastruct",
  "ghostty-font",
  "ghostty-input",
+ "ghostty-onig",
  "ghostty-os",
  "ghostty-terminal",
  "ghostty-unicode",

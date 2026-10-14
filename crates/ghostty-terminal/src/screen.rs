@@ -2653,7 +2653,16 @@ impl Screen {
     /// over whitespace but the line has non-whitespace characters elsewhere, the
     /// line will be selected.
     pub fn select_line(&self, opts: SelectLine<'_>) -> Option<Selection> {
+        self.select_line_bounded(opts, usize::MAX)
+    }
+
+    /// Select a complete logical line only if it spans at most `max_rows`
+    /// physical rows. This bounds interactive link lookup on unbroken output
+    /// without truncating a URL into a different, clickable target. Explicit
+    /// line selection uses [`Self::select_line`] and remains unrestricted.
+    pub fn select_line_bounded(&self, opts: SelectLine<'_>, max_rows: usize) -> Option<Selection> {
         let list = &self.pages;
+        let mut remaining = max_rows.checked_sub(1)?; // The hovered row.
 
         // Get the current point semantic prompt state since that determines
         // boundary conditions too. This makes it so that line selection can
@@ -2698,6 +2707,8 @@ impl Screen {
                     break 'start_pin copy;
                 }
 
+                remaining = remaining.checked_sub(1)?;
+
                 if let Some(v) = semantic_prompt_state {
                     // We need to check every cell in this row in reverse
                     // order since we're going up and back.
@@ -2726,6 +2737,9 @@ impl Screen {
         // The real end of the row is the final row in the soft-wrap.
         let end_pin: Pin = 'end_pin: {
             for p in opts.pin.row_iterator(list, Direction::RightDown, None) {
+                if p.node != opts.pin.node || p.y != opts.pin.y {
+                    remaining = remaining.checked_sub(1)?;
+                }
                 let row = self.pin_row(p);
                 let cols = self.pin_cols(p);
 

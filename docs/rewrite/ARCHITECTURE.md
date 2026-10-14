@@ -132,6 +132,13 @@ GTK invokes `glib-compile-resources` directly so generated XML/UI files in
    the runtime again if work remains. Continuous renderer notifications must
    yield to GTK input, timers, and drawing instead of extending one tick
    indefinitely.
+   Interactive link lookup checks modifier eligibility before scanning text.
+   `Surface::link_at_pin` uses `Screen::select_line_bounded` to skip logical
+   lines spanning more than 65,536 grid cells, bounding synchronous scrollback
+   traversal and string-map allocation while holding the terminal mutex.
+   Explicit text selection remains unrestricted. Renderer link regex searches
+   use the same 100,000-step whole-search retry budget as terminal `StringMap`
+   and treat regex failures as no further matches instead of panicking.
 9. **Config:** same file format, same keys, same defaults, same CLI flags,
    same docs text (used by `+show-config --docs` and `--help`).
 10. **Tests:** every Zig `test "..."` block in a ported file is ported to a
