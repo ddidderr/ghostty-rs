@@ -440,9 +440,14 @@ impl App {
         rt.perform_action(target, RtAction::NewWindow);
     }
 
-    /// Drain the mailbox.
+    /// Process at most one mailbox capacity per tick, then return to the
+    /// runtime so it can dispatch input, timers, and drawing. Producers can
+    /// refill the queue continuously under heavy terminal output.
     fn drain_mailbox(&self, rt: &dyn RtApp) {
-        while let Ok(message) = self.state.mailbox_rx.try_recv() {
+        for _ in 0..MAILBOX_CAPACITY {
+            let Ok(message) = self.state.mailbox_rx.try_recv() else {
+                return;
+            };
             match message {
                 Message::OpenConfig => {
                     let _ = self.perform_action(rt, &BindingAction::OpenConfig);
@@ -468,6 +473,12 @@ impl App {
                     return;
                 }
             }
+        }
+
+        // Producer wakeups may have coalesced during this tick. Ensure a
+        // fresh iteration for deferred messages even if producers stop now.
+        if !self.state.mailbox_rx.is_empty() {
+            self.state.mailbox.waker.wake();
         }
     }
 
@@ -655,5 +666,67 @@ impl CoreApp for App {
             width: cell.width,
             height: cell.height,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+
+    impl Waker for CountingWaker {
+        fn wake(&self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Refill the mailbox during each callback, like a renderer producing
+    /// redraw requests while the app processes earlier requests.
+    struct RefillingRuntime {
+        mailbox: Mailbox,
+        calls: Cell<usize>,
+    }
+
+    impl RtApp for RefillingRuntime {
+        fn perform_action(&self, _: Target<SurfaceId>, action: RtAction) -> bool {
+            assert!(matches!(action, RtAction::NewWindow));
+            let calls = self.calls.get() + 1;
+            self.calls.set(calls);
+            // Finite even with an unbounded drain, so regressions fail
+            // without hanging the test runner.
+            if calls < MAILBOX_CAPACITY * 2 {
+                self.mailbox
+                    .push(Message::NewWindow { parent: None }, Timeout::Instant);
+            }
+            true
+        }
+    }
+
+    #[test]
+    fn mailbox_tick_yields_and_rearms_when_producer_keeps_refilling() {
+        let waker = Arc::new(CountingWaker::default());
+        let app = App::new(waker.clone()).unwrap();
+        let rt = RefillingRuntime {
+            mailbox: app.mailbox(),
+            calls: Cell::new(0),
+        };
+        rt.mailbox
+            .push(Message::NewWindow { parent: None }, Timeout::Instant);
+
+        app.tick(&rt).unwrap();
+        assert_eq!(rt.calls.get(), MAILBOX_CAPACITY);
+        assert_eq!(app.state.mailbox_rx.len(), 1);
+        // Initial push, one push per callback, and a wake to resume the
+        // pending work after the runtime has handled input and timers.
+        assert_eq!(waker.0.load(Ordering::Relaxed), MAILBOX_CAPACITY + 2);
+
+        app.tick(&rt).unwrap();
+        assert_eq!(rt.calls.get(), MAILBOX_CAPACITY * 2);
+        assert!(app.state.mailbox_rx.is_empty());
+        assert_eq!(waker.0.load(Ordering::Relaxed), MAILBOX_CAPACITY * 2 + 1);
     }
 }

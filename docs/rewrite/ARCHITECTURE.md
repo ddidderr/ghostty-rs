@@ -128,6 +128,10 @@ GTK invokes `glib-compile-resources` directly so generated XML/UI files in
    thread, plus a pty read thread. Mailboxes are `crossbeam-channel` /
    `std::sync::mpsc`; the GTK main thread is woken via `glib` channels.
    The `Terminal` is shared behind `Arc<Mutex<..>>` (Ghostty's renderer mutex).
+   `ghostty-core::App` handles at most 64 mailbox messages per tick and wakes
+   the runtime again if work remains. Continuous renderer notifications must
+   yield to GTK input, timers, and drawing instead of extending one tick
+   indefinitely.
 9. **Config:** same file format, same keys, same defaults, same CLI flags,
    same docs text (used by `+show-config --docs` and `--help`).
 10. **Tests:** every Zig `test "..."` block in a ported file is ported to a
