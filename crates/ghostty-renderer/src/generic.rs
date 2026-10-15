@@ -24,14 +24,19 @@
 //! The renderer state is split to make that safe without `unsafe`:
 //!
 //! * `draw` ([`DrawState`], Zig's `draw_mutex`): everything `draw_frame`
-//!   reads. Held by the renderer thread only for the short "publish" part of
-//!   `update_frame` (`rebuild_cells`, uniforms) and by `set_*`/`change_config`.
-//! * `thread` ([`ThreadState`]): data only the renderer thread touches
-//!   (`RenderState`, font shaper + cache, overlay, search highlights). It is a
-//!   `Mutex` only so that `Renderer` is `Sync`; it is uncontended.
+//!   reads. Held by the renderer thread while rebuilding cells/publishing
+//!   uniforms in `update_frame`, and by `set_*`/`change_config`.
+//! * `thread` ([`ThreadState`]): render snapshots, font shaper + cache, overlay
+//!   and search highlights. Display teardown and dirty marking also access
+//!   this state from the apprt thread.
 //!
-//! Lock order is always: renderer mutex (`SharedState`) is *not* held while
-//! taking `draw`; `thread` before `draw` before the font grid lock.
+//! Both locks are fair: a worker continuously rebuilding dense frames must
+//! hand ownership to a waiting apprt callback instead of immediately taking
+//! the lock again. In particular, GLArea unrealize runs before worker shutdown
+//! when closing tabs/splits and must make progress while output is still live.
+//!
+//! Lock order is `thread`, terminal (`SharedState`), `draw`, then the font
+//! grid lock. Terminal snapshotting releases `SharedState` before shaping.
 //!
 //! # GL context requirements
 //!
@@ -88,6 +93,7 @@ use ghostty_terminal::{
     terminal::ScrollViewport,
 };
 use ghostty_vt::{color::Rgb, modes::Mode, sgr::Underline};
+use parking_lot::FairMutex;
 
 use crate::{
     backend::Health,
@@ -684,7 +690,7 @@ struct DrawState<G: GraphicsApi> {
     shaders: Option<G::Shaders>,
 }
 
-/// State only touched by the renderer thread.
+/// CPU frame state shared with apprt display lifecycle and dirty marking.
 struct ThreadState {
     /// The thread's copy of the derived config (kept in sync with
     /// `DrawState::config`).
@@ -727,8 +733,8 @@ struct ThreadState {
 
 /// The generic renderer. See the module docs for the threading model.
 pub struct Renderer<G: GraphicsApi = OpenGL> {
-    draw: Mutex<DrawState<G>>,
-    thread: Mutex<ThreadState>,
+    draw: FairMutex<DrawState<G>>,
+    thread: FairMutex<ThreadState>,
 
     /// Health of the most recently completed frame.
     health: Arc<AtomicU8>,
@@ -1448,8 +1454,8 @@ impl<G: GraphicsApi> Renderer<G> {
 
         Ok(Renderer {
             display_link: Mutex::new(display_link),
-            draw: Mutex::new(draw),
-            thread: Mutex::new(thread),
+            draw: FairMutex::new(draw),
+            thread: FairMutex::new(thread),
             health: Arc::new(AtomicU8::new(Health::Healthy as u8)),
             has_animations,
             host: opts.host,
@@ -1464,7 +1470,7 @@ impl<G: GraphicsApi> Renderer<G> {
     pub fn display_realized_with(&self, realize: impl FnOnce(&mut G)) -> Result<(), Error> {
         // Lock the draw mutex so that we can
         // safely reinitialize our GPU resources.
-        let mut d = lock(&self.draw);
+        let mut d = self.draw.lock();
 
         // If our API has to do things on realize, let it.
         realize(&mut d.api);
@@ -1495,8 +1501,8 @@ impl<G: GraphicsApi> Renderer<G> {
         // Lock the draw mutex so that we can
         // safely deinitialize our GPU resources. (The thread state is locked
         // first, per the lock order.)
-        let mut t = lock(&self.thread);
-        let mut d = lock(&self.draw);
+        let mut t = self.thread.lock();
+        let mut d = self.draw.lock();
 
         // We deinit our swap chain and shaders.
         //
@@ -1517,7 +1523,7 @@ impl<G: GraphicsApi> Renderer<G> {
 
     /// Mark the full screen as dirty so that we redraw everything.
     pub fn mark_dirty(&self) {
-        lock(&self.thread).terminal_state.dirty = Dirty::Full;
+        self.thread.lock().terminal_state.dirty = Dirty::Full;
     }
 
     /// True if our renderer has animations so that a higher frequency
@@ -1539,17 +1545,17 @@ impl<G: GraphicsApi> Renderer<G> {
     /// The font grid currently used for rendering (for apprts that need
     /// to read the primary face, e.g. macOS quicklook).
     pub fn font_grid(&self) -> Arc<SharedGrid> {
-        Arc::clone(&lock(&self.draw).font_grid)
+        Arc::clone(&self.draw.lock().font_grid)
     }
 
     /// Called by the renderer thread when it begins (`threadEnter`).
     pub fn thread_enter(&self) {
-        lock(&self.draw).api.thread_enter();
+        self.draw.lock().api.thread_enter();
     }
 
     /// Called by the renderer thread when it exits (`threadExit`).
     pub fn thread_exit(&self) {
-        lock(&self.draw).api.thread_exit();
+        self.draw.lock().api.thread_exit();
     }
 
     /// Called by the renderer thread when it starts the main loop
@@ -1559,7 +1565,7 @@ impl<G: GraphicsApi> Renderer<G> {
         // If our API has to do things on loop enter, let it. (Metal draws
         // synchronously from the layer's display callback.)
         let weak = Arc::downgrade(self);
-        lock(&self.draw).api.loop_enter(Arc::new(move || {
+        self.draw.lock().api.loop_enter(Arc::new(move || {
             if let Some(renderer) = weak.upgrade()
                 && let Err(err) = renderer.draw_frame(true)
             {
@@ -1586,7 +1592,7 @@ impl<G: GraphicsApi> Renderer<G> {
     /// (`loopExit`).
     pub fn loop_exit(&self) {
         // If our API has to do things on loop exit, let it.
-        lock(&self.draw).api.loop_exit();
+        self.draw.lock().api.loop_exit();
 
         // Stop our display link. If this fails its okay it just means
         // that we either never started it or the view its attached to
@@ -1620,14 +1626,14 @@ impl<G: GraphicsApi> Renderer<G> {
 
     /// The current size of everything as the renderer knows it.
     pub fn size(&self) -> Size {
-        lock(&self.draw).size
+        self.draw.lock().size
     }
 
     /// Callback when the focus changes for the terminal this is rendering.
     ///
     /// Must be called on the render thread.
     pub fn set_focus(&self, focus: bool) {
-        let mut d = lock(&self.draw);
+        let mut d = self.draw.lock();
         debug_assert_ne!(d.focused, focus);
 
         d.focused = focus;
@@ -1650,7 +1656,7 @@ impl<G: GraphicsApi> Renderer<G> {
         // If we're not visible, then we want to stop the display link
         // because it is a waste of resources and we can move to pure
         // change-driven updates.
-        let focused = lock(&self.draw).focused;
+        let focused = self.draw.lock().focused;
         if let Some(link) = lock(&self.display_link).as_ref() {
             let _ = if visible && focused {
                 link.start()
@@ -1664,8 +1670,8 @@ impl<G: GraphicsApi> Renderer<G> {
     ///
     /// Must be called on the render thread.
     pub fn set_font_grid(&self, grid: Arc<SharedGrid>) {
-        let mut t = lock(&self.thread);
-        let mut d = lock(&self.draw);
+        let mut t = self.thread.lock();
+        let mut d = self.draw.lock();
 
         // Get our metrics from the grid. This doesn't require a lock because
         // the metrics are never recalculated.
@@ -1702,8 +1708,8 @@ impl<G: GraphicsApi> Renderer<G> {
     /// Update the configuration.
     #[allow(clippy::float_cmp)]
     pub fn change_config(&self, config: DerivedConfig) -> Result<(), Error> {
-        let mut t = lock(&self.thread);
-        let mut d = lock(&self.draw);
+        let mut t = self.thread.lock();
+        let mut d = self.draw.lock();
 
         // We always redo the font shaper in case font features changed. We
         // could check to see if there was an actual config change but this is
@@ -1773,7 +1779,7 @@ impl<G: GraphicsApi> Renderer<G> {
 
     /// Resize the screen.
     pub fn set_screen_size(&self, size: Size) {
-        let mut d = lock(&self.draw);
+        let mut d = self.draw.lock();
 
         // We only actually need the padding from this,
         // everything else is derived elsewhere.
@@ -1786,14 +1792,14 @@ impl<G: GraphicsApi> Renderer<G> {
 
     /// Set the search highlights (from the renderer thread mailbox).
     pub fn set_search_viewport_matches(&self, matches: Vec<Flattened>) {
-        let mut t = lock(&self.thread);
+        let mut t = self.thread.lock();
         t.search_matches = Some(matches);
         t.search_matches_dirty = true;
     }
 
     /// Set the selected search match (from the renderer thread mailbox).
     pub fn set_search_selected_match(&self, m: Option<Flattened>) {
-        let mut t = lock(&self.thread);
+        let mut t = self.thread.lock();
         t.search_selected_match = m;
         t.search_matches_dirty = true;
     }
@@ -1836,7 +1842,7 @@ impl Renderer<OpenGL> {
     /// most recently presented frame. Intended for tests and screenshots;
     /// requires the GL context to be current.
     pub fn last_frame_pixels(&self) -> Option<(usize, usize, Vec<u8>)> {
-        let d = lock(&self.draw);
+        let d = self.draw.lock();
         let target = d.api.last_target()?;
         let gl = d.api.gl()?.clone();
         let bind = gl.bind_framebuffer(
@@ -1877,7 +1883,7 @@ impl<G: GraphicsApi> Renderer<G> {
         state: &SharedState,
         cursor_blink_visible: bool,
     ) -> Result<(), Error> {
-        let mut guard = lock(&self.thread);
+        let mut guard = self.thread.lock();
         let t = &mut *guard;
 
         // We fully deinit and reset the terminal state every so often
@@ -1944,7 +1950,7 @@ impl<G: GraphicsApi> Renderer<G> {
             // kitty state on every frame because any cell change can move
             // an image.
             {
-                let mut d = lock(&self.draw);
+                let mut d = self.draw.lock();
                 if d.images.kitty_requires_update(&st.terminal) {
                     let cell_size = CellSize {
                         width: d.grid_metrics.cell_width,
@@ -2040,7 +2046,7 @@ impl<G: GraphicsApi> Renderer<G> {
 
         // Acquire the draw mutex for all remaining state updates.
         {
-            let mut d = lock(&self.draw);
+            let mut d = self.draw.lock();
 
             // Build our GPU cells
             let cursor_style = cursor::style(
@@ -2113,7 +2119,7 @@ impl<G: GraphicsApi> Renderer<G> {
             return Ok(());
         }
 
-        let size = lock(&self.draw).size;
+        let size = self.draw.lock().size;
 
         // If we had a previous overlay, clear it. Otherwise, init.
         let reuse = match &t.overlay {
@@ -3207,7 +3213,7 @@ impl<G: GraphicsApi> Renderer<G> {
     pub fn draw_frame(&self, sync: bool) -> Result<(), Error> {
         // We hold a the draw mutex to prevent changes to any
         // data we access while we're in the middle of drawing.
-        let mut d = lock(&self.draw);
+        let mut d = self.draw.lock();
 
         let result = self.draw_frame_locked(&mut d, sync);
 

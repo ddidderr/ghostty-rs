@@ -32,6 +32,8 @@ ghostty (bin, src/main.rs)            CLI `+action` dispatch or GTK app startup
     │       ├── kitty / search / tmux kitty graphics, search thread, tmux control mode
     │       └── ghostty-vt            byte stream -> Parser -> Stream -> Handler actions
     ├── ghostty-renderer              OpenGL renderer (glow), renderer thread, shaders
+    │   ├── generic::Renderer         CPU frame state + GPU draw state; fair mutexes
+    │   │                             let GTK display teardown run during output
     │   └── ghostty-font              fontconfig/freetype/harfbuzz, sprite font, atlas
     ├── ghostty-inspector             Dear ImGui terminal inspector
     └── ghostty-config                config file/CLI parsing, themes, keybinds
@@ -128,6 +130,12 @@ GTK invokes `glib-compile-resources` directly so generated XML/UI files in
    thread, plus a pty read thread. Mailboxes are `crossbeam-channel` /
    `std::sync::mpsc`; the GTK main thread is woken via `glib` channels.
    The `Terminal` is shared behind `Arc<Mutex<..>>` (Ghostty's renderer mutex).
+   The generic renderer uses fair mutexes for its CPU frame and GPU draw state:
+   continuous frame updates hand ownership to waiting GTK lifecycle/draw
+   callbacks. Closing a tab/split unrealizes its GLArea before worker shutdown;
+   teardown must acquire these locks while the PTY is still producing output.
+   This is a Rust synchronization fix; Zig does not have the extra CPU-state
+   mutex used by the rewrite.
    `ghostty-core::App` handles at most 64 mailbox messages per tick and wakes
    the runtime again if work remains. Continuous renderer notifications must
    yield to GTK input, timers, and drawing instead of extending one tick

@@ -1673,6 +1673,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "onig",
+ "parking_lot",
  "png",
  "thiserror 2.0.21",
 ]

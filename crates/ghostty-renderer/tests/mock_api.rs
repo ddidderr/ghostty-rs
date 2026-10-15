@@ -11,7 +11,7 @@ use std::{
     sync::{
         Arc,
         Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -283,6 +283,13 @@ impl Host for TestHost {
 }
 
 fn fixture() -> (Renderer<MockApi>, Arc<Mutex<State>>, Log, Arc<AtomicUsize>) {
+    fixture_with_size(20, 5)
+}
+
+fn fixture_with_size(
+    columns: u16,
+    rows: u16,
+) -> (Renderer<MockApi>, Arc<Mutex<State>>, Log, Arc<AtomicUsize>) {
     let config = Config::default();
     let set = Arc::new(SharedGridSet::new().unwrap());
     let (_key, grid) = set
@@ -300,7 +307,10 @@ fn fixture() -> (Renderer<MockApi>, Arc<Mutex<State>>, Log, Arc<AtomicUsize>) {
         width: gc.width,
         height: gc.height,
     };
-    let (w, h) = (cell.width * 20 + 20, cell.height * 5 + 20);
+    let (w, h) = (
+        cell.width * u32::from(columns) + 20,
+        cell.height * u32::from(rows) + 20,
+    );
     let size = Size {
         screen: ScreenSize {
             width: w,
@@ -315,7 +325,7 @@ fn fixture() -> (Renderer<MockApi>, Arc<Mutex<State>>, Log, Arc<AtomicUsize>) {
         },
     };
 
-    let mut term = Terminal::new(TermOptions::new(20, 5)).unwrap();
+    let mut term = Terminal::new(TermOptions::new(columns, rows)).unwrap();
     term.vt_stream().next_slice(b"hello").unwrap();
     let state = State::new(term).into_shared();
 
@@ -395,4 +405,62 @@ fn display_unrealize_waits_for_inflight_frames() {
     renderer.display_realized_with(|_| {}).unwrap();
     renderer.draw_frame(true).unwrap();
     assert_eq!(completed.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn display_unrealize_makes_progress_during_continuous_updates() {
+    let (renderer, state, _log, _completed) = fixture_with_size(200, 150);
+    // Dense, varied text forces actual shaping and glyph rebuilding rather
+    // than repeatedly taking the clean-frame shortcut.
+    let mut seed = 1_u32;
+    let text: Vec<_> = (0..30_000)
+        .map(|_| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                [(seed >> 24) as usize % 64]
+        })
+        .collect();
+    state
+        .lock()
+        .unwrap()
+        .terminal
+        .vt_stream()
+        .next_slice(&text)
+        .unwrap();
+
+    let renderer = Arc::new(renderer);
+    let stop = Arc::new(AtomicBool::new(false));
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let updater = {
+        let renderer = Arc::clone(&renderer);
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            renderer.update_frame(&state, true).unwrap();
+            started_tx.send(()).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                renderer.mark_dirty();
+                renderer.update_frame(&state, true).unwrap();
+            }
+        })
+    };
+    started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let lifecycle = {
+        let renderer = Arc::clone(&renderer);
+        std::thread::spawn(move || {
+            // Closing a split/tab unrealizes its GLArea before worker shutdown.
+            // Reparenting a surviving surface also realizes it again.
+            renderer.display_unrealized();
+            renderer.display_realized_with(|_| {}).unwrap();
+            done_tx.send(()).unwrap();
+        })
+    };
+    let result = done_rx.recv_timeout(Duration::from_secs(3));
+    // Always release a starved lifecycle thread so a regression fails instead
+    // of leaving the test process hung indefinitely.
+    stop.store(true, Ordering::Relaxed);
+    updater.join().unwrap();
+    lifecycle.join().unwrap();
+    assert!(result.is_ok(), "display lifecycle starved by frame updates");
 }

@@ -23,6 +23,7 @@ khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 log = "0.4.34"
 naga = { version = "30.0.1", features = ["glsl-in", "glsl-out", "msl-out", "wgsl-in"] }
 onig = "6.5.3"
+parking_lot = "0.12.5"
 png = "0.18.1"
 thiserror = "2.0.21"
 
