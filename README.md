@@ -141,11 +141,12 @@ log with any core. Optional controls:
 
 ```sh
 GHOSTTY_GTK_STRESS=1 GHOSTTY_GTK_STRESS_SEED=42 \
-  GHOSTTY_GTK_STRESS_INTERVAL_MS=100 ./target/release/ghostty 2>gtk-stress.log
+  GHOSTTY_GTK_STRESS_INTERVAL_MS=2 ./target/release/ghostty 2>gtk-stress.log
 ```
 
-The default interval is randomly 200–600 ms; the override sets the lower
-bound, with an upper bound three times that value (minimum lower bound 20 ms).
+The default interval is randomly 5–15 ms; the override sets the lower
+bound, with an upper bound three times that value (minimum lower bound 1 ms).
+The driver polls every millisecond; rendering and initialization can delay actions.
 The seed defaults to a generated value printed at startup. A seed repeats
 random choices for the same observed state, not asynchronous rendering or
 process timing. Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`.

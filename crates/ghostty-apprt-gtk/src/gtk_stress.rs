@@ -95,7 +95,7 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
         .as_nanos() as u64
         ^ u64::from(std::process::id());
     let seed = env_number("GHOSTTY_GTK_STRESS_SEED", default_seed);
-    let interval = env_number("GHOSTTY_GTK_STRESS_INTERVAL_MS", 200).clamp(20, 60_000);
+    let interval = env_number("GHOSTTY_GTK_STRESS_INTERVAL_MS", 5).clamp(1, 60_000);
     eprintln!(
         "GTK-STRESS start pid={} seed={seed} interval-ms={interval}..{} max-tabs={MAX_TABS} max-panes-per-tab={MAX_PANES}",
         std::process::id(),
@@ -109,7 +109,7 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
     let mut step = 0u64;
     let mut next_action = Instant::now() + Duration::from_secs(2);
     Some(glib::timeout_add_local(
-        Duration::from_millis(20),
+        Duration::from_millis(1),
         move || {
             // Stay registered until run_loop removes us, including if the user
             // manually closes the target window. Do not switch to another window.
