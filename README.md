@@ -112,6 +112,20 @@ terminal and a real pty through a fake app runtime. `ghostty-bench` mirrors
 Ghostty's benchmark tool; terminal stream throughput is on par with the Zig
 build (see `docs/rewrite/notes/perf-P1.md`).
 
+### GTK split callback regressions
+
+These tests require an active display and are explicitly ignored in ordinary
+test runs. Run them from a desktop session (or inside a headless compositor):
+
+```sh
+cargo test --profile release -p ghostty-apprt-gtk --lib \
+  class::split_tree::tests:: -- --ignored
+```
+
+They dispatch real GLib idle callbacks and check that old split widgets cannot
+read or overwrite a replacement tree. Terminal surfaces stay unrealized, so
+the tests do not start shells or require the terminal's GL renderer.
+
 ## Verification
 
 - `just difftest` — differential fuzzing of the terminal core against

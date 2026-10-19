@@ -8,7 +8,10 @@
 
 #![allow(clippy::wildcard_imports)]
 
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, OnceCell, RefCell},
+    rc::Rc,
+};
 
 use adw::{prelude::*, subclass::prelude::*};
 use ghostty_datastruct::split_tree::{
@@ -306,6 +309,12 @@ impl SplitTree {
         let new = tree.cloned().map(SurfaceTree);
         self.emit_by_name::<()>("changed", &[&old, &new]);
 
+        // The old widgets stay attached until the deferred rebuild. Their
+        // handles belong to the old model, even if the same index exists in
+        // the replacement. Invalidate them BEFORE changing the model, not in
+        // notify::tree (which callers can freeze/defer).
+        imp.revision.replace(Rc::new(()));
+
         if imp.tree.borrow().is_some() {
             self.disconnect_surface_handlers();
             imp.tree.replace(None);
@@ -320,8 +329,17 @@ impl SplitTree {
         self.notify("tree");
     }
 
-    /// Update a split ratio in place (used by `SplitTreeSplit`).
-    fn resize_in_place(&self, handle: Handle, ratio: f16) {
+    fn has_revision(&self, revision: &Rc<()>) -> bool {
+        Rc::ptr_eq(&self.imp().revision.borrow(), revision)
+    }
+
+    /// Update only the model that the calling split widget was built from.
+    /// Recheck at the write boundary in case GTK calls reentered the app
+    /// after the callback read its desired ratio.
+    fn resize_in_place(&self, revision: &Rc<()>, handle: Handle, ratio: f16) {
+        if !self.has_revision(revision) {
+            return;
+        }
         if let Some(t) = self.imp().tree.borrow_mut().as_mut() {
             t.resize_in_place(handle, ratio);
         }
@@ -511,7 +529,9 @@ impl SplitTree {
         match self.get_tree() {
             None => imp.tree_bin.set_child(gtk::Widget::NONE),
             Some(tree) => {
-                let widget = Self::build_tree(&tree, tree.zoomed().unwrap_or(Handle::ROOT));
+                let revision = imp.revision.borrow().clone();
+                let widget =
+                    Self::build_tree(&tree, tree.zoomed().unwrap_or(Handle::ROOT), &revision);
                 imp.tree_bin.set_child(Some(&widget));
             }
         }
@@ -533,7 +553,7 @@ impl SplitTree {
     /// Returned widgets are expected to be attached to a parent by the
     /// caller. Reused widgets are detached from their old parent (the
     /// returned strong reference keeps them alive meanwhile).
-    fn build_tree(tree: &Tree, current: Handle) -> gtk::Widget {
+    fn build_tree(tree: &Tree, current: Handle, revision: &Rc<()>) -> gtk::Widget {
         match &tree.nodes()[current.idx()] {
             Node::Leaf(v) => match get_ancestor::<SurfaceScrolledWindow>(v) {
                 // The surface isn't in a window already so we don't have to
@@ -551,9 +571,9 @@ impl SplitTree {
                 }
             },
             Node::Split(s) => {
-                let left = Self::build_tree(tree, s.left);
-                let right = Self::build_tree(tree, s.right);
-                SplitTreeSplit::new(current, s.layout, &left, &right).upcast()
+                let left = Self::build_tree(tree, s.left, revision);
+                let right = Self::build_tree(tree, s.right, revision);
+                SplitTreeSplit::new(current, s.layout, &left, &right, revision).upcast()
             }
         }
     }
@@ -689,6 +709,10 @@ mod imp {
         /// The tree datastructure containing all of our surface views.
         pub tree: RefCell<Option<Tree>>,
 
+        /// Identity of this model installation. Shared with its split widgets;
+        /// a fresh allocation on replacement avoids index reuse and counter wrap.
+        pub revision: RefCell<Rc<()>>,
+
         #[template_child]
         pub tree_bin: TemplateChild<adw::Bin>,
 
@@ -821,10 +845,19 @@ glib::wrapper! {
 }
 
 impl SplitTreeSplit {
-    fn new(handle: Handle, layout: Layout, start: &gtk::Widget, end: &gtk::Widget) -> Self {
+    fn new(
+        handle: Handle,
+        layout: Layout,
+        start: &gtk::Widget,
+        end: &gtk::Widget,
+        revision: &Rc<()>,
+    ) -> Self {
         let this: Self = glib::Object::new();
         let imp = this.imp();
         imp.handle.set(Some(handle));
+        imp.revision
+            .set(revision.clone())
+            .expect("new split widget");
 
         let paned = imp.paned.get();
         paned.set_start_child(Some(start));
@@ -863,20 +896,26 @@ impl SplitTreeSplit {
         // Our idle source is always over
         imp.idle.take();
 
-        // Get our split. We assume that this widget is always a child of a
-        // SplitTree, that our handle is valid, and that it is a split node.
+        // A removed/replaced widget can still have an ancestor until the
+        // rebuild runs. Its handle is meaningful ONLY in its original model.
         let Some(split_tree) = get_ancestor::<SplitTree>(self) else {
             return;
         };
+        let Some(revision) = imp.revision.get() else {
+            return;
+        };
+        if !split_tree.has_revision(revision) {
+            return;
+        }
         let Some(handle) = imp.handle.get() else {
             return;
         };
         let desired_ratio = {
             let guard = split_tree.imp().tree.borrow();
             let Some(tree) = guard.as_ref() else { return };
-            match &tree.nodes()[handle.idx()] {
-                Node::Split(s) => f64::from(s.ratio),
-                Node::Leaf(_) => return,
+            match tree.nodes().get(handle.idx()) {
+                Some(Node::Split(s)) => f64::from(s.ratio),
+                _ => return,
             }
         };
 
@@ -911,7 +950,7 @@ impl SplitTreeSplit {
 
         // If we've set the position, then this is a manual human update and
         // we need to write our update back to the tree.
-        split_tree.resize_in_place(handle, f16::from_f64(current_ratio));
+        split_tree.resize_in_place(revision, handle, f16::from_f64(current_ratio));
     }
 }
 
@@ -923,6 +962,9 @@ mod split_imp {
     pub struct SplitTreeSplit {
         /// The handle of the node in the tree that this split represents.
         pub handle: Cell<Option<Handle>>,
+
+        /// Immutable model identity captured when this widget is built.
+        pub revision: OnceCell<Rc<()>>,
 
         /// Source to handle repositioning the split when properties change.
         pub idle: RefCell<Option<glib::SourceId>>,
@@ -994,4 +1036,195 @@ mod split_imp {
 
     impl WidgetImpl for SplitTreeSplit {}
     impl BinImpl for SplitTreeSplit {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // These tests use real GTK widgets and GLib idle dispatch, but never
+    // realize a terminal: no shell, renderer, or dummy core is needed.
+    fn test_app() -> Application {
+        adw::init().expect("GTK regression tests require a display");
+        crate::register_resources();
+        let app: Application = glib::Object::new();
+        app.imp()
+            .config
+            .replace(Some(super::super::config::Config::new_default()));
+        app.set_default();
+        app
+    }
+
+    fn model(panes: usize) -> Tree {
+        let mut tree = Tree::new(&Surface::default());
+        for _ in 1..panes {
+            tree = tree
+                .split(
+                    Handle::ROOT,
+                    Direction::Right,
+                    f16::from_f32(0.5),
+                    &Tree::new(&Surface::default()),
+                )
+                .expect("small test tree");
+        }
+        tree
+    }
+
+    fn drain_idle() {
+        let context = glib::MainContext::default();
+        for _ in 0..1000 {
+            if !context.iteration(false) {
+                return;
+            }
+        }
+        panic!("GTK callbacks failed to settle");
+    }
+
+    fn split_widget(widget: &impl IsA<gtk::Widget>, handle: Handle) -> SplitTreeSplit {
+        fn find(widget: &gtk::Widget, handle: Handle) -> Option<SplitTreeSplit> {
+            if let Some(split) = widget.downcast_ref::<SplitTreeSplit>()
+                && split.imp().handle.get() == Some(handle)
+            {
+                return Some(split.clone());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(found) = find(&widget, handle) {
+                    return Some(found);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        find(widget.as_ref(), handle).expect("split widget exists")
+    }
+
+    fn ratio(tree: &SplitTree, handle: Handle) -> f16 {
+        match &tree.get_tree().expect("model").nodes()[handle.idx()] {
+            Node::Split(split) => split.ratio,
+            Node::Leaf(_) => panic!("expected split"),
+        }
+    }
+
+    // Allocate a real Paned without realizing terminal surfaces. This gives
+    // the ratio callback real GTK min/max/position values without any GL.
+    fn allocate_paned(widget: &SplitTreeSplit) -> gtk::Paned {
+        let paned = widget.imp().paned.get();
+        paned.set_start_child(Some(&gtk::Label::new(Some("left"))));
+        paned.set_end_child(Some(&gtk::Label::new(Some("right"))));
+        paned.set_shrink_start_child(true);
+        paned.set_shrink_end_child(true);
+        paned.allocate(1000, 200, -1, None);
+        assert!(paned.property::<i32>("max-position") > 0);
+        paned
+    }
+
+    #[test]
+    #[ignore = "requires GTK display; run with --ignored"]
+    fn stale_split_idle_after_removal_does_not_index_replacement_tree() {
+        gtk::test_synced(|| {
+            let _app = test_app();
+            let tree = SplitTree::new();
+            let original = model(8);
+            tree.set_tree(Some(&original));
+            drain_idle();
+            let old = split_widget(&tree, Handle::from_idx(14));
+            old.refresh(); // Queue the old widget's callback BEFORE the rebuild.
+            let replacement = original.remove(Handle::from_idx(13));
+            assert_eq!(replacement.nodes().len(), 13);
+            tree.set_tree(Some(&replacement));
+            assert!(get_ancestor::<SplitTree>(&old).is_some());
+            assert!(old.imp().idle.borrow().is_some());
+            drain_idle(); // Previously aborted through GLib with index 14 / len 13.
+            assert_eq!(tree.get_tree().expect("model").nodes().len(), 13);
+            assert!(old.imp().idle.borrow().is_none());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires GTK display; run with --ignored"]
+    fn stale_split_idle_does_not_overwrite_reused_in_bounds_handle() {
+        gtk::test_synced(|| {
+            let _app = test_app();
+            let tree = SplitTree::new();
+            let mut original = model(3);
+            // Removing the new right leaf promotes the left split to root.
+            let Node::Split(root) = &original.nodes()[0] else {
+                panic!("root split")
+            };
+            let promoted = root.left;
+            let removed = root.right;
+            original.resize_in_place(promoted, f16::from_f32(0.25));
+            tree.set_tree(Some(&original));
+            drain_idle();
+            let old = split_widget(&tree, Handle::ROOT);
+            let paned = allocate_paned(&old);
+            paned.set_position(paned.property::<i32>("max-position") * 3 / 4);
+            old.refresh();
+            let replacement = original.remove(removed);
+            tree.set_tree(Some(&replacement));
+            assert_eq!(ratio(&tree, Handle::ROOT), f16::from_f32(0.25));
+            drain_idle();
+            // Index 0 remains a split, but now identifies a different split.
+            assert_eq!(ratio(&tree, Handle::ROOT), f16::from_f32(0.25));
+        });
+    }
+
+    #[test]
+    #[ignore = "requires GTK display; run with --ignored"]
+    fn current_split_idle_applies_and_saves_ratio() {
+        gtk::test_synced(|| {
+            let _app = test_app();
+            let tree = SplitTree::new();
+            let mut original = model(2);
+            original.resize_in_place(Handle::ROOT, f16::from_f32(0.25));
+            tree.set_tree(Some(&original));
+            drain_idle();
+            let widget = split_widget(&tree, Handle::ROOT);
+            let paned = allocate_paned(&widget);
+            widget.refresh();
+            drain_idle();
+            let max = paned.property::<i32>("max-position");
+            assert!((paned.position() - max / 4).abs() <= 1);
+            paned.set_position(max * 3 / 4);
+            drain_idle();
+            let actual = f32::from(ratio(&tree, Handle::ROOT));
+            assert!((actual - 0.75).abs() < 0.002, "ratio={actual}");
+        });
+    }
+
+    #[test]
+    #[ignore = "requires GTK display; run with --ignored"]
+    fn model_replacement_invalidates_callbacks_before_thawed_notifications() {
+        gtk::test_synced(|| {
+            let _app = test_app();
+            let tree = SplitTree::new();
+            let original = model(2);
+            tree.set_tree(Some(&original));
+            drain_idle();
+            let old = split_widget(&tree, Handle::ROOT);
+            let revision = tree.imp().revision.borrow().clone();
+            let paned = allocate_paned(&old);
+            paned.set_position(paned.property::<i32>("max-position") * 3 / 4);
+            old.refresh();
+
+            // The model changes now, but notify::tree (and therefore the
+            // widget rebuild) must not run until this guard is dropped.
+            let freeze = tree.freeze_notify();
+            let mut replacement = original.clone();
+            replacement.resize_in_place(Handle::ROOT, f16::from_f32(0.25));
+            tree.set_tree(Some(&replacement));
+            assert!(tree.imp().rebuild_source.borrow().is_none());
+            drain_idle();
+            assert!(get_ancestor::<SplitTree>(&old).is_some());
+            assert_eq!(ratio(&tree, Handle::ROOT), f16::from_f32(0.25));
+
+            // Simulate a callback that read the old model before replacement
+            // and reaches its write boundary afterward (synchronous reentry).
+            tree.resize_in_place(&revision, Handle::ROOT, f16::from_f32(0.75));
+            assert_eq!(ratio(&tree, Handle::ROOT), f16::from_f32(0.25));
+            drop(freeze);
+            drain_idle();
+        });
+    }
 }

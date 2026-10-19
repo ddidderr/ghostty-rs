@@ -7,6 +7,25 @@ build.rs compiles resources/ui/**/*.blp with blueprint-compiler and bundles UI+C
 auto-loads style.css from `resource-base-path`). Inspector/imgui deferred (menu action is a no-op with TODO). Dropped the ghostty-core
 dependency (cycle): the core boundary is the trait set in `src/core.rs`.
 
+## Split model and deferred widget lifetime
+
+`class/split_tree.rs` replaces the model synchronously and rebuilds widgets
+on an idle callback. Each model installation owns a fresh `Rc<()>` identity;
+`build_tree` shares it with each `SplitTreeSplit`. Before replacing the model,
+`set_tree` rotates the identity so still-attached old widgets cannot address
+new nodes with stale handles. This happens independently of `notify::tree`,
+which callers can defer by freezing notifications. The split's idle callback
+checks identity before reading, and `resize_in_place` checks again before
+writing. Tokens hold no model or widget references and cannot wrap or match
+another tree's generation. In-place zoom/ratio changes preserve node identity.
+
+Four display-dependent regression tests use real GTK widgets and GLib idle
+dispatch without realizing terminals. They cover shrinking from 15 to 13
+nodes with stale handle 14, a reused in-bounds handle, frozen notifications
+and stale writeback, and normal divider initialization/resize. The first two
+were verified to fail before the fix (abort and wrong ratio, respectively).
+See entry 42 in `../DEVIANT_FIXES.md` and the README's test command.
+
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
 - `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,
   push_message(AppMessage::{OpenConfig,PresentSurface(id),NewWindow}), new_surface(id, config, rt_app, rt_surface)
