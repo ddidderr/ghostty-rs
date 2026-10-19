@@ -26,6 +26,17 @@ and stale writeback, and normal divider initialization/resize. The first two
 were verified to fail before the fix (abort and wrong ratio, respectively).
 See entry 42 in `../DEVIANT_FIXES.md` and the README's test command.
 
+## Temporary GTK teardown stress mode
+
+`GHOSTTY_GTK_STRESS=1` drives the real runtime after normal config and startup.
+`class/application.rs` isolates the test process, creates its initial window,
+starts the timer from `gtk_stress.rs`, and removes it when the run loop ends.
+The timer selects bounded random actions from current tab/pane counts and
+calls existing `SplitTree`, `Surface`, `Window`, and `TabView` handlers.
+`class/{split_tree,window}.rs` accept close prompts in this mode while retaining
+their normal teardown paths. The driver uses weak window references and logs
+each operation before execution. See the root README for controls and limits.
+
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
 - `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,
   push_message(AppMessage::{OpenConfig,PresentSurface(id),NewWindow}), new_surface(id, config, rt_app, rt_surface)

@@ -112,6 +112,44 @@ terminal and a real pty through a fake app runtime. `ghostty-bench` mirrors
 Ghostty's benchmark tool; terminal stream throughput is on par with the Zig
 build (see `docs/rewrite/notes/perf-P1.md`).
 
+### Temporary GTK pane/tab stress mode
+
+Build the release profile and run the real application with its usual config,
+shell startup, and renderer:
+
+```sh
+cargo build --profile release --bin ghostty
+GHOSTTY_GTK_STRESS=1 ./target/release/ghostty 2>gtk-stress.log
+```
+
+After a two-second startup delay, the mode endlessly creates/closes panes,
+toggles pane zoom, creates/closes tabs, and switches tabs/pane focus through
+the application's existing handlers. It yields to GTK between operations,
+keeps at least one pane per tab and one tab in the window, and caps growth at
+six tabs and eight panes per tab. Zoom gets extra weight. Close confirmations
+for panes and tabs are automatically accepted in this test process.
+
+The mode forces a separate application instance and an initial window, even
+when the config enables single-instance operation or disables the initial
+window. It controls only its first window. Close that window or press Ctrl+C
+in the launching terminal to stop. Without `GHOSTTY_GTK_STRESS=1`, startup and
+close confirmation behavior are unchanged.
+
+Every attempted operation is written to stderr before execution, including
+the seed, step, tab/pane counts, zoom state, and selected operation. Keep that
+log with any core. Optional controls:
+
+```sh
+GHOSTTY_GTK_STRESS=1 GHOSTTY_GTK_STRESS_SEED=42 \
+  GHOSTTY_GTK_STRESS_INTERVAL_MS=100 ./target/release/ghostty 2>gtk-stress.log
+```
+
+The default interval is randomly 200–600 ms; the override sets the lower
+bound, with an upper bound three times that value (minimum lower bound 20 ms).
+The seed defaults to a generated value printed at startup. A seed repeats
+random choices for the same observed state, not asynchronous rendering or
+process timing. Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`.
+
 ### GTK split callback regressions
 
 These tests require an active display and are explicitly ignored in ordinary

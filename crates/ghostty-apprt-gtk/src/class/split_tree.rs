@@ -411,8 +411,9 @@ impl SplitTree {
         };
         imp.pending_close.set(Some(handle));
 
-        // If we don't need to confirm then just close immediately.
-        if !core.needs_confirm_quit() {
+        // The disposable stress instance accepts close prompts automatically;
+        // it still uses the ordinary removal and focus-restoration path.
+        if !core.needs_confirm_quit() || crate::gtk_stress::enabled() {
             self.close_confirmation_close();
             return;
         }

@@ -478,9 +478,10 @@ impl Application {
             }
         };
 
-        // Setup the flags for our application.
+        // Stress testing must own its process, never forward to a user's
+        // already-running single-instance session.
         let mut flags = gio::ApplicationFlags::default();
-        if !single_instance {
+        if !single_instance || crate::gtk_stress::enabled() {
             flags |= gio::ApplicationFlags::NON_UNIQUE;
         }
 
@@ -658,8 +659,9 @@ impl Application {
         }
 
         // This just calls the `activate` signal but its part of the normal
-        // startup routine, but only if the config allows it.
-        if self.core_config().initial_window {
+        // startup routine. Stress mode needs an initial test window even
+        // when the config normally disables it.
+        if self.core_config().initial_window || crate::gtk_stress::enabled() {
             gapp.activate();
         }
 
@@ -674,6 +676,7 @@ impl Application {
 
         // Developer aid: replay synthesized input (GHOSTTY_DEBUG_INPUT_SCRIPT).
         crate::debug_input::start(self);
+        let stress_timer = crate::gtk_stress::start(self);
 
         log::debug!("entering runloop");
         let imp = self.imp();
@@ -720,6 +723,9 @@ impl Application {
             }
         }
         log::debug!("exiting runloop");
+        if let Some(timer) = stress_timer {
+            timer.remove();
+        }
         result
     }
 

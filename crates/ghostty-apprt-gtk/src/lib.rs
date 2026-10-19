@@ -13,6 +13,7 @@ mod fake_version;
 pub mod flatpak;
 pub mod gl;
 pub mod gsettings;
+mod gtk_stress;
 pub mod gtk_version;
 pub mod ipc;
 pub mod key;

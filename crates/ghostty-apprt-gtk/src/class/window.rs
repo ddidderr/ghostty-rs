@@ -1399,9 +1399,9 @@ impl Window {
             return glib::Propagation::Proceed;
         };
 
-        // If the tab says it doesn't need confirmation then we go ahead and
-        // close immediately.
-        if !tab.get_needs_confirm_quit() {
+        // The disposable stress instance accepts close prompts automatically;
+        // page removal and surface teardown still follow the ordinary path.
+        if !tab.get_needs_confirm_quit() || crate::gtk_stress::enabled() {
             tab_view.close_page_finish(page, true);
             return glib::Propagation::Stop;
         }
