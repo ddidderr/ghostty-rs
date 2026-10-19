@@ -13,7 +13,7 @@ use ghostty_renderer::message::Message as RendererMessage;
 /// (`apprt.surface.Mailbox`).
 ///
 /// `push` returns the queue size after the push; zero means the push failed
-/// (only possible with [`Timeout::Instant`] on a full queue).
+/// (a full queue, an expired timeout, or shutdown cancellation).
 pub trait SurfaceMailbox: Send + Sync {
     fn push(&self, msg: SurfaceMessage, timeout: Timeout) -> usize;
 }

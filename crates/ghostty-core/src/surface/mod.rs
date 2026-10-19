@@ -124,7 +124,7 @@ use ghostty_termio::{
 };
 
 use crate::{
-    app::{AppState, Mailbox, Message as AppMessage},
+    app::{AppState, Mailbox, MailboxScope, Message as AppMessage},
     global,
 };
 
@@ -243,6 +243,9 @@ pub struct Surface {
 
     /// The app that this surface is attached to.
     pub(crate) app: Rc<AppState>,
+
+    /// Cancellable UI message delivery for every worker of this surface.
+    worker_mailbox: MailboxScope,
 
     /// The windowing system surface and app.
     pub(crate) rt_app: Rc<dyn RtApp>,
@@ -411,7 +414,8 @@ impl Surface {
             size
         };
 
-        let app_mailbox = app.mailbox.clone();
+        let worker_mailbox = app.mailbox.scoped();
+        let app_mailbox = worker_mailbox.mailbox();
         let host: Arc<dyn RendererHost> = Arc::new(HostImpl {
             id,
             mailbox: app_mailbox.clone(),
@@ -519,6 +523,7 @@ impl Surface {
         let surface = Rc::new(Surface {
             id,
             app: Rc::clone(&app),
+            worker_mailbox,
             rt_app: Rc::clone(&rt_app),
             rt_surface: Rc::clone(&rt_surface),
             font: RefCell::new(FontState {
@@ -684,7 +689,7 @@ impl Surface {
     pub(crate) fn surface_mailbox(&self) -> SurfaceMailboxT {
         SurfaceMailboxT {
             surface: self.id,
-            app: self.app.mailbox.clone(),
+            app: self.worker_mailbox.mailbox(),
         }
     }
 
@@ -1939,6 +1944,14 @@ impl Surface {
 impl Drop for Surface {
     /// Zig: `Surface.deinit`.
     fn drop(&mut self) {
+        // Break ALL worker message dependencies before joining ANY worker.
+        // The UI cannot drain its queue while joining, and stopped IO/renderer
+        // threads cannot drain theirs. Wake blocked producers and reject new
+        // sends for this surface; other surfaces' UI delivery stays active.
+        self.worker_mailbox.close();
+        self.io_mailbox.close();
+        self.renderer_handle.mailbox.close();
+
         // Stop search thread
         if let Some(s) = self.search.get_mut().take() {
             s.deinit();

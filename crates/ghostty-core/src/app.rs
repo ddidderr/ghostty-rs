@@ -18,7 +18,7 @@ use std::{
     time::Instant,
 };
 
-use crossbeam_channel::{Receiver, Sender, TrySendError};
+use crossbeam_channel::{Receiver, Sender};
 use ghostty_apprt::{
     action::{Action as RtAction, QuitTimer, ReloadConfig, Target},
     runtime_api::{
@@ -88,6 +88,7 @@ pub enum Message {
 pub struct Mailbox {
     tx: Sender<Message>,
     waker: Arc<dyn Waker>,
+    cancelled: Receiver<()>,
 }
 
 impl std::fmt::Debug for Mailbox {
@@ -96,20 +97,57 @@ impl std::fmt::Debug for Mailbox {
     }
 }
 
+/// Owns one surface's permission to send into the shared UI queue. Dropping
+/// the sole cancellation sender broadcasts to every worker, including workers
+/// already blocked on a full queue. Other surfaces keep their own scopes.
+#[derive(Debug)]
+pub(crate) struct MailboxScope {
+    mailbox: Mailbox,
+    cancel: Option<Sender<()>>,
+}
+
+impl MailboxScope {
+    pub(crate) fn mailbox(&self) -> Mailbox {
+        self.mailbox.clone()
+    }
+
+    pub(crate) fn close(&mut self) {
+        self.cancel.take();
+    }
+}
+
 impl Mailbox {
+    pub(crate) fn scoped(&self) -> MailboxScope {
+        let (cancel, cancelled) = crossbeam_channel::bounded(0);
+        MailboxScope {
+            mailbox: Mailbox {
+                cancelled,
+                ..self.clone()
+            },
+            cancel: Some(cancel),
+        }
+    }
+
     /// Send a message to the app. Returns the queue size after the push;
-    /// zero means the push failed (full queue + instant/expired timeout).
+    /// zero means the push failed (closed scope, full queue, or timeout).
+    /// Sends selected concurrently with scope closure may still enqueue, but
+    /// cannot remain blocked. Calls after closure always prefer cancellation.
     pub fn push(&self, msg: Message, timeout: Timeout) -> usize {
         let ok = match timeout {
-            Timeout::Instant => match self.tx.try_send(msg) {
-                Ok(()) => true,
-                Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => false,
+            Timeout::Instant => crossbeam_channel::select_biased! {
+                recv(self.cancelled) -> _ => false,
+                send(self.tx, msg) -> result => result.is_ok(),
+                default => false,
             },
-            Timeout::Forever => self.tx.send(msg).is_ok(),
-            Timeout::Ns(ns) => self
-                .tx
-                .send_timeout(msg, std::time::Duration::from_nanos(ns))
-                .is_ok(),
+            Timeout::Forever => crossbeam_channel::select_biased! {
+                recv(self.cancelled) -> _ => false,
+                send(self.tx, msg) -> result => result.is_ok(),
+            },
+            Timeout::Ns(ns) => crossbeam_channel::select_biased! {
+                recv(self.cancelled) -> _ => false,
+                send(self.tx, msg) -> result => result.is_ok(),
+                default(std::time::Duration::from_nanos(ns)) => false,
+            },
         };
         if !ok {
             return 0;
@@ -231,7 +269,11 @@ impl App {
                 surfaces: RefCell::new(Vec::new()),
                 focused: Cell::new(true),
                 focused_surface: Cell::new(None),
-                mailbox: Mailbox { tx, waker },
+                mailbox: Mailbox {
+                    tx,
+                    waker,
+                    cancelled: crossbeam_channel::never(),
+                },
                 mailbox_rx: rx,
                 font_grid_set,
                 last_notification_time: Cell::new(None),
@@ -682,6 +724,61 @@ mod tests {
         fn wake(&self) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn closing_scope_releases_all_senders_without_draining_ui_queue() {
+        use std::time::Duration;
+        let (tx, rx) = crossbeam_channel::bounded(MAILBOX_CAPACITY);
+        let mailbox = Mailbox {
+            tx,
+            waker: Arc::new(CountingWaker::default()),
+            cancelled: crossbeam_channel::never(),
+        };
+        let mut closing = mailbox.scoped();
+        let other = mailbox.scoped();
+        for _ in 0..MAILBOX_CAPACITY {
+            assert_ne!(mailbox.push(Message::Quit, Timeout::Instant), 0);
+        }
+        let (done_tx, done_rx) = crossbeam_channel::unbounded();
+        let workers: Vec<_> = [Timeout::Forever, Timeout::Ns(60_000_000_000)]
+            .into_iter()
+            .map(|timeout| {
+                let producer = closing.mailbox();
+                let done = done_tx.clone();
+                std::thread::spawn(move || {
+                    let result = producer.push(Message::Quit, timeout);
+                    done.send(result).unwrap();
+                })
+            })
+            .collect();
+        // Neither sender can complete while the UI queue remains full.
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        closing.close();
+        closing.close(); // idempotent, including across cloned producers
+        for _ in &workers {
+            assert_eq!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(rx.len(), MAILBOX_CAPACITY);
+        rx.try_iter().for_each(drop);
+        for timeout in [Timeout::Instant, Timeout::Forever, Timeout::Ns(1)] {
+            assert_eq!(closing.mailbox().push(Message::Quit, timeout), 0);
+        }
+        // Closing one surface cannot disable another or the global mailbox.
+        assert_ne!(
+            other.mailbox().push(Message::OpenConfig, Timeout::Instant),
+            0
+        );
+        assert_ne!(mailbox.push(Message::Quit, Timeout::Instant), 0);
+        assert!(matches!(rx.try_recv(), Ok(Message::OpenConfig)));
+        assert!(matches!(rx.try_recv(), Ok(Message::Quit)));
+
+        let abandoned = other.mailbox();
+        drop(other); // also cancels failed/partial surface initialization
+        assert_eq!(abandoned.push(Message::Quit, Timeout::Forever), 0);
     }
 
     /// Refill the mailbox during each callback, like a renderer producing

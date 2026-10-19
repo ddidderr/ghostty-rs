@@ -8,7 +8,7 @@ Port of `ZIG/src/datastruct/*`.
 | `circ_buf.zig` | `circ_buf.rs` | `CircBuf<T>` takes the default value in `new`. All 21 tests (+2). |
 | `lru.zig` | `lru.rs` | Slab + index linked list. All 4 tests (+1). |
 | `cache_table.zig` | `cache_table.rs` | `CacheContext` trait (hash/eql/evicted). 1 test (+2). |
-| `blocking_queue.zig` | `blocking_queue.rs` | `Mutex` + `Condvar`. 2 tests (+3, incl. cross-thread). |
+| `blocking_queue.zig` | `blocking_queue.rs` | `Mutex` + `Condvar`; explicit close wakes every blocked producer. Shutdown regression covers indefinite/timed waits and rejection after draining. |
 | `segmented_pool.zig` | `segmented_pool.rs` | Index handles instead of pointers. 1 test. |
 | `message_data.zig` | `message_data.rs` | enum `Small/Stable/Alloc`. 3 tests (+1). |
 | `comparison.zig` | `comparison.rs` | `DeepEqual` / `ApproxEq` traits. All 24 tests. |

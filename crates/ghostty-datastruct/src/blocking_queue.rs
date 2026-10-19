@@ -27,6 +27,7 @@ pub enum Timeout {
 struct Inner<T> {
     data: VecDeque<T>,
     not_full_waiters: usize,
+    closed: bool,
 }
 
 /// A blocking queue for type T with a fixed `CAPACITY`.
@@ -73,6 +74,7 @@ impl<T, const CAPACITY: usize> BlockingQueue<T, CAPACITY> {
             inner: Mutex::new(Inner {
                 data: VecDeque::with_capacity(CAPACITY),
                 not_full_waiters: 0,
+                closed: false,
             }),
             cond_not_full: Condvar::new(),
         }
@@ -82,11 +84,21 @@ impl<T, const CAPACITY: usize> BlockingQueue<T, CAPACITY> {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Permanently reject new pushes and wake all blocked producers. Pending
+    /// messages remain drainable. Call before stopping/joining the consumer.
+    pub fn close(&self) {
+        self.lock().closed = true;
+        self.cond_not_full.notify_all();
+    }
+
     /// Push a value to the queue. This returns the total size of the
     /// queue (unread items) after the push. A return value of zero
     /// means that the push failed.
     pub fn push(&self, value: T, timeout: Timeout) -> Size {
         let mut g = self.lock();
+        if g.closed {
+            return 0;
+        }
 
         if g.data.len() >= CAPACITY {
             match timeout {
@@ -97,7 +109,7 @@ impl<T, const CAPACITY: usize> BlockingQueue<T, CAPACITY> {
                     g.not_full_waiters += 1;
                     g = self
                         .cond_not_full
-                        .wait_while(g, |i| i.data.len() >= CAPACITY)
+                        .wait_while(g, |i| !i.closed && i.data.len() >= CAPACITY)
                         .unwrap_or_else(PoisonError::into_inner);
                     g.not_full_waiters -= 1;
                 }
@@ -107,7 +119,7 @@ impl<T, const CAPACITY: usize> BlockingQueue<T, CAPACITY> {
                     let (guard, _timed_out) = self
                         .cond_not_full
                         .wait_timeout_while(g, Duration::from_nanos(ns), |i| {
-                            i.data.len() >= CAPACITY
+                            !i.closed && i.data.len() >= CAPACITY
                         })
                         .unwrap_or_else(PoisonError::into_inner);
                     g = guard;
@@ -117,7 +129,7 @@ impl<T, const CAPACITY: usize> BlockingQueue<T, CAPACITY> {
 
             // If we're still full, then we failed to write. This can
             // happen in situations where we are interrupted.
-            if g.data.len() >= CAPACITY {
+            if g.closed || g.data.len() >= CAPACITY {
                 return 0;
             }
         }
@@ -184,6 +196,42 @@ mod tests {
     use std::{sync::Arc, thread};
 
     use super::*;
+
+    #[test]
+    fn close_wakes_all_waiters_and_rejects_future_pushes() {
+        let q = Arc::new(BlockingQueue::<u32, 1>::new());
+        assert_eq!(q.push(1, Timeout::Instant), 1);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let workers: Vec<_> = [Timeout::Forever, Timeout::Ns(60_000_000_000)]
+            .into_iter()
+            .map(|timeout| {
+                let q = Arc::clone(&q);
+                let done = done_tx.clone();
+                thread::spawn(move || done.send(q.push(2, timeout)).unwrap())
+            })
+            .collect();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while q.lock().not_full_waiters != workers.len() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "producers did not block"
+            );
+            thread::yield_now();
+        }
+        q.close();
+        q.close();
+        for _ in &workers {
+            assert_eq!(done_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 0);
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(q.pop(), Some(1));
+        for timeout in [Timeout::Instant, Timeout::Forever, Timeout::Ns(1)] {
+            assert_eq!(q.push(3, timeout), 0);
+        }
+        assert!(q.pop().is_none());
+    }
 
     #[test]
     fn basic_push_and_pop() {

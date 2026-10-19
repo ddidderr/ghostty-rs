@@ -119,3 +119,11 @@ GTK GLArea's context is only current on the main thread, so (as in Ghostty, `mus
 * apprt-gtk: GLArea render handler must set the GL viewport (the renderer reads `GL_VIEWPORT` for the surface size, R1) and the
   present blit goes to the framebuffer bound as draw FBO when `draw_frame` is called (GLArea binds its own FBO before `render`).
 * Inspector (Phase 7) fills `State::overlay_features`; `Message::Inspector` only records a flag.
+
+## Shutdown mailbox lifetime
+
+`Handle::stop` closes the renderer's bounded mailbox before signaling stop.
+Core surface teardown closes it even earlier, before joining any worker, so
+an IO resize or search callback cannot wait for a stopped renderer to drain.
+The underlying `BlockingQueue::close` broadcasts to all producers and rejects
+future sends; see `ghostty-core.md` and `DEVIANT_FIXES.md` row 43.

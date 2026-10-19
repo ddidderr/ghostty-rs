@@ -187,6 +187,9 @@ impl Thread {
         self.run(io, &mut data);
         log::debug!("starting IO thread shutdown");
 
+        // The reader can be blocked delivering replies to this queue. Once
+        // run() ends there is no consumer, so cancel sends before joining it.
+        io.mailbox().close();
         io.thread_exit(&mut data);
         log::debug!("IO thread exited");
         Ok(())

@@ -6,7 +6,7 @@
 //! full queue can hand the rejected message back to the sender, which the
 //! `BlockingQueue` cannot) and the wakeup is an eventfd ([`Wakeup`]).
 
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crossbeam_channel::{Receiver, Sender, TrySendError, bounded};
 
@@ -24,17 +24,48 @@ pub struct Mailbox {
     tx: Sender<Message>,
     rx: Receiver<Message>,
     wakeup: Wakeup,
+    cancel: Arc<Mutex<Option<Sender<()>>>>,
+    cancelled: Receiver<()>,
 }
 
 impl Mailbox {
     /// Init the SPSC mailbox (`initSPSC`).
     pub fn new() -> std::io::Result<Mailbox> {
         let (tx, rx) = bounded(CAPACITY);
+        let (cancel, cancelled) = bounded(0);
         Ok(Mailbox {
             tx,
             rx,
             wakeup: Wakeup::new()?,
+            cancel: Arc::new(Mutex::new(Some(cancel))),
+            cancelled,
         })
+    }
+
+    /// Permanently reject sends and release every blocked producer, even though
+    /// mailbox clones still own receivers. Queued messages remain drainable.
+    /// A send selected concurrently with close may finish enqueueing; calls
+    /// after close prefer cancellation even when the queue has room.
+    pub fn close(&self) {
+        self.cancel
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+    }
+
+    fn try_send_inner(&self, msg: Message) -> Result<(), TrySendError<Message>> {
+        crossbeam_channel::select_biased! {
+            recv(self.cancelled) -> _ => Err(TrySendError::Disconnected(msg)),
+            send(self.tx, msg) -> result => result.map_err(|e| TrySendError::Disconnected(e.0)),
+            default => Err(TrySendError::Full(msg)),
+        }
+    }
+
+    fn send_or_cancel(&self, msg: Message) {
+        crossbeam_channel::select_biased! {
+            recv(self.cancelled) -> _ => {},
+            send(self.tx, msg) -> _ => {},
+        }
     }
 
     /// The wakeup the IO thread waits on.
@@ -45,20 +76,19 @@ impl Mailbox {
     /// Sends the given message without notifying there are messages.
     ///
     /// If the queue is full this wakes up the IO thread so it can make room
-    /// and then blocks until the message is queued. Do NOT call this while
-    /// holding the terminal lock if the queue may be full (the IO thread may
+    /// and then blocks until queued or closed. Do NOT call this while holding
+    /// the terminal lock if the queue may be full (the IO thread may
     /// need the lock to make progress); use [`Mailbox::send_locked`] or
     /// [`Mailbox::try_send`] in that case.
     pub fn send(&self, msg: Message) {
-        match self.tx.try_send(msg) {
+        match self.try_send_inner(msg) {
             Ok(()) => {}
             Err(TrySendError::Full(msg)) => {
                 if let Err(err) = self.wakeup.notify() {
                     log::warn!("failed to wake up writer, data will be dropped err={err}");
                     return;
                 }
-                // Disconnected can't happen: we own a receiver too.
-                let _ = self.tx.send(msg);
+                self.send_or_cancel(msg);
             }
             Err(TrySendError::Disconnected(_)) => {}
         }
@@ -73,7 +103,7 @@ impl Mailbox {
         mutex: &'a Mutex<T>,
         guard: MutexGuard<'a, T>,
     ) -> MutexGuard<'a, T> {
-        match self.tx.try_send(msg) {
+        match self.try_send_inner(msg) {
             Ok(()) | Err(TrySendError::Disconnected(_)) => guard,
             Err(TrySendError::Full(msg)) => {
                 if let Err(err) = self.wakeup.notify() {
@@ -83,16 +113,16 @@ impl Mailbox {
                 // Unlock the renderer state so the writer thread can acquire
                 // it, then queue our message before continuing.
                 drop(guard);
-                let _ = self.tx.send(msg);
+                self.send_or_cancel(msg);
                 mutex.lock().unwrap_or_else(PoisonError::into_inner)
             }
         }
     }
 
     /// Queue without ever blocking. Returns the message back if the queue is
-    /// full.
+    /// full or closed.
     pub fn try_send(&self, msg: Message) -> Result<(), Message> {
-        match self.tx.try_send(msg) {
+        match self.try_send_inner(msg) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(m) | TrySendError::Disconnected(m)) => Err(m),
         }
@@ -130,6 +160,55 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn close_releases_blocked_sends_including_locked_send() {
+        use std::time::Duration;
+        let mb = Mailbox::new().unwrap();
+        for _ in 0..CAPACITY {
+            mb.send(Message::Crash);
+        }
+        let lock = Arc::new(Mutex::new(0));
+        let (done_tx, done_rx) = crossbeam_channel::unbounded();
+        let workers: Vec<_> = [false, true]
+            .into_iter()
+            .map(|locked| {
+                let mb = mb.clone();
+                let lock = Arc::clone(&lock);
+                let done = done_tx.clone();
+                std::thread::spawn(move || {
+                    if locked {
+                        let guard = lock.lock().unwrap();
+                        let mut guard = mb.send_locked(Message::Focused(true), &lock, guard);
+                        *guard += 1;
+                    } else {
+                        mb.send(Message::Focused(false));
+                    }
+                    done.send(()).unwrap();
+                })
+            })
+            .collect();
+        assert!(done_rx.recv_timeout(Duration::from_millis(50)).is_err());
+        mb.clone().close();
+        mb.close();
+        for _ in &workers {
+            done_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert_eq!(*lock.lock().unwrap(), 1); // send_locked reacquired the lock
+        assert_eq!(mb.len(), CAPACITY); // no consumer was needed
+        assert_eq!(mb.drain().count(), CAPACITY);
+        assert!(matches!(
+            mb.try_send(Message::Focused(true)),
+            Err(Message::Focused(true))
+        ));
+        mb.send(Message::Crash);
+        let guard = lock.lock().unwrap();
+        drop(mb.send_locked(Message::Crash, &lock, guard));
+        assert!(mb.is_empty());
+    }
 
     #[test]
     fn send_pop_order() {

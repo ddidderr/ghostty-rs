@@ -114,3 +114,12 @@ argument only mattered on macOS; 2 darwin tests skipped). Zig has no tests in Te
 * macOS `login(1)` / Windows branches of `execCommand` not ported (Linux only).
 * ghostty_terminal `StreamHandler` writes `Terminal` API through `&mut Terminal` borrowed per read; parser state
   (`Parser`, `Utf8Decoder`) persists in `TerminalStream`.
+
+## Shutdown cancellation
+
+The owning core surface closes its worker destinations before any join
+(`ghostty-core.md`, Surface shutdown). `Mailbox::close` wakes blocked sends
+without needing a consumer to drain, including the `send_locked` path. The IO
+loop also closes this mailbox before `thread_exit` joins the PTY reader.
+This prevents reply outbox delivery from depending on an already-stopped IO
+consumer. Accepted messages remain drainable; shutdown rejects further sends.

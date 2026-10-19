@@ -104,7 +104,8 @@ pub struct Handle {
 
 impl Handle {
     /// Push a message. Returns false if the mailbox was full (and `timeout`
-    /// elapsed). This does NOT wake the thread; call [`Handle::wakeup`]
+    /// elapsed) or shutdown closed it. This does NOT wake the thread; call
+    /// [`Handle::wakeup`]
     /// (Zig: `mailbox.push(msg, .{.forever}); thread.wakeup.notify()`).
     pub fn push(&self, msg: Message, timeout: Timeout) -> bool {
         self.mailbox.push(msg, timeout) > 0
@@ -130,6 +131,7 @@ impl Handle {
 
     /// Stop the renderer on the next loop iteration.
     pub fn stop(&self) {
+        self.mailbox.close();
         let _ = self.stop.try_send(());
     }
 }

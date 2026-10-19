@@ -45,3 +45,41 @@ Dev screenshot: `GHOSTTY_DEBUG_SCREENSHOT=/abs/out.png [GHOSTTY_DEBUG_SCREENSHOT
 Verified manually: window opens on Wayland and X11, shell prompt and SGR colored output render (target/screenshots/frame.png, shell.png), child exit closes window, clean shutdown.
 NOT verified: keyboard input end-to-end (no way to inject keys into the window here; xdotool/niri did not deliver), mouse, clipboard, IME, splits/tabs.
 Known warnings at runtime: `unimplemented action=CellSize` (same as Zig GTK), cgroup scope creation fails with UnixProcessIdUnknown in this sandbox (non-fatal).
+
+## Surface shutdown and bounded message delivery
+
+`Surface::drop` first cancels the surface's `app::MailboxScope`, then closes
+its IO and renderer queues, before joining search, renderer, and IO threads.
+The IO thread joins its reader after signaling the reader quit pipe. This
+ordering breaks the dependency cycle in `ghostty-hang.269303`: UI joins IO,
+IO joins reader, reader waits to enqueue `SetTitle` into the full UI mailbox.
+The quit pipe alone cannot interrupt a reader inside a mailbox send.
+
+- App layer: every worker-facing UI sender (renderer host, IO, reader, search)
+  carries the same surface cancellation receiver. Dropping the scope's sole
+  sender broadcasts cancellation to all waiting sends. The global UI queue
+  remains bounded at 64 and other surfaces' scopes stay active.
+- IO layer: `Mailbox::close` disconnects a shared cancellation channel;
+  `send`, `send_locked`, and `try_send` respect it. The locked variant still
+  reacquires its terminal guard after cancellation. The IO consumer also closes
+  its queue on loop exit before backend teardown joins the reader.
+- Renderer layer: `BlockingQueue::close` sets a mutex-protected terminal state
+  and broadcasts its condvar; both indefinite and timed pushes return zero.
+  Renderer `Handle::stop` closes its queue as well.
+
+No queue enlargement, timeout polling, or event-loop reentry is needed.
+Already-enqueued messages remain drainable. Crossbeam sends already selected
+concurrently with close may finish enqueueing; they cannot remain blocked.
+Messages for a closing surface can be discarded; normal live-surface ordering
+and backpressure remain unchanged. This addresses full-mailbox **surface
+teardown**, not every possible runtime backpressure cycle or driver hang.
+
+Regression: `tests/e2e_shutdown.rs` fills the UI queue, has a real child emit
+an OSC title, observes that the reader parsed it, and drops the real surface
+without pumping the UI, both with and without an active search. A subprocess
+watchdog detects a stuck join. Removing the pre-join cancellation reproduces
+the deadlock at teardown; restoring it completes both cases in about 0.2 s. Run with
+`LIBGL_ALWAYS_SOFTWARE=1 cargo test -p ghostty-core --test e2e_shutdown` on a
+machine with headless Mesa EGL. Queue unit tests cover broadcast cancellation,
+timed/indefinite sends, future rejection, retained messages, and scope isolation.
+See `DEVIANT_FIXES.md` row 43; this is separate from the original NVIDIA crash.
