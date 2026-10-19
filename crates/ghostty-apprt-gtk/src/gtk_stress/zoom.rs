@@ -81,6 +81,7 @@ struct Session {
     created: Instant,
     until: Option<Instant>,
     corrections: u8,
+    exact_size: bool,
 }
 
 #[derive(Default)]
@@ -93,14 +94,23 @@ enum Phase {
 
 #[derive(Default)]
 pub(super) struct Cycle {
+    id: usize,
     phase: Phase,
 }
 
 impl Cycle {
+    pub(super) fn new(id: usize) -> Self {
+        Self {
+            id,
+            ..Self::default()
+        }
+    }
+
     fn normal(&mut self, random: &mut Random, now: Instant) {
+        let id = self.id;
         let duration = normal_duration(random);
         eprintln!(
-            "GTK-STRESS phase=normal duration-ms={}",
+            "GTK-STRESS window={id} phase=normal duration-ms={}",
             duration.as_millis()
         );
         self.phase = Phase::Normal(now + duration);
@@ -114,6 +124,7 @@ impl Cycle {
         step: &mut u64,
         now: Instant,
     ) -> Option<Duration> {
+        let id = self.id;
         if let Phase::Normal(until) = self.phase {
             if now < until {
                 return None;
@@ -124,12 +135,12 @@ impl Cycle {
         if matches!(self.phase, Phase::Begin) {
             // Close a spare tab first if at the cap; never close the last one.
             if view.n_pages() >= MAX_TABS as i32 {
-                eprintln!("GTK-STRESS phase=zoom-setup action=close-spare-tab");
+                eprintln!("GTK-STRESS window={id} phase=zoom-setup action=close-spare-tab");
                 view.close_page(&view.nth_page(0));
                 return Some(SETTLE);
             }
             eprintln!(
-                "GTK-STRESS phase=zoom-setup action=new-tab target-texture={TEXTURE_WIDTH}x{TEXTURE_HEIGHT}"
+                "GTK-STRESS window={id} phase=zoom-setup action=new-tab target-texture={TEXTURE_WIDTH}x{TEXTURE_HEIGHT}"
             );
             window.new_tab(window.get_active_surface().as_ref());
             let Some(tab) = view
@@ -146,6 +157,7 @@ impl Cycle {
                 created: now,
                 until: None,
                 corrections: 0,
+                exact_size: false,
             });
             return Some(SETTLE);
         }
@@ -158,7 +170,7 @@ impl Cycle {
                 .find(|p| p.child() == tab)
         });
         let Some(page) = page else {
-            eprintln!("GTK-STRESS phase=zoom-aborted reason=tab-removed");
+            eprintln!("GTK-STRESS window={id} phase=zoom-aborted reason=tab-removed");
             self.normal(random, now);
             return Some(SETTLE);
         };
@@ -171,9 +183,11 @@ impl Cycle {
         if session.until.is_some_and(|until| now >= until) {
             if split.get_is_zoomed() {
                 *step += 1;
-                eprintln!("GTK-STRESS step={step} phase=zoom-end action=Zoom zoomed=true");
+                eprintln!(
+                    "GTK-STRESS window={id} step={step} phase=zoom-end action=Zoom zoomed=true"
+                );
                 if let Err(error) = split.activate_action("split-tree.zoom", None) {
-                    eprintln!("GTK-STRESS final unzoom failed: {error}");
+                    eprintln!("GTK-STRESS window={id} final unzoom failed: {error}");
                 }
             }
             self.normal(random, now);
@@ -181,7 +195,7 @@ impl Cycle {
         }
         if session.until.is_none() && now.duration_since(session.created) > Duration::from_secs(10)
         {
-            eprintln!("GTK-STRESS phase=zoom-aborted reason=setup-timeout");
+            eprintln!("GTK-STRESS window={id} phase=zoom-aborted reason=setup-timeout");
             self.normal(random, now);
             return Some(SETTLE);
         }
@@ -194,19 +208,19 @@ impl Cycle {
                 let direction = if panes == 1 { "right" } else { "down" };
                 *step += 1;
                 eprintln!(
-                    "GTK-STRESS step={step} phase=zoom-setup panes={panes} action=Split direction={direction}"
+                    "GTK-STRESS window={id} step={step} phase=zoom-setup panes={panes} action=Split direction={direction}"
                 );
                 surface.grab_focus();
                 if let Err(error) =
                     split.activate_action("split-tree.new-split", Some(&direction.to_variant()))
                 {
-                    eprintln!("GTK-STRESS zoom-setup split failed: {error}");
+                    eprintln!("GTK-STRESS window={id} zoom-setup split failed: {error}");
                 }
             }
             return Some(SETTLE);
         }
         if panes < 3 {
-            eprintln!("GTK-STRESS phase=zoom-aborted reason=panes-removed");
+            eprintln!("GTK-STRESS window={id} phase=zoom-aborted reason=panes-removed");
             self.normal(random, now);
             return Some(SETTLE);
         }
@@ -250,34 +264,47 @@ impl Cycle {
                 let h = (split.height() + 2 * (TEXTURE_HEIGHT - height) / scale).clamp(1, 16384);
                 session.corrections += 1;
                 eprintln!(
-                    "GTK-STRESS phase=zoom-sizing measured={width}x{height} scale={scale} request={w}x{h} attempt={}",
+                    "GTK-STRESS window={id} phase=zoom-sizing measured={width}x{height} scale={scale} request={w}x{h} attempt={}",
                     session.corrections
                 );
                 split.set_size_request(w, h);
                 return Some(SETTLE);
             }
             eprintln!(
-                "GTK-STRESS phase=zoom duration-ms=10000 panes={panes} surface={:?} texture={width}x{height} target={TEXTURE_WIDTH}x{TEXTURE_HEIGHT} exact={matched} scale={scale} settle-ms=500",
+                "GTK-STRESS window={id} phase=zoom duration-ms=10000 panes={panes} surface={:?} texture={width}x{height} target={TEXTURE_WIDTH}x{TEXTURE_HEIGHT} exact={matched} scale={scale} settle-ms=500",
                 target.id()
             );
             if !matched {
                 eprintln!(
-                    "GTK-STRESS size-mismatch: GTK allocation/scale prevented exact texture size; use GDK_SCALE=1 for odd pixel dimensions"
+                    "GTK-STRESS window={id} size-mismatch: GTK allocation/scale prevented exact texture size; use GDK_SCALE=1 for odd pixel dimensions"
                 );
             }
             session.until = Some(now + ZOOM_DURATION);
+            session.exact_size = matched;
             return Some(Duration::from_millis(500));
+        }
+        // With several windows rendering, GTK can still be allocating the
+        // restored dividers after our sampled pause. Preserve the calibrated
+        // size at every maximize without forcing GL or altering split ratios.
+        if session.exact_size
+            && !split.get_is_zoomed()
+            && (width, height) != (TEXTURE_WIDTH, TEXTURE_HEIGHT)
+        {
+            eprintln!(
+                "GTK-STRESS window={id} phase=zoom-settle texture={width}x{height} target={TEXTURE_WIDTH}x{TEXTURE_HEIGHT}"
+            );
+            return Some(SETTLE);
         }
         let delay = zoom_delay(random);
         *step += 1;
         eprintln!(
-            "GTK-STRESS step={step} phase=zoom panes={panes} zoomed={} surface={:?} texture={width}x{height} action=Zoom delay-ms={}",
+            "GTK-STRESS window={id} step={step} phase=zoom panes={panes} zoomed={} surface={:?} texture={width}x{height} action=Zoom delay-ms={}",
             split.get_is_zoomed(),
             target.id(),
             delay.as_millis()
         );
         if let Err(error) = split.activate_action("split-tree.zoom", None) {
-            eprintln!("GTK-STRESS zoom action failed: {error}");
+            eprintln!("GTK-STRESS window={id} zoom action failed: {error}");
         }
         // Wake at the phase deadline even if the sampled pause would cross it.
         Some(

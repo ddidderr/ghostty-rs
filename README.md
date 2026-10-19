@@ -122,7 +122,11 @@ cargo build --profile release --bin ghostty
 GHOSTTY_GTK_STRESS=1 ./target/release/ghostty 2>gtk-stress.log
 ```
 
-After a two-second startup delay, the mode alternates two phases:
+Stress mode opens **four windows in one process**. Windows 1–3 run independent
+random streams and phase timers; window 4 is the original startup window,
+left idle with its ordinary shell and renderer. The three active windows
+start after 2–2.8 seconds, staggered using their own random streams, and each
+alternates two phases:
 
 - **Zoom:** prepare a fresh tab with three panes (one large pane beside two
   smaller panes). Calibrate the smaller pane's actual GL area to **629×245
@@ -135,7 +139,9 @@ After a two-second startup delay, the mode alternates two phases:
 
 The zoom layout uses temporary GTK size requests and restores ordinary
 expansion before normal stress. Each zoom logs the measured GL-area size;
-`exact=true` at phase start confirms the 629×245 target. An odd physical size
+`exact=true` at phase start confirms the 629×245 target. Before maximizing
+again, an exact-sized session waits out intermediate divider allocations
+after unzoom (`phase=zoom-settle` in the log). An odd physical size
 cannot be represented by integer GTK allocations at scale 2: use
 `GDK_SCALE=1 GHOSTTY_GTK_STRESS=1 ./target/release/ghostty` for the original
 scale. Theme or compositor constraints can also prevent the requested size;
@@ -143,25 +149,29 @@ the driver logs a mismatch explicitly and continues. Setup times out after
 10 seconds so an unready pane cannot permanently stop the cycle.
 
 The driver yields to GTK between operations, keeps at least one pane per tab
-and one tab in the window, and caps growth at
-six tabs and eight panes per tab. Zoom gets extra weight. Close confirmations
+and one tab per active window, and caps growth at six tabs per window and
+eight panes per tab. Zoom gets extra weight. Close confirmations
 for panes and tabs are automatically accepted in this test process.
 
 The mode forces a separate application instance and an initial window, even
 when the config enables single-instance operation or disables the initial
-window. It controls only its first window. Close that window or press Ctrl+C
-in the launching terminal to stop. Without `GHOSTTY_GTK_STRESS=1`, startup and
-close confirmation behavior are unchanged.
+window. The drivers retain their original window assignments: closing one
+does not redirect its operations to another or recreate it. Close all four
+windows or press Ctrl+C in the launching terminal to stop. Without
+`GHOSTTY_GTK_STRESS=1`, startup and close confirmation behavior are unchanged.
 
-Operations are written to stderr before execution. The startup line records
-the seed; normal actions include tab/pane counts and zoom state, while zoom
-actions include the target surface and measured pixel dimensions. Keep that
+Operations are written to stderr before execution and tagged `window=1`,
+`window=2`, or `window=3`. Startup records the master seed and each window's
+derived seed. A read-only `window=4 role=idle` status line every five seconds
+reports the idle window's tab/pane counts. Normal actions include tab/pane
+counts and zoom state, while zoom actions include the target surface and
+measured pixel dimensions. Keep that
 log with any core. During normal stress, if readiness or focus prevents
 progress for one second, the driver logs the wait reason and tries focusing
 a mapped, initialized pane.
 If none is available, it switches tabs (or requests layout for a single tab).
 Recovery uses normal GTK focus/layout operations and runs at most once per
-second. `GTK-STRESS wait`, `target`, `recover`, and `resumed` lines record what
+second. The `wait`, `target`, `recover`, and `resumed` records show what
 happened; unresolved waits remain visible. These retries cannot recover a
 blocked GTK main thread. Optional controls:
 
@@ -173,9 +183,11 @@ GHOSTTY_GTK_STRESS=1 GHOSTTY_GTK_STRESS_SEED=42 \
 The normal phase's default interval is randomly 5–15 ms; the override sets
 the lower bound, with an upper bound three times that value (minimum 1 ms).
 The driver polls every millisecond; rendering and initialization can delay actions.
-The seed defaults to a generated value printed at startup. A seed repeats
-random choices for the same observed state, not asynchronous rendering or
-process timing. Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`
+The master seed defaults to a generated value printed at startup and derives
+three distinct per-window seeds. Advancing one window never consumes another
+window's random choices. A seed repeats random choices for the same observed
+state, not asynchronous rendering or process timing.
+Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`
 and its `gtk_stress/zoom.rs` phase controller.
 
 ### GTK split callback regressions

@@ -31,11 +31,23 @@ See entry 42 in `../DEVIANT_FIXES.md` and the README's test command.
 `GHOSTTY_GTK_STRESS=1` drives the real runtime after normal config and startup.
 `class/application.rs` isolates the test process, creates its initial window,
 starts the timer from `gtk_stress.rs`, and removes it when the run loop ends.
-The timer selects bounded random actions from current tab/pane counts and
+The timer waits for the asynchronously created startup window, reserves it
+as idle window 4, then creates three windows through `Application::new_window`
+so each gets normal config bindings, size initialization, and shell startup.
+`Group` owns three `Driver` states with separate seeds, RNGs, step counters,
+wait/recovery state, phase controllers, and next-action deadlines. A single
+1 ms GLib source visits each ready driver; long pauses yield to other drivers.
+`window_seeds` uses successive SplitMix outputs for distinct reproducible
+streams. Startup is staggered by 0–799 ms after the two-second grace period.
+Window assignments use weak references and never adopt a replacement when
+one closes. The idle window has no driver; five-second status reads report
+its unchanged tab/pane counts without sending actions or focus changes.
+
+Each driver selects bounded random actions from current tab/pane counts and
 calls existing `SplitTree`, `Surface`, `Window`, and `TabView` handlers.
 `class/{split_tree,window}.rs` accept close prompts in this mode while retaining
-their normal teardown paths. The driver uses weak window references and logs
-each operation before execution. `WaitState` gives asynchronous startup a
+their normal teardown paths. All driver, recovery, and zoom records carry a
+window ID and log operations before execution. `WaitState` gives startup a
 one-second grace period, then logs each readiness wait at most once per second.
 `recover_target` focuses a mapped, initialized pane from the current model,
 or selects the next tab if none is ready; a single tab requests GTK layout.
@@ -64,6 +76,10 @@ Both setup failures and size mismatches are logged; setup has a 10-second
 deadline. Exact sizing is verified rather than assumed, and scale factors
 that cannot represent odd physical dimensions are reported. Ordinary runs
 without the stress environment variable do not use this controller.
+After an exact calibration, each maximize also waits for the small pane to
+return to 629×245; simultaneous window rendering can leave GTK's divider
+allocation temporarily unsettled. This wait yields to all other drivers and
+remains bounded by the zoom phase deadline.
 
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
 - `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,
