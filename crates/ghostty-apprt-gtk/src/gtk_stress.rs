@@ -14,6 +14,8 @@ use gtk::glib;
 
 use crate::class::{application::Application, split_tree::SplitTree, tab::Tab, window::Window};
 
+mod zoom;
+
 const MAX_TABS: usize = 6;
 const MAX_PANES: usize = 8;
 
@@ -173,6 +175,7 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
     let mut random = Random(seed);
     let mut step = 0u64;
     let mut wait = WaitState::default();
+    let mut cycle = zoom::Cycle::default();
     let mut next_action = Instant::now() + Duration::from_secs(2);
     Some(glib::timeout_add_local(
         Duration::from_millis(1),
@@ -200,6 +203,10 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
                 wait.report(now, step, "window-unmapped-or-gone");
                 return glib::ControlFlow::Continue;
             };
+            if let Some(delay) = cycle.tick(&window, &mut random, &mut step, now) {
+                next_action = now + delay;
+                return glib::ControlFlow::Continue;
+            }
             let view = window.tab_view();
             let Some(page) = view.selected_page() else {
                 wait.report(now, step, "no-selected-tab");
@@ -255,7 +262,7 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
             // stderr is independent of the user's log filters and records the
             // attempted operation before a synchronous GTK/NVIDIA crash can occur.
             eprintln!(
-                "GTK-STRESS step={step} seed={seed} tabs={tabs} tab={selected} panes={panes} zoomed={} surface={:?} action={action:?} direction={direction} target-tab={target_tab} delay-ms={delay}",
+                "GTK-STRESS step={step} phase=normal seed={seed} tabs={tabs} tab={selected} panes={panes} zoomed={} surface={:?} action={action:?} direction={direction} target-tab={target_tab} delay-ms={delay}",
                 split.get_is_zoomed(),
                 surface.id(),
             );

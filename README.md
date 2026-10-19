@@ -122,10 +122,28 @@ cargo build --profile release --bin ghostty
 GHOSTTY_GTK_STRESS=1 ./target/release/ghostty 2>gtk-stress.log
 ```
 
-After a two-second startup delay, the mode endlessly creates/closes panes,
-toggles pane zoom, creates/closes tabs, and switches tabs/pane focus through
-the application's existing handlers. It yields to GTK between operations,
-keeps at least one pane per tab and one tab in the window, and caps growth at
+After a two-second startup delay, the mode alternates two phases:
+
+- **Zoom:** prepare a fresh tab with three panes (one large pane beside two
+  smaller panes). Calibrate the smaller pane's actual GL area to **629×245
+  physical pixels**, matching the texture in the original NVIDIA crash core.
+  Pause 500 ms, then maximize/restore that same pane for about 10 seconds.
+  Most pauses are 80–300 ms; about one quarter are 700–1,899 ms.
+- **Normal:** for a random 5–10 seconds, rapidly create/close panes and tabs,
+  toggle zoom, and switch tabs/pane focus through the existing handlers.
+  Then prepare another zoom phase. At the tab cap, close a spare tab first.
+
+The zoom layout uses temporary GTK size requests and restores ordinary
+expansion before normal stress. Each zoom logs the measured GL-area size;
+`exact=true` at phase start confirms the 629×245 target. An odd physical size
+cannot be represented by integer GTK allocations at scale 2: use
+`GDK_SCALE=1 GHOSTTY_GTK_STRESS=1 ./target/release/ghostty` for the original
+scale. Theme or compositor constraints can also prevent the requested size;
+the driver logs a mismatch explicitly and continues. Setup times out after
+10 seconds so an unready pane cannot permanently stop the cycle.
+
+The driver yields to GTK between operations, keeps at least one pane per tab
+and one tab in the window, and caps growth at
 six tabs and eight panes per tab. Zoom gets extra weight. Close confirmations
 for panes and tabs are automatically accepted in this test process.
 
@@ -135,10 +153,12 @@ window. It controls only its first window. Close that window or press Ctrl+C
 in the launching terminal to stop. Without `GHOSTTY_GTK_STRESS=1`, startup and
 close confirmation behavior are unchanged.
 
-Every attempted operation is written to stderr before execution, including
-the seed, step, tab/pane counts, zoom state, and selected operation. Keep that
-log with any core. If pane readiness or focus prevents progress for one second,
-the driver logs the wait reason and tries focusing a mapped, initialized pane.
+Operations are written to stderr before execution. The startup line records
+the seed; normal actions include tab/pane counts and zoom state, while zoom
+actions include the target surface and measured pixel dimensions. Keep that
+log with any core. During normal stress, if readiness or focus prevents
+progress for one second, the driver logs the wait reason and tries focusing
+a mapped, initialized pane.
 If none is available, it switches tabs (or requests layout for a single tab).
 Recovery uses normal GTK focus/layout operations and runs at most once per
 second. `GTK-STRESS wait`, `target`, `recover`, and `resumed` lines record what
@@ -150,12 +170,13 @@ GHOSTTY_GTK_STRESS=1 GHOSTTY_GTK_STRESS_SEED=42 \
   GHOSTTY_GTK_STRESS_INTERVAL_MS=2 ./target/release/ghostty 2>gtk-stress.log
 ```
 
-The default interval is randomly 5–15 ms; the override sets the lower
-bound, with an upper bound three times that value (minimum lower bound 1 ms).
+The normal phase's default interval is randomly 5–15 ms; the override sets
+the lower bound, with an upper bound three times that value (minimum 1 ms).
 The driver polls every millisecond; rendering and initialization can delay actions.
 The seed defaults to a generated value printed at startup. A seed repeats
 random choices for the same observed state, not asynchronous rendering or
-process timing. Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`.
+process timing. Implementation: `crates/ghostty-apprt-gtk/src/gtk_stress.rs`
+and its `gtk_stress/zoom.rs` phase controller.
 
 ### GTK split callback regressions
 

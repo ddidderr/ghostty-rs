@@ -46,6 +46,25 @@ state, recovery attempts, and resumed progress are logged; a blocked main
 thread still needs external diagnosis. See the root README for controls and
 limits.
 
+`gtk_stress/zoom.rs` owns the alternating phase controller. Each zoom session
+creates a tab, splits right then down, and waits for all three panes to be
+ready before selecting a smallest pane. Temporary size requests on the
+split container are calibrated against `GtkGLArea` width/height times GTK's
+scale factor (the texture allocation rule in GTK). The original core's
+texture was 629×245 BGRA8 with stride 2516, as recorded in the sibling
+`gtkbug_reproducer/OBSERVATIONS.md`; the textual core backtrace alone does
+not include dimensions. The full zoomed area remains larger, so toggling
+still performs the real widget teardown/rebuild and GL resize path.
+
+The session holds weak tab/surface references and restores saved layout
+requests/alignment when it ends. It waits 500 ms after calibration, zooms
+the same small pane for 10 seconds with 80–300 ms pauses and sporadic
+700–1,899 ms pauses, then releases control to normal stress for 5–10 seconds.
+Both setup failures and size mismatches are logged; setup has a 10-second
+deadline. Exact sizing is verified rather than assumed, and scale factors
+that cannot represent odd physical dimensions are reported. Ordinary runs
+without the stress environment variable do not use this controller.
+
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
 - `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,
   push_message(AppMessage::{OpenConfig,PresentSurface(id),NewWindow}), new_surface(id, config, rt_app, rt_surface)
