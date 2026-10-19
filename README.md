@@ -128,25 +128,18 @@ left idle with its ordinary shell and renderer. The three active windows
 start after 2–2.8 seconds, staggered using their own random streams, and each
 alternates two phases:
 
-- **Zoom:** prepare a fresh tab with three panes (one large pane beside two
-  smaller panes). Calibrate the smaller pane's actual GL area to **629×245
-  physical pixels**, matching the texture in the original NVIDIA crash core.
-  Pause 500 ms, then maximize/restore that same pane for about 10 seconds.
-  Most pauses are 80–300 ms; about one quarter are 700–1,899 ms.
 - **Normal:** for a random 5–10 seconds, rapidly create/close panes and tabs,
   toggle zoom, and switch tabs/pane focus through the existing handlers.
-  Then prepare another zoom phase. At the tab cap, close a spare tab first.
+- **Zoom:** for about 10 seconds, maximize/restore the currently active pane
+  in whatever layout the normal phase left behind. Most pauses are 80–300 ms;
+  about one quarter are 700–1,899 ms.
 
-The zoom layout uses temporary GTK size requests and restores ordinary
-expansion before normal stress. Each zoom logs the measured GL-area size;
-`exact=true` at phase start confirms the 629×245 target. Before maximizing
-again, an exact-sized session waits out intermediate divider allocations
-after unzoom (`phase=zoom-settle` in the log). An odd physical size
-cannot be represented by integer GTK allocations at scale 2: use
-`GDK_SCALE=1 GHOSTTY_GTK_STRESS=1 ./target/release/ghostty` for the original
-scale. Theme or compositor constraints can also prevent the requested size;
-the driver logs a mismatch explicitly and continues. Setup times out after
-10 seconds so an unready pane cannot permanently stop the cycle.
+Each window starts in the normal phase. Switching phases preserves existing
+panes, tabs, focus, sizes, and zoom state. The zoom phase only toggles zoom;
+there is no dedicated tab, pane setup, or target GL-area size. Each zoom logs
+the measured GL-area size. If the selected tab has fewer than two panes or
+its active surface is not ready, the zoom phase waits, then returns to normal
+operations when its timer expires.
 
 The driver yields to GTK between operations, keeps at least one pane per tab
 and one tab per active window, and caps growth at six tabs per window and
