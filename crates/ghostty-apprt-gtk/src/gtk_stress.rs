@@ -12,10 +12,75 @@ use adw::prelude::*;
 use ghostty_datastruct::split_tree::Goto;
 use gtk::glib;
 
-use crate::class::{application::Application, tab::Tab, window::Window};
+use crate::class::{application::Application, split_tree::SplitTree, tab::Tab, window::Window};
 
 const MAX_TABS: usize = 6;
 const MAX_PANES: usize = 8;
+
+/// Report sustained waits at most once a second, not on every 1 ms poll.
+#[derive(Default)]
+struct WaitState {
+    since: Option<Instant>,
+    reported: Option<Instant>,
+}
+
+impl WaitState {
+    fn report(&mut self, now: Instant, step: u64, reason: &str) -> bool {
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(self.reported.unwrap_or(since)) < Duration::from_secs(1) {
+            return false;
+        }
+        self.reported = Some(now);
+        eprintln!(
+            "GTK-STRESS wait step={step} reason={reason} elapsed-ms={}",
+            now.duration_since(since).as_millis(),
+        );
+        true
+    }
+
+    fn resumed(&mut self, now: Instant, step: u64) {
+        if let Some(since) = self.since.take()
+            && self.reported.take().is_some()
+        {
+            eprintln!(
+                "GTK-STRESS resumed step={step} waited-ms={}",
+                now.duration_since(since).as_millis(),
+            );
+        }
+    }
+}
+
+/// A new split may remain unmapped (and never initialize its core) while
+/// other panes are usable. After a sustained wait, do what a user clicking
+/// a visible pane would do. Never initialize a core or force GL realization.
+fn recover_target(window: &Window, split: &SplitTree, step: u64) {
+    if let Some(tree) = split.get_tree()
+        && let Some(entry) = tree.iterator().find(|entry| {
+            entry.view.is_mapped() && entry.view.is_realized() && entry.view.core().is_some()
+        })
+    {
+        eprintln!(
+            "GTK-STRESS recover step={step} action=focus-ready-pane surface={:?}",
+            entry.view.id(),
+        );
+        entry.view.grab_focus();
+        return;
+    }
+
+    // A tab without a usable pane need not stop the entire stress session.
+    // Selecting another tab lets GTK map it normally; retry on the next tick.
+    let view = window.tab_view();
+    if view.n_pages() > 1
+        && let Some(page) = view.selected_page()
+    {
+        let next = (view.page_position(&page) + 1) % view.n_pages();
+        eprintln!("GTK-STRESS recover step={step} action=switch-tab target-tab={next}");
+        view.set_selected_page(&view.nth_page(next));
+    } else {
+        eprintln!("GTK-STRESS recover step={step} action=request-layout");
+        window.queue_resize();
+    }
+}
 
 /// Also isolates the application from existing single-instance sessions and
 /// accepts pane/tab close confirmations in this disposable test process.
@@ -107,16 +172,19 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
     let mut attached = false;
     let mut random = Random(seed);
     let mut step = 0u64;
+    let mut wait = WaitState::default();
     let mut next_action = Instant::now() + Duration::from_secs(2);
     Some(glib::timeout_add_local(
         Duration::from_millis(1),
         move || {
+            let now = Instant::now();
             // Stay registered until run_loop removes us, including if the user
             // manually closes the target window. Do not switch to another window.
-            if Instant::now() < next_action {
+            if now < next_action {
                 return glib::ControlFlow::Continue;
             }
             let Some(app) = app.upgrade() else {
+                wait.report(now, step, "application-gone");
                 return glib::ControlFlow::Continue;
             };
             if !attached
@@ -129,28 +197,49 @@ pub(crate) fn start(app: &Application) -> Option<glib::SourceId> {
                 attached = true;
             }
             let Some(window) = window.upgrade().filter(WidgetExt::is_mapped) else {
+                wait.report(now, step, "window-unmapped-or-gone");
                 return glib::ControlFlow::Continue;
             };
             let view = window.tab_view();
             let Some(page) = view.selected_page() else {
+                wait.report(now, step, "no-selected-tab");
                 return glib::ControlFlow::Continue;
             };
             let Ok(tab) = page.child().downcast::<Tab>() else {
+                wait.report(now, step, "selected-child-not-tab");
                 return glib::ControlFlow::Continue;
             };
             let split = tab.get_split_tree();
             let Some(surface) = split.get_active_surface() else {
+                if wait.report(now, step, "no-active-surface") {
+                    recover_target(&window, &split, step);
+                }
                 return glib::ControlFlow::Continue;
             };
             // Wait for asynchronous tree attachment and normal surface startup.
             if !surface.is_realized() || surface.core().is_none() {
+                if wait.report(now, step, "surface-not-ready") {
+                    eprintln!(
+                        "GTK-STRESS target surface={:?} realized={} mapped={} core={} zoomed={} width={} height={}",
+                        surface.id(),
+                        surface.is_realized(),
+                        surface.is_mapped(),
+                        surface.core().is_some(),
+                        split.get_is_zoomed(),
+                        surface.width(),
+                        surface.height(),
+                    );
+                    recover_target(&window, &split, step);
+                }
                 return glib::ControlFlow::Continue;
             }
             let panes = split.get_tree().map_or(0, |tree| tree.iterator().count());
             if panes == 0 {
+                wait.report(now, step, "empty-tree");
                 return glib::ControlFlow::Continue;
             }
             let tabs = view.n_pages() as usize;
+            wait.resumed(now, step);
             let actions = choices(tabs, panes);
             let action = actions[random.index(actions.len())];
             let direction = ["left", "right", "up", "down"][random.index(4)];
@@ -201,11 +290,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn readiness_recovery_is_throttled_and_restarts_after_progress() {
+        let mut wait = WaitState::default();
+        let start = Instant::now();
+        // One-second grace period lets normal asynchronous startup finish.
+        for ms in 0..1000 {
+            assert!(!wait.report(start + Duration::from_millis(ms), 79, "surface-not-ready"));
+        }
+        assert!(wait.report(start + Duration::from_secs(1), 79, "surface-not-ready"));
+        // Changing wait reasons must not defeat the recovery/log rate limit.
+        for ms in 1001..2000 {
+            assert!(!wait.report(start + Duration::from_millis(ms), 79, "no-active-surface"));
+        }
+        assert!(wait.report(start + Duration::from_secs(2), 79, "no-active-surface"));
+        wait.resumed(start + Duration::from_secs(2), 79);
+
+        let restart = start + Duration::from_secs(3);
+        assert!(!wait.report(restart, 80, "surface-not-ready"));
+        assert!(!wait.report(
+            restart + Duration::from_millis(999),
+            80,
+            "surface-not-ready"
+        ));
+        assert!(wait.report(restart + Duration::from_secs(1), 80, "surface-not-ready"));
+    }
+
+    #[test]
     fn action_choices_keep_a_session_alive_and_bound_growth() {
         for tabs in 1..=MAX_TABS {
             for panes in 1..=MAX_PANES {
                 let actions = choices(tabs, panes);
-                assert!(!actions.is_empty());
+                assert_ne!(actions, [] as [Action; 0]);
                 assert_eq!(actions.contains(&Action::CloseTab), tabs > 1);
                 assert_eq!(actions.contains(&Action::ClosePane), panes > 1);
                 assert_eq!(actions.contains(&Action::Zoom), panes > 1);

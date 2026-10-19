@@ -35,7 +35,16 @@ The timer selects bounded random actions from current tab/pane counts and
 calls existing `SplitTree`, `Surface`, `Window`, and `TabView` handlers.
 `class/{split_tree,window}.rs` accept close prompts in this mode while retaining
 their normal teardown paths. The driver uses weak window references and logs
-each operation before execution. See the root README for controls and limits.
+each operation before execution. `WaitState` gives asynchronous startup a
+one-second grace period, then logs each readiness wait at most once per second.
+`recover_target` focuses a mapped, initialized pane from the current model,
+or selects the next tab if none is ready; a single tab requests GTK layout.
+The next timer tick rechecks readiness before any random operation. This
+recovers the observed wait on a newly split, unmapped surface with no core
+without manufacturing terminal initialization or GL events. Waits, target
+state, recovery attempts, and resumed progress are logged; a blocked main
+thread still needs external diagnosis. See the root README for controls and
+limits.
 
 ## Core trait boundary (src/core.rs, authoritative spec = the file)
 - `CoreApp` (impl by ghostty-core): tick, update_config, needs_confirm_quit, color_scheme_event, perform_all_action,

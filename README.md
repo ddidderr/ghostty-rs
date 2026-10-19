@@ -137,7 +137,13 @@ close confirmation behavior are unchanged.
 
 Every attempted operation is written to stderr before execution, including
 the seed, step, tab/pane counts, zoom state, and selected operation. Keep that
-log with any core. Optional controls:
+log with any core. If pane readiness or focus prevents progress for one second,
+the driver logs the wait reason and tries focusing a mapped, initialized pane.
+If none is available, it switches tabs (or requests layout for a single tab).
+Recovery uses normal GTK focus/layout operations and runs at most once per
+second. `GTK-STRESS wait`, `target`, `recover`, and `resumed` lines record what
+happened; unresolved waits remain visible. These retries cannot recover a
+blocked GTK main thread. Optional controls:
 
 ```sh
 GHOSTTY_GTK_STRESS=1 GHOSTTY_GTK_STRESS_SEED=42 \
