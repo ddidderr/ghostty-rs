@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
 # Build Ghostty's ORIGINAL Swift macOS app (unchanged) against the Rust core.
 #
-# Ghostty's Xcode project (<ghostty>/macos/Ghostty.xcodeproj) links
+# Ghostty's Xcode project (macos/Ghostty.xcodeproj, vendored unchanged from
+# Ghostty 1.3.1 together with images/Ghostty.icon) links
 # `macos/GhosttyKit.xcframework` and bundles resources from `../zig-out/share`
 # (see the Zig build's src/build/GhosttyXcodebuild.zig). The Rust libghostty
 # exports the identical include/ghostty.h ABI, so this script produces both
 # from the Rust workspace and then runs xcodebuild, exactly like
 # `zig build -Demit-macos-app`:
-#   1. scripts/xcframework.sh  -> <ghostty>/macos/GhosttyKit.xcframework
-#   2. `just install`          -> <ghostty>/zig-out/share/{ghostty,terminfo,...}
+#   1. scripts/xcframework.sh  -> macos/GhosttyKit.xcframework
+#   2. `just install`          -> zig-out/share/{ghostty,terminfo,...}
 #   3. xcodebuild -target Ghostty -configuration <CONFIG> (clean env, like Zig)
 #
-# Usage: scripts/macos-swift-app.sh <path-to-ghostty-source> [Release|Debug|ReleaseLocal]
+# Usage: scripts/macos-swift-app.sh [Release|Debug|ReleaseLocal]
 # Runs only on macOS (Xcode required). DRY_RUN=1 prints the commands instead.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-src=${1:?usage: $0 <path-to-ghostty-source> [Release|Debug|ReleaseLocal]}
-config=${2:-Release}
-src=$(cd "$src" && pwd)
+src=$(pwd)
+config=${1:-Release}
 [ -d "$src/macos/Ghostty.xcodeproj" ] || {
     echo "error: $src/macos/Ghostty.xcodeproj not found" >&2
     exit 1

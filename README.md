@@ -21,18 +21,19 @@ client of the libghostty C API.
 
 ### The macOS app (original Swift app on the Rust core)
 
-Ghostty's macOS app stays the original Swift app, unchanged. It is wired to
-the Rust core instead of the Zig core: the Rust `libghostty` exports the
-identical `include/ghostty.h` ABI. On a Mac with Xcode:
+Ghostty's macOS app stays the original Swift app, unchanged; it is vendored
+from Ghostty 1.3.1 in `macos/` (plus `images/Ghostty.icon`, MIT, see
+`macos/LICENSE`). It is wired to the Rust core instead of the Zig core: the
+Rust `libghostty` exports the identical `include/ghostty.h` ABI. On a Mac with
+Xcode:
 
 ```sh
-just macos-swift-app ../ghostty          # Release; or: just macos-swift-app ../ghostty Debug
+just macos-swift-app                     # Release; or: just macos-swift-app Debug
 ```
 
-This builds the Rust core as `GhosttyKit.xcframework` into
-`<ghostty>/macos/`, installs the resources into `<ghostty>/zig-out/share`
-(what the Xcode project bundles) and runs `xcodebuild`, mirroring
-`zig build -Demit-macos-app`. Not runnable on this Linux machine
+This builds the Rust core as `macos/GhosttyKit.xcframework`, installs the
+resources into `zig-out/share` (what the Xcode project bundles) and runs
+`xcodebuild`, mirroring `zig build -Demit-macos-app`. Not runnable on this Linux machine
 (`DRY_RUN=1` previews the steps).
 
 ## Building and running

@@ -307,7 +307,8 @@ live-dbus *scenarios:
     scripts/live-dbus/build-rust.sh
     RUST_BIN="${RUST_BIN:-target/vp/production/ghostty}" scripts/live-dbus-test.sh {{scenarios}}
 
-# Build Ghostty's original Swift macOS app against the Rust core (macOS only;
-# DRY_RUN=1 to preview). Example: just macos-swift-app ../ghostty
-macos-swift-app src config="Release":
-    scripts/macos-swift-app.sh {{ src }} {{ config }}
+# Build Ghostty's original Swift macOS app (macos/, vendored from Ghostty 1.3.1)
+# against the Rust core (macOS only; DRY_RUN=1 to preview).
+# Example: just macos-swift-app Debug
+macos-swift-app config="Release":
+    scripts/macos-swift-app.sh {{ config }}
