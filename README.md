@@ -28,7 +28,8 @@ Rust `libghostty` exports the identical `include/ghostty.h` ABI. On a Mac with
 Xcode:
 
 ```sh
-just macos-swift-app                     # Release; or: just macos-swift-app Debug
+just macos-swift-app                     # ReleaseLocal; or: just macos-swift-app Debug
+just macos-swift-app ReleaseLocal native # host architecture only (no iOS/x86_64 slices)
 ```
 
 This builds the Rust core as `macos/GhosttyKit.xcframework`, installs the

@@ -128,13 +128,12 @@ locales OUT="target/locale":
 #                   (com.mitchellh.ghostty-debug, "Ghostty (Debug)"), which is
 #                   the id the binary uses at runtime when built with debug
 # assertions.
-install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="production": build-data docs locales
+install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="production":
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build --profile {{ PROFILE }}
     just install-lib '{{ PREFIX }}' '{{ PROFILE }}' vt
     P="${DESTDIR:-}{{ PREFIX }}"
-    BD=target/release/ghostty-build-data
     dir={{ PROFILE }}
     if [ "$dir" = dev ]; then dir=debug; fi
     # GhosttyResources.zig: Debug/ReleaseSafe get the "-debug" id and name.
@@ -146,48 +145,7 @@ install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="prod
         NAME="Ghostty (Debug)"
     fi
     install -Dm755 "target/$dir/ghostty" "$P/bin/ghostty"
-    mkdir -p "$P/share/ghostty" "$P/share/terminfo"
-    cp -R resources/shell-integration resources/themes "$P/share/ghostty/"
-    find "$P/share/ghostty/shell-integration" -name '*.md' -delete
-    find "$P/share/ghostty/themes" -name '*.md' -delete
-
-    # Terminfo: compiled database plus the textual sources.
-    cp -R resources/terminfo/. "$P/share/terminfo/"
-    $BD +terminfo > "$P/share/terminfo/ghostty.terminfo"
-    if command -v infotocap >/dev/null 2>&1; then
-        infotocap "$P/share/terminfo/ghostty.terminfo" > "$P/share/terminfo/ghostty.termcap" 2>/dev/null
-    else
-        echo "infotocap not found: skipping ghostty.termcap" >&2
-    fi
-
-    # Shell completions.
-    $BD +fish | install -Dm644 /dev/stdin "$P/share/fish/vendor_completions.d/ghostty.fish"
-    $BD +zsh | install -Dm644 /dev/stdin "$P/share/zsh/site-functions/_ghostty"
-    $BD +bash | install -Dm644 /dev/stdin "$P/share/bash-completion/completions/ghostty.bash"
-
-    # Vim and Neovim plugin files, and the sublime syntax used by bat.
-    for root in share/vim/vimfiles share/nvim/site; do
-        $BD +vim-syntax | install -Dm644 /dev/stdin "$P/$root/syntax/ghostty.vim"
-        $BD +vim-ftdetect | install -Dm644 /dev/stdin "$P/$root/ftdetect/ghostty.vim"
-        $BD +vim-ftplugin | install -Dm644 /dev/stdin "$P/$root/ftplugin/ghostty.vim"
-        $BD +vim-compiler | install -Dm644 /dev/stdin "$P/$root/compiler/ghostty.vim"
-    done
-    $BD +sublime | install -Dm644 /dev/stdin "$P/share/bat/syntaxes/ghostty.sublime-syntax"
-
-    # Docs (markdown always; html and man pages when pandoc is available).
-    for s in 1 5; do
-        install -Dm644 "target/docs/ghostty.$s.md" "$P/share/ghostty/doc/ghostty.$s.md"
-        if [ -f "target/docs/ghostty.$s" ]; then
-            install -Dm644 "target/docs/ghostty.$s.html" "$P/share/ghostty/doc/ghostty.$s.html"
-            install -Dm644 "target/docs/ghostty.$s" "$P/share/man/man$s/ghostty.$s"
-        fi
-    done
-
-    # Translations.
-    for mo in target/locale/*/LC_MESSAGES/com.mitchellh.ghostty.mo; do
-        lang=$(basename "$(dirname "$(dirname "$mo")")")
-        install -Dm644 "$mo" "$P/share/locale/$lang/LC_MESSAGES/com.mitchellh.ghostty.mo"
-    done
+    just install-resources '{{ PREFIX }}'
 
     gen() { # template out
         mkdir -p "$(dirname "$2")"
@@ -215,6 +173,64 @@ install PREFIX="/usr/local" FLATPAK="false" SYSTEM_PACKAGE="false" PROFILE="prod
         install -Dm644 "dist/icons/${pair%%:*}.png" "$ic/${pair##*:}/apps/com.mitchellh.ghostty.png"
     done
     echo "installed to $P (application id $APPID)"
+
+# Install the platform-independent resources below PREFIX (honours DESTDIR):
+# share/ghostty (shell integration, themes, docs), terminfo, shell completions,
+# vim/nvim/bat syntax, man pages and translations. This is everything the macOS
+# app bundles from zig-out/share; it does not build the GTK app.
+install-resources PREFIX="/usr/local": build-data docs locales
+    #!/usr/bin/env bash
+    set -euo pipefail
+    P="${DESTDIR:-}{{ PREFIX }}"
+    BD=target/release/ghostty-build-data
+    # Write stdin to $1, creating parent directories (portable to BSD install,
+    # which cannot create them or read stdin).
+    put() { mkdir -p "$(dirname "$1")"; cat > "$1"; chmod 644 "$1"; }
+    mkdir -p "$P/share/ghostty" "$P/share/terminfo"
+    cp -R resources/shell-integration resources/themes "$P/share/ghostty/"
+    find "$P/share/ghostty/shell-integration" -name '*.md' -delete
+    find "$P/share/ghostty/themes" -name '*.md' -delete
+
+    # Terminfo: compiled database plus the textual sources.
+    cp -R resources/terminfo/. "$P/share/terminfo/"
+    $BD +terminfo > "$P/share/terminfo/ghostty.terminfo"
+    if command -v infotocap >/dev/null 2>&1; then
+        infotocap "$P/share/terminfo/ghostty.terminfo" > "$P/share/terminfo/ghostty.termcap" 2>/dev/null
+    else
+        echo "infotocap not found: skipping ghostty.termcap" >&2
+    fi
+
+    # Shell completions.
+    $BD +fish | put "$P/share/fish/vendor_completions.d/ghostty.fish"
+    $BD +zsh | put "$P/share/zsh/site-functions/_ghostty"
+    $BD +bash | put "$P/share/bash-completion/completions/ghostty.bash"
+
+    # Vim and Neovim plugin files, and the sublime syntax used by bat.
+    for root in share/vim/vimfiles share/nvim/site; do
+        $BD +vim-syntax | put "$P/$root/syntax/ghostty.vim"
+        $BD +vim-ftdetect | put "$P/$root/ftdetect/ghostty.vim"
+        $BD +vim-ftplugin | put "$P/$root/ftplugin/ghostty.vim"
+        $BD +vim-compiler | put "$P/$root/compiler/ghostty.vim"
+    done
+    $BD +sublime | put "$P/share/bat/syntaxes/ghostty.sublime-syntax"
+
+    # Docs (markdown always; html and man pages when pandoc is available).
+    # share/man always exists: the macOS app bundles it unconditionally.
+    mkdir -p "$P/share/man"
+    for s in 1 5; do
+        put "$P/share/ghostty/doc/ghostty.$s.md" < "target/docs/ghostty.$s.md"
+        if [ -f "target/docs/ghostty.$s" ]; then
+            put "$P/share/ghostty/doc/ghostty.$s.html" < "target/docs/ghostty.$s.html"
+            put "$P/share/man/man$s/ghostty.$s" < "target/docs/ghostty.$s"
+        fi
+    done
+
+    # Translations.
+    for mo in target/locale/*/LC_MESSAGES/com.mitchellh.ghostty.mo; do
+        lang=$(basename "$(dirname "$(dirname "$mo")")")
+        put "$P/share/locale/$lang/LC_MESSAGES/com.mitchellh.ghostty.mo" < "$mo"
+    done
+    echo "installed resources to $P"
 
 # Regenerate resources/terminfo from the terminfo source in ghostty-termio.
 terminfo:
@@ -308,7 +324,8 @@ live-dbus *scenarios:
     RUST_BIN="${RUST_BIN:-target/vp/production/ghostty}" scripts/live-dbus-test.sh {{scenarios}}
 
 # Build Ghostty's original Swift macOS app (macos/, vendored from Ghostty 1.3.1)
-# against the Rust core (macOS only; DRY_RUN=1 to preview).
-# Example: just macos-swift-app Debug
-macos-swift-app config="Release":
-    scripts/macos-swift-app.sh {{ config }}
+# against the Rust core (macOS only; DRY_RUN=1 to preview). TARGET is the
+# xcframework target: "universal" or "native" (host architecture only).
+# Example: just macos-swift-app Debug native
+macos-swift-app config="ReleaseLocal" target="universal":
+    scripts/macos-swift-app.sh {{ config }} {{ target }}
