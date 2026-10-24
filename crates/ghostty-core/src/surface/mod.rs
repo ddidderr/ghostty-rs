@@ -133,8 +133,8 @@ pub const MIN_WINDOW_WIDTH_CELLS: u32 = ghostty_apprt::runtime_api::MIN_WINDOW_W
 /// See [`MIN_WINDOW_WIDTH_CELLS`].
 pub const MIN_WINDOW_HEIGHT_CELLS: u32 = ghostty_apprt::runtime_api::MIN_WINDOW_HEIGHT_CELLS;
 
-/// The default DPI (Zig: `font.face.default_dpi`).
-pub const DEFAULT_DPI: f32 = 96.0;
+/// The default DPI (Zig: `font.face.default_dpi`): 72 on macOS, 96 elsewhere.
+pub const DEFAULT_DPI: f32 = ghostty_font::face::DEFAULT_DPI as f32;
 
 /// The effect of an input event (Zig: `Surface.InputEffect`).
 pub type InputEffectT = InputEffect;
