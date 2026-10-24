@@ -110,7 +110,7 @@ Legend: ⬜ todo · 🟨 in progress · ✅ done (gate passed, committed) · ⚠
 | WP | Scope | Owner | State | Notes |
 |---|---|---|---|---|
 | MA1 | foundation: crate, app/AppDelegate, menu, Ghostty.App/Config wrappers, helpers, bundle script, design doc | sonnet | ↩️ | reverted (cfded0e): user decision — keep the original Swift app, wire it to the Rust core |
-| MSW | `just macos-swift-app`: original Swift app built against the Rust libghostty (xcframework + resources + xcodebuild) | opus | ✅ | macOS-only; dry-run verified here |
+| MSW | `just macos-swift-app`: original Swift app built against the Rust libghostty (xcframework + resources + xcodebuild) | opus | ✅ | macOS-only; built and run natively (Swift app in `macos/`, vendored from 1.3.1), pixel-identical static screen |
 | MA2 | Ghostty/ incl. Surface View (Metal layer, input, IME, DnD, a11y) | – | ✖ | after MA1 | cancelled
 | MA3 | Features/Terminal (windows, tabs, styles) + Splits | – | ✖ | after MA1 | cancelled
 | MA4 | QuickTerminal, Command Palette, Settings, About, Clipboard, Global Keybinds, Secure Input, Services, App Icon | – | ✖ | after MA1 | cancelled

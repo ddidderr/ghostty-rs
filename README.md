@@ -15,17 +15,22 @@ and pixel-identical to Ghostty 1.3.1), the `libghostty` and `libghostty-vt`
 C APIs (same headers/ABI), WASM, crash reporting, and the macOS
 (Metal/CoreText) and Windows (ConPTY) code paths. macOS and Windows are
 compile-checked on Linux (`just check-macos`, `just check-windows`); the
-Windows test suites also run under Wine (`just test-windows-wine`), macOS has
-not been run natively. The Swift macOS app is not part of the port; it is a
-client of the libghostty C API.
+Windows test suites also run under Wine (`just test-windows-wine`). On macOS
+the Swift app runs natively on the Rust core and renders pixel-identical to
+Ghostty 1.3.1 for a static test screen. The Swift macOS app is not part of the
+port; it is a client of the libghostty C API.
 
 ### The macOS app (original Swift app on the Rust core)
 
 Ghostty's macOS app stays the original Swift app, unchanged; it is vendored
 from Ghostty 1.3.1 in `macos/` (plus `images/Ghostty.icon`, MIT, see
 `macos/LICENSE`). It is wired to the Rust core instead of the Zig core: the
-Rust `libghostty` exports the identical `include/ghostty.h` ABI. On a Mac with
-Xcode:
+Rust `libghostty` exports the identical `include/ghostty.h` ABI.
+
+Requirements: Xcode, `just`, `xz` (to unpack the gettext source that
+`gettext-sys` builds from) and the Rust targets `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `aarch64-apple-ios` and `aarch64-apple-ios-sim` (only
+the host target for `native`). Then:
 
 ```sh
 just macos-swift-app                     # ReleaseLocal; or: just macos-swift-app Debug
@@ -34,8 +39,13 @@ just macos-swift-app ReleaseLocal native # host architecture only (no iOS/x86_64
 
 This builds the Rust core as `macos/GhosttyKit.xcframework`, installs the
 resources into `zig-out/share` (what the Xcode project bundles) and runs
-`xcodebuild`, mirroring `zig build -Demit-macos-app`. Not runnable on this Linux machine
-(`DRY_RUN=1` previews the steps).
+`xcodebuild`, mirroring `zig build -Demit-macos-app`; the app ends up in
+`macos/build/<config>/Ghostty.app`. `DRY_RUN=1` previews the steps (works on
+any host).
+
+As in upstream, `cargo build` on macOS (and Windows) produces no terminal: the
+`ghostty` binary is the helper CLI for `+actions` (`ghostty +version`,
+`ghostty +list-fonts`, ...). The GTK app is only built on Linux and FreeBSD.
 
 ## Building and running
 
