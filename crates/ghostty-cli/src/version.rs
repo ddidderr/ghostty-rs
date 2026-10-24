@@ -97,6 +97,8 @@ mod tests {
             version_string: "1.3.1".into(),
             commit: None,
             release_channel: "stable".into(),
+            app_runtime: ".gtk".into(),
+            wayland: true,
             ..BuildInfo::default()
         };
         write_version(&mut buf, &info, false).unwrap();

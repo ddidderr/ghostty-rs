@@ -1,5 +1,7 @@
 //! Root build script.
 //!
+//! * `cfg(gtk)` on Linux and FreeBSD, where the GTK runtime is built (Zig
+//!   `apprt.Runtime.default`); elsewhere `ghostty` is the helper CLI.
 //! * Linux: link the final binary with lazy symbol binding. Rust links
 //!   executables with `-z now` (eager binding) by default. The GTK apprt
 //!   compiles in code for newer GTK/libadwaita API (e.g. the GTK 4.16 CSS
@@ -15,6 +17,14 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // `cfg(gtk)`: the GTK runtime is built (Zig `apprt.Runtime.default`).
+    println!("cargo::rustc-check-cfg=cfg(gtk)");
+    if matches!(
+        std::env::var("CARGO_CFG_TARGET_OS").as_deref(),
+        Ok("linux" | "freebsd")
+    ) {
+        println!("cargo:rustc-cfg=gtk");
+    }
     match std::env::var("CARGO_CFG_TARGET_OS").as_deref() {
         Ok("linux") => println!("cargo:rustc-link-arg-bins=-Wl,-z,lazy"),
         Ok("windows") => windows(),

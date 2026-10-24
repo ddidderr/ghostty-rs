@@ -50,6 +50,9 @@ pub struct BuildInfo {
     pub wayland: bool,
 }
 
+/// Whether the target's default app runtime is GTK.
+const GTK: bool = cfg!(any(target_os = "linux", target_os = "freebsd"));
+
 impl Default for BuildInfo {
     fn default() -> Self {
         BuildInfo {
@@ -58,15 +61,22 @@ impl Default for BuildInfo {
             commit: ghostty_build_info::COMMIT.map(str::to_string),
             release_channel: ghostty_build_info::RELEASE_CHANNEL.to_string(),
             build_mode: ghostty_build_info::BUILD_MODE.to_string(),
-            app_runtime: ".gtk".to_string(),
+            // Zig `apprt.Runtime.default`: GTK on Linux/FreeBSD, else none.
+            app_runtime: if GTK { ".gtk" } else { ".none" }.to_string(),
             font_backend: format!(".{}", ghostty_font::options.backend.name()),
-            renderer: "renderer.generic.Renderer(renderer.OpenGL)".to_string(),
+            // Zig `renderer.Backend.default`: Metal on Apple platforms.
+            renderer: if cfg!(target_vendor = "apple") {
+                "renderer.generic.Renderer(renderer.Metal)"
+            } else {
+                "renderer.generic.Renderer(renderer.OpenGL)"
+            }
+            .to_string(),
             gtk_build: None,
             gtk_runtime: None,
             adw_build: None,
             adw_runtime: None,
-            x11: true,
-            wayland: true,
+            x11: GTK,
+            wayland: GTK,
         }
     }
 }

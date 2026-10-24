@@ -21,12 +21,17 @@ font-backend-freetype = ["ghostty-cli/font-backend-freetype"]
 [dependencies]
 ghostty-core.workspace = true
 ghostty-config.workspace = true
-ghostty-apprt-gtk.workspace = true
 ghostty-apprt.workspace = true
 ghostty-cli.workspace = true
 ghostty-crash.workspace = true
 ghostty-os.workspace = true
 log = "0.4"
+
+# Zig `apprt.Runtime.default`: GTK on Linux and FreeBSD only. Elsewhere
+# (macOS, Windows) the runtime is `none` and `ghostty` is the helper CLI for
+# `+actions`; on macOS the app is the Swift app linking libghostty.
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+ghostty-apprt-gtk.workspace = true
 
 [dev-dependencies]
 ghostty-terminal.workspace = true
