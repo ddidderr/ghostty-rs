@@ -46,6 +46,7 @@ workspace = true
 [workspace]
 resolver = "3"
 members = [".", "crates/*", "tools/difftest"]
+exclude = ["vendor"]
 
 # The upstream Ghostty version this rewrite tracks (Zig: `build.zig.zon`
 # `.version`); consumed by `crates/ghostty-cli/build.rs`.
@@ -138,3 +139,7 @@ codegen-units = 1
 
 [build-dependencies]
 embed-resource = "3.0.12"
+
+# Patched crates.io dependencies (see vendor/README.md).
+[patch.crates-io]
+gettext-sys = { path = "vendor/gettext-sys" }
