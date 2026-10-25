@@ -191,9 +191,17 @@ install-resources PREFIX="/usr/local": build-data docs locales
     find "$P/share/ghostty/shell-integration" -name '*.md' -delete
     find "$P/share/ghostty/themes" -name '*.md' -delete
 
-    # Terminfo: compiled database plus the textual sources.
-    cp -R resources/terminfo/. "$P/share/terminfo/"
+    # Terminfo: compiled database plus the textual sources. Like Zig, compile
+    # with the host's tic, which picks the platform's layout (hex-named
+    # directories such as 78/xterm-ghostty on macOS, x/xterm-ghostty on
+    # Linux). Without tic, use the prebuilt Linux-layout resources/terminfo.
     $BD +terminfo > "$P/share/terminfo/ghostty.terminfo"
+    if command -v tic >/dev/null 2>&1; then
+        tic -x -o "$P/share/terminfo" "$P/share/terminfo/ghostty.terminfo" 2>/dev/null
+    else
+        echo "tic not found: installing the prebuilt (Linux-layout) terminfo" >&2
+        cp -R resources/terminfo/. "$P/share/terminfo/"
+    fi
     if command -v infotocap >/dev/null 2>&1; then
         infotocap "$P/share/terminfo/ghostty.terminfo" > "$P/share/terminfo/ghostty.termcap" 2>/dev/null
     else

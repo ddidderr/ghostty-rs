@@ -52,6 +52,8 @@ profile=production
 run scripts/xcframework.sh "$target" "$profile" "$src/macos/GhosttyKit.xcframework"
 
 # 2. Resources the Xcode project copies from ../zig-out/share.
+# Start clean so no stale files (e.g. a Linux-layout terminfo) get bundled.
+run rm -rf "$src/zig-out/share"
 run just install-resources "$src/zig-out"
 
 # The app version is exactly upstream's: CFBundleShortVersionString is the
