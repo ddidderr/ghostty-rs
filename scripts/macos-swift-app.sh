@@ -54,6 +54,13 @@ run scripts/xcframework.sh "$target" "$profile" "$src/macos/GhosttyKit.xcframewo
 # 2. Resources the Xcode project copies from ../zig-out/share.
 run just install-resources "$src/zig-out"
 
+# The app version is exactly upstream's: CFBundleShortVersionString is the
+# release version and CFBundleVersion its build number (upstream CI sets both
+# with PlistBuddy after building; build settings keep the signature valid).
+meta() { sed -n "/^\[workspace.metadata.ghostty\]/,/^\[/s/^$1 = \"*\([^\"]*\)\"*$/\1/p" Cargo.toml; }
+version=$(meta app-version)
+build=$(meta app-build)
+
 # 3. xcodebuild with a clean environment (only PATH), as GhosttyXcodebuild.zig.
 # A native xcframework has only the host slice, so override the project's
 # architectures with -arch (GhosttyXcodebuild.zig does the same).
@@ -64,6 +71,6 @@ if [ "$target" = native ]; then
     *) arch="-arch x86_64" ;;
     esac
 fi
-run env -i PATH="$PATH" sh -c "cd '$src/macos' && xcodebuild -target Ghostty -configuration '$config' $arch"
+run env -i PATH="$PATH" sh -c "cd '$src/macos' && xcodebuild -target Ghostty -configuration '$config' $arch MARKETING_VERSION='$version' CURRENT_PROJECT_VERSION='$build'"
 
 echo "Ghostty.app: $src/macos/build/$config/Ghostty.app"

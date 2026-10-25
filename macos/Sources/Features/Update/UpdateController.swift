@@ -21,6 +21,9 @@ class UpdateController {
         installCancellable != nil
     }
 
+    /// ghostty-rs: see `startUpdater`.
+    static let updatesDisabled = true
+
     /// Initialize a new update controller.
     init() {
         let hostBundle = Bundle.main
@@ -44,6 +47,10 @@ class UpdateController {
     /// This must be called before the updater can check for updates. If starting fails,
     /// the error will be shown to the user.
     func startUpdater() {
+        // ghostty-rs: updates must come from ghostty-rs, not Ghostty's appcast
+        // (UpdateDelegate.feedURLString), so Sparkle is never started.
+        // TODO: serve ghostty-rs updates and start the updater again.
+        if Self.updatesDisabled { return }
         do {
             try updater.start()
         } catch {
@@ -92,6 +99,15 @@ class UpdateController {
     ///
     /// This is typically connected to a menu item action.
     @objc func checkForUpdates() {
+        if Self.updatesDisabled {
+            let alert = NSAlert()
+            alert.messageText = "Check for Updates"
+            alert.informativeText = "TODO: updates for ghostty-rs are not implemented yet."
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
         // If we're already idle, then just check for updates immediately.
         if viewModel.state == .idle {
             updater.checkForUpdates()
@@ -116,7 +132,7 @@ class UpdateController {
     /// - Returns: Whether the menu item should be enabled
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if item.action == #selector(checkForUpdates) {
-            return updater.canCheckForUpdates
+            return Self.updatesDisabled || updater.canCheckForUpdates
         }
         return true
     }
